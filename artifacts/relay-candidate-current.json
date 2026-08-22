@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "kind": "ai_video_new_api_relay_candidate_baseline",
-  "generated_at_utc": "2026-08-22T07:46:34.397Z",
+  "generated_at_utc": "2026-08-22T07:59:53.716Z",
   "status": "UNVERIFIED",
   "production_cutover_authorized": false,
   "active_production_relay": "new-api-v1",
@@ -10,21 +10,21 @@
   "upstream_git_revision": "0ab02020603d22e5613bc4cf46bfab06f8567769",
   "source": {
     "format": "sorted-portable-path-nul-content-nul-v1",
-    "sha1": "09ee6933fab7fdf1309c1731c89a173f95b63404",
-    "sha256": "sha256:ea7a85114eddcfd7ccbeca45186045959f944d63c7acac287845f9cf97d83f48",
+    "sha1": "b64cc406eb4efc9393bccbcd94cec6b58400c2d3",
+    "sha256": "sha256:c4930050e31cfa2ce1ee7c17323b665a09770c29d136e7e23d5efa453c640e17",
     "file_count": 2061
   },
   "platform_source": {
     "format": "sorted-portable-path-nul-content-nul-v1",
-    "sha1": "9eb0f1dd2cc6fc1fe7cc74a41454b42cad8269e7",
-    "sha256": "sha256:779b1adaae39e8136f8f7e44fc3c49b1c1f881a62a6c13318f38463df16d267f",
+    "sha1": "d2800edb196e189efb4a0073bcefca09a6418de5",
+    "sha256": "sha256:f9a590a049dea828e06bd6fc18ca0abbd1e66a244386c34842b33d7e5e7adc48",
     "file_count": 231
   },
   "acceptance_harness": {
     "format": "sorted-portable-path-nul-content-nul-v1",
-    "sha1": "b3a4c716d1fc109a13225221349b3b1f903e062a",
-    "sha256": "sha256:d3c93210b5bc68b41ea5b319ad095fd8ee7c772eea6365275aab74f2919eeb57",
-    "file_count": 67
+    "sha1": "649446c9ff9b3cd96481a4899e6a7fbf76afab49",
+    "sha256": "sha256:7f2befc93b72af4550de730840d629d23886d6825dbe0838cf6e03432f748dd9",
+    "file_count": 68
   },
   "gates": {
     "local_regression": "NOT_RUN",

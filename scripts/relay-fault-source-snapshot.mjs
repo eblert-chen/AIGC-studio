@@ -22,6 +22,7 @@ export const CANDIDATE_IMAGE_LABELS = Object.freeze({
 const harnessFiles = [
   ".github/workflows/ci.yml",
   ".env.example",
+  ".gitattributes",
   ".gitignore",
   "README.md",
   "backend/new-api-relay/makefile",

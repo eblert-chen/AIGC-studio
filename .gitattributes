@@ -1,0 +1,6 @@
+# Keep source/provenance bytes identical across Windows and Linux checkouts.
+* text=auto eol=lf
+
+# Native command scripts keep the line ending expected by cmd.exe.
+*.bat text eol=crlf
+*.cmd text eol=crlf
