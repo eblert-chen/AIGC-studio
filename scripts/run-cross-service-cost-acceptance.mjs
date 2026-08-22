@@ -33,6 +33,7 @@ import {
   harnessSourceSnapshot,
   relaySourceSnapshot,
   validateCandidateImageLabels,
+  validateRouteAcceptanceTrustDigest,
 } from "./relay-fault-source-snapshot.mjs";
 import {
   CANDIDATE_UPSTREAM_GIT_REVISION,
@@ -629,6 +630,7 @@ export function parseCompiledBuildIdentity(stdout, stderr = "") {
   const keys = Object.keys(value || {}).sort();
   const expectedKeys = [
     "kind",
+    "route_acceptance_trust_keys_sha256",
     "schema_version",
     "source_revision",
     "source_snapshot_file_count",
@@ -642,6 +644,8 @@ export function parseCompiledBuildIdentity(stdout, stderr = "") {
     !/^[0-9a-f]{40}$/.test(value.upstream_git_revision) ||
     !/^[0-9a-f]{40}$/.test(value.source_revision) ||
     !/^sha256:[0-9a-f]{64}$/.test(value.source_snapshot_sha256) ||
+    !/^sha256:[0-9a-f]{64}$/.test(value.route_acceptance_trust_keys_sha256) ||
+    value.route_acceptance_trust_keys_sha256 === `sha256:${"0".repeat(64)}` ||
     !Number.isInteger(value.source_snapshot_file_count) ||
     value.source_snapshot_file_count < 1
   ) {
@@ -671,6 +675,9 @@ async function compiledBuildIdentity(imageId, containerName, relaySnapshot) {
     source_revision: relaySnapshot.sha1,
     source_snapshot_sha256: relaySnapshot.sha256,
     source_snapshot_file_count: relaySnapshot.file_count,
+    route_acceptance_trust_keys_sha256: validateRouteAcceptanceTrustDigest(
+      process.env.NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256,
+    ),
   };
   if (!safeEqual(identity, expected)) throw new Error("compiled Relay identity does not match the frozen host source");
   return identity;

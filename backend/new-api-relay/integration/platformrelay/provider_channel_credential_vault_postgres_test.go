@@ -166,6 +166,10 @@ func TestProviderChannelCredentialVaultPostgresCRUDRotationReadinessAndGuards(t 
 	})
 	t.Setenv("RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE", keyringPath)
 	t.Setenv("RELAY_COMPAT_ENVIRONMENT", "production")
+	requireNoError(t, common.InstallProtectedSecretFileSnapshots([]common.ProtectedSecretFileSnapshot{{
+		Environment: "RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE",
+		Value:       []byte(providerChannelKeyringB),
+	}}))
 	requireNoError(t, model.ValidateProviderCredentialVaultRuntime(true))
 }
 

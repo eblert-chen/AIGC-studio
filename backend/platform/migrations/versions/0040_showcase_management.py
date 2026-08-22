@@ -413,9 +413,18 @@ def _create_tables() -> None:
 def _install_immutable_guards() -> None:
     connection = op.get_bind()
     if connection.dialect.name == "postgresql":
+        schema_name = connection.scalar(text("SELECT current_schema()"))
+        if not isinstance(schema_name, str) or not schema_name:
+            raise RuntimeError("Platform migration schema is unavailable")
+        quoted_schema = connection.dialect.identifier_preparer.quote_schema(
+            schema_name
+        )
+        guard_function = (
+            f"{quoted_schema}.{_quote_identifier('showcase_immutable_guard_v1')}"
+        )
         op.execute(
             text(
-                "CREATE FUNCTION public.showcase_immutable_guard_v1() "
+                f"CREATE FUNCTION {guard_function}() "
                 "RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER "
                 "SET search_path = pg_catalog AS $$ BEGIN "
                 "RAISE EXCEPTION 'showcase published records are immutable' "
@@ -425,7 +434,7 @@ def _install_immutable_guards() -> None:
         op.execute(
             text(
                 "REVOKE ALL PRIVILEGES ON FUNCTION "
-                "public.showcase_immutable_guard_v1() FROM PUBLIC"
+                f"{guard_function}() FROM PUBLIC"
             )
         )
         for table_name in (
@@ -437,8 +446,9 @@ def _install_immutable_guards() -> None:
             op.execute(
                 text(
                     f"CREATE TRIGGER {_quote_identifier('trg_' + table_name + '_immutable')} "
-                    f"BEFORE UPDATE OR DELETE OR TRUNCATE ON public.{_quote_identifier(table_name)} "
-                    "FOR EACH STATEMENT EXECUTE FUNCTION public.showcase_immutable_guard_v1()"
+                    "BEFORE UPDATE OR DELETE OR TRUNCATE ON "
+                    f"{quoted_schema}.{_quote_identifier(table_name)} "
+                    f"FOR EACH STATEMENT EXECUTE FUNCTION {guard_function}()"
                 )
             )
     elif connection.dialect.name == "sqlite":
@@ -511,7 +521,16 @@ def upgrade() -> None:
 def downgrade() -> None:
     connection = op.get_bind()
     if connection.dialect.name == "postgresql":
-        op.execute(text("DROP FUNCTION public.showcase_immutable_guard_v1() CASCADE"))
+        schema_name = connection.scalar(text("SELECT current_schema()"))
+        if not isinstance(schema_name, str) or not schema_name:
+            raise RuntimeError("Platform migration schema is unavailable")
+        quoted_schema = connection.dialect.identifier_preparer.quote_schema(
+            schema_name
+        )
+        guard_function = (
+            f"{quoted_schema}.{_quote_identifier('showcase_immutable_guard_v1')}"
+        )
+        op.execute(text(f"DROP FUNCTION {guard_function}() CASCADE"))
     for table_name in (
         "showcase_publication_events",
         "showcase_release_items",

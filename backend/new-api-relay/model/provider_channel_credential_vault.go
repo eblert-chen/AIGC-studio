@@ -430,14 +430,14 @@ func MigrateProviderChannelCredentialVaultStorageWithDB(db *gorm.DB) error {
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		if db.Dialector.Name() == "postgres" {
-			if err := tx.Exec("ALTER TABLE public.channels ALTER COLUMN key SET DEFAULT ''").Error; err != nil {
-				return errors.New("provider channel credential legacy column default could not be normalized")
-			}
 			if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", providerChannelCredentialMigrationLock).Error; err != nil {
 				return errors.New("provider channel credential migration lock could not be acquired")
 			}
 			if err := tx.Exec("LOCK TABLE channels, provider_channel_credential_set_versions IN SHARE ROW EXCLUSIVE MODE").Error; err != nil {
 				return errors.New("provider channel credential migration tables could not be fenced")
+			}
+			if err := tx.Exec("ALTER TABLE channels ALTER COLUMN key SET DEFAULT ''").Error; err != nil {
+				return errors.New("provider channel credential legacy column default could not be normalized")
 			}
 		} else if db.Dialector.Name() == "sqlite" {
 			if err := tx.Exec("UPDATE provider_channel_credential_set_versions SET credential_set_version = credential_set_version WHERE 1 = 0").Error; err != nil {

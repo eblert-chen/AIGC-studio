@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build && node scripts/prepare-sites-build.mjs",
     "preview": "vite preview",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node scripts/run-root-tests.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs",
     "test:relay-migration": "node --test tests/relay-migration-acceptance.test.mjs tests/relay-live-fault-evidence.test.mjs tests/relay-fault-source-snapshot.test.mjs tests/relay-obs-live-runner.test.mjs",
     "test:relay-faults": "node scripts/run-relay-fault-harness.mjs",

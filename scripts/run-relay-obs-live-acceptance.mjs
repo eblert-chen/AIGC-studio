@@ -107,6 +107,7 @@ export function parseOBSLiveCompiledBuildIdentity(stdout, stderr = "") {
   }
   const expectedKeys = [
     "kind",
+    "route_acceptance_trust_keys_sha256",
     "schema_version",
     "source_revision",
     "source_snapshot_file_count",
@@ -118,6 +119,8 @@ export function parseOBSLiveCompiledBuildIdentity(stdout, stderr = "") {
       !/^[0-9a-f]{40}$/.test(identity.upstream_git_revision) ||
       !/^[0-9a-f]{40}$/.test(identity.source_revision) ||
       !/^sha256:[0-9a-f]{64}$/.test(identity.source_snapshot_sha256) ||
+      !/^sha256:[0-9a-f]{64}$/.test(identity.route_acceptance_trust_keys_sha256) ||
+      identity.route_acceptance_trust_keys_sha256 === `sha256:${"0".repeat(64)}` ||
       !Number.isSafeInteger(identity.source_snapshot_file_count) || identity.source_snapshot_file_count < 1) {
     throw new Error("candidate compiled identity envelope is invalid");
   }

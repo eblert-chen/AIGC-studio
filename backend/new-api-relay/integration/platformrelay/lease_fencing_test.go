@@ -129,6 +129,7 @@ func TestPostgresSubmissionTakeoverRejectsOldNativeRecoveryStage(t *testing.T) {
 			PinnedKeyIndex:       &keyIndex,
 			PinnedKeyFingerprint: route.KeyFingerprint,
 			TransientProviderKey: pinnedKey,
+			BillingSource:        model.TaskBillingSourcePlatformExternal,
 		},
 	}
 

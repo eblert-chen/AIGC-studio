@@ -351,6 +351,7 @@ test("offline compiled identity parser is strict and diagnostic-free", () => {
     source_revision: "2".repeat(40),
     source_snapshot_sha256: `sha256:${"3".repeat(64)}`,
     source_snapshot_file_count: 123,
+    route_acceptance_trust_keys_sha256: `sha256:${"4".repeat(64)}`,
   };
   assert.deepEqual(parseCompiledBuildIdentity(JSON.stringify(value)), value);
   assert.throws(
@@ -358,6 +359,13 @@ test("offline compiled identity parser is strict and diagnostic-free", () => {
     /schema is invalid/,
   );
   assert.throws(() => parseCompiledBuildIdentity(JSON.stringify(value), "warning"), /diagnostics/);
+  assert.throws(
+    () => parseCompiledBuildIdentity(JSON.stringify({
+      ...value,
+      route_acceptance_trust_keys_sha256: `sha256:${"0".repeat(64)}`,
+    })),
+    /values are invalid/,
+  );
 });
 
 test("evidence is create-only and its canonical payload digest detects tampering", async () => {

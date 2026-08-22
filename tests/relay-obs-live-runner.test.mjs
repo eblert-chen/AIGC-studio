@@ -34,6 +34,7 @@ const compiledIdentity = Object.freeze({
   source_revision: snapshot.sha1,
   source_snapshot_sha256: snapshot.sha256,
   source_snapshot_file_count: snapshot.file_count,
+  route_acceptance_trust_keys_sha256: `sha256:${"6".repeat(64)}`,
 });
 
 test("OBS live provenance is the frozen source snapshot and matches all candidate image labels", () => {
@@ -79,6 +80,13 @@ test("compiled identity parser is strict and rejects diagnostics or mutable iden
   );
   assert.throws(
     () => parseOBSLiveCompiledBuildIdentity(JSON.stringify({ ...compiledIdentity, source_snapshot_file_count: 0 })),
+    /envelope is invalid/,
+  );
+  assert.throws(
+    () => parseOBSLiveCompiledBuildIdentity(JSON.stringify({
+      ...compiledIdentity,
+      route_acceptance_trust_keys_sha256: `sha256:${"0".repeat(64)}`,
+    })),
     /envelope is invalid/,
   );
 });
