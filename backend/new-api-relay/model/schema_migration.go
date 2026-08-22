@@ -143,6 +143,11 @@ type relaySchemaV2Step struct {
 	Up func(*gorm.DB) error
 }
 
+type relaySchemaV3Step struct {
+	ID string
+	Up func(*gorm.DB) error
+}
+
 func relaySchemaMigrations() []relaySchemaMigrationDefinition {
 	return []relaySchemaMigrationDefinition{
 		{
@@ -160,6 +165,14 @@ func relaySchemaMigrations() []relaySchemaMigrationDefinition {
 			Checksum:  RelaySchemaV2Checksum(),
 			Up:        migrateRelaySchemaV2NoCatalogDelta,
 			Bootstrap: migrateRelaySchemaV2Bootstrap,
+		},
+		{
+			Version:   relaySchemaV3FrozenVersion,
+			Name:      relaySchemaV3FrozenName,
+			Phase:     relaySchemaV3FrozenPhase,
+			Checksum:  RelaySchemaV3Checksum(),
+			Up:        migrateRelaySchemaV3ProviderChannelCredentialOrdering,
+			Bootstrap: migrateRelaySchemaV3Bootstrap,
 		},
 	}
 }
@@ -357,6 +370,95 @@ func migrateRelaySchemaV2NoCatalogDelta(db *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+// relaySchemaV3BootstrapSteps is a complete fresh-v3 snapshot. The provider
+// channel credential step uses the v3 implementation; it never reaches into
+// or replays either frozen historical bootstrap.
+func relaySchemaV3BootstrapSteps() []relaySchemaV3Step {
+	return []relaySchemaV3Step{
+		{ID: "subscription-plan-price-decimal-v3", Up: migrateSubscriptionPlanPriceAmountWithDB},
+		{ID: "token-model-limits-text-v3", Up: migrateTokenModelLimitsToTextWithDB},
+		{ID: "channel-cost-digest-varchar-v3", Up: migratePlatformChannelCostDocumentDigestStorageWithDB},
+		{ID: "gorm-model-bootstrap-v3", Up: migrateRelaySchemaV3Models},
+		{ID: "previous-candidate-catalog-normalization-v3", Up: migrateRelaySchemaV3PreviousCandidateCatalog},
+		{ID: "provider-task-credential-vault-v3", Up: MigrateProviderCredentialVaultStorageWithDB},
+		{ID: "provider-channel-credential-vault-v3", Up: migrateProviderChannelCredentialVaultStorageV3WithDB},
+		{ID: "artifact-intent-v3", Up: MigratePlatformArtifactUploadIntentStorageWithDB},
+		{ID: "shared-account-state-v3", Up: MigratePlatformGenerationProviderAccountStateWithDB},
+		{ID: "reconciliation-append-only-v3", Up: MigratePlatformGenerationReconciliationStorageWithDB},
+		{ID: "callback-redrive-append-only-v3", Up: MigratePlatformGenerationCallbackOperationsStorageWithDB},
+		{ID: "channel-control-guards-v3", Up: MigratePlatformChannelControlStorageWithDB},
+		{ID: "provider-cost-monitor-guards-v3", Up: MigratePlatformProviderMonitorAndCostStorageWithDB},
+		{ID: "auth-version-backfill-v3", Up: InitializeUserAuthVersionsWithDB},
+		{ID: "external-identity-backfill-v3", Up: InitializeExternalIdentityClaimsWithDB},
+		{ID: "subscription-plan-v3", Up: migrateRelaySchemaV3SubscriptionPlan},
+		{ID: "retired-option-migration-v3", Up: migrateRetiredFrontendOptionsStrictWithDB},
+		{ID: "runtime-dml-privilege-manifest-v3", Up: ApplyRelayDatabasePrivilegeManifestWithDB},
+		{ID: "download-edge-rls-v3", Up: MigratePlatformDownloadEdgeIsolationWithDB},
+		{ID: "download-edge-dml-privilege-manifest-v3", Up: ApplyRelayDownloadEdgeDatabasePrivilegeManifestWithDB},
+	}
+}
+
+func migrateRelaySchemaV3Bootstrap(db *gorm.DB) error {
+	for _, step := range relaySchemaV3BootstrapSteps() {
+		if err := step.Up(db); err != nil {
+			return fmt.Errorf("Relay schema v3 bootstrap step %s failed: %w", step.ID, err)
+		}
+	}
+	return nil
+}
+
+func migrateRelaySchemaV3Models(db *gorm.DB) error {
+	return db.AutoMigrate(relaySchemaV3Models()...)
+}
+
+func migrateRelaySchemaV3PreviousCandidateCatalog(db *gorm.DB) error {
+	if db == nil || db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	for _, statement := range []string{
+		`ALTER TABLE public.prefill_groups DROP CONSTRAINT IF EXISTS idx_prefill_groups_name`,
+		`DROP INDEX IF EXISTS public.idx_prefill_groups_name`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			return errors.New("previous Relay candidate catalog could not be normalized")
+		}
+	}
+	return nil
+}
+
+func migrateRelaySchemaV3SubscriptionPlan(db *gorm.DB) error {
+	if db.Dialector.Name() == "sqlite" {
+		return ensureSubscriptionPlanTableSQLiteWithDB(db)
+	}
+	return db.AutoMigrate(&SubscriptionPlan{})
+}
+
+// migrateRelaySchemaV3ProviderChannelCredentialOrdering is an attested,
+// no-catalog-delta correction. It accepts only an exact applying v2 state,
+// then reruns the idempotent vault conversion with the lock-before-DDL,
+// search-path-aware v3 implementation.
+func migrateRelaySchemaV3ProviderChannelCredentialOrdering(db *gorm.DB) error {
+	if db == nil {
+		return errors.New("Relay schema v3 credential correction database is unavailable")
+	}
+	var state RelaySchemaState
+	if err := db.Where("id = ?", relaySchemaStateSingletonID).First(&state).Error; err != nil {
+		return errors.New("Relay schema v3 credential correction state is unavailable")
+	}
+	v2Catalog := relaySchemaExpectedCatalogForRuntime(db.Dialector.Name(), relaySchemaV2FrozenVersion)
+	v3Catalog := relaySchemaExpectedCatalogForRuntime(db.Dialector.Name(), relaySchemaV3FrozenVersion)
+	if state.CurrentVersion != relaySchemaV2FrozenVersion || state.TargetVersion != relaySchemaV3FrozenVersion ||
+		state.State != RelaySchemaStateApplying || !state.Dirty || state.AttemptID == "" ||
+		state.CurrentChecksum != relaySchemaV2FrozenChecksumSHA256 || state.TargetChecksum != relaySchemaV3FrozenChecksumSHA256 ||
+		(v2Catalog != "" && state.CurrentCatalogSHA256 != v2Catalog) || state.TargetCatalogSHA256 != v3Catalog {
+		return errors.New("Relay schema v3 credential correction requires the exact v2 state")
+	}
+	if v2Catalog != "" && v2Catalog != v3Catalog {
+		return errors.New("Relay schema v3 credential correction is not a no-catalog-delta release")
+	}
+	return migrateProviderChannelCredentialVaultStorageV3WithDB(db)
 }
 
 // RelayLifecycleLock is a PostgreSQL session advisory lock shared by schema
@@ -1138,6 +1240,14 @@ func validateRelaySchemaRegistry(
 		v2.Phase != relaySchemaV2FrozenPhase || v2.Checksum != relaySchemaV2FrozenChecksumSHA256 ||
 		RelaySchemaV2Checksum() != relaySchemaV2FrozenChecksumSHA256 || v2.Up == nil || v2.Bootstrap == nil {
 		return errors.New("Relay schema v2 definition is not frozen")
+	}
+	if contract.TargetVersion >= relaySchemaV3FrozenVersion {
+		v3 := byVersion[relaySchemaV3FrozenVersion]
+		if v3.Version != relaySchemaV3FrozenVersion || v3.Name != relaySchemaV3FrozenName ||
+			v3.Phase != relaySchemaV3FrozenPhase || v3.Checksum != relaySchemaV3FrozenChecksumSHA256 ||
+			RelaySchemaV3Checksum() != relaySchemaV3FrozenChecksumSHA256 || v3.Up == nil || v3.Bootstrap == nil {
+			return errors.New("Relay schema v3 definition is not frozen")
+		}
 	}
 	return nil
 }

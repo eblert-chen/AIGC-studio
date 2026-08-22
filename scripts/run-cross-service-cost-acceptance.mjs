@@ -693,6 +693,121 @@ function classifyRelayStartupFailure(logText) {
   return "process-exit";
 }
 
+export function parseRelaySchemaMigrationResult(stdout) {
+  if (typeof stdout !== "string" || stdout.includes("\0")) {
+    throw new Error("Relay schema migration output is invalid");
+  }
+  const canonical = stdout.replace(/\r\n/g, "\n").trimEnd();
+  if (!canonical || canonical.includes("\r") || canonical.includes("\n")) {
+    throw new Error("Relay schema migration did not return exactly one JSON document");
+  }
+  let value;
+  try {
+    value = JSON.parse(canonical);
+  } catch {
+    throw new Error("Relay schema migration output is not JSON");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Relay schema migration result is invalid");
+  }
+  const requiredKeys = ["from_version", "kind", "schema_version", "state", "status", "to_version"];
+  const allowedKeys = [...requiredKeys, "attempt_id"].sort();
+  const keys = Object.keys(value).sort();
+  if (
+    requiredKeys.some((key) => !keys.includes(key)) ||
+    keys.some((key) => !allowedKeys.includes(key)) ||
+    value.schema_version !== 1 ||
+    value.kind !== "relay_schema_migration" ||
+    !["current", "migrated"].includes(value.state) ||
+    !Number.isSafeInteger(value.from_version) || value.from_version < 0 ||
+    !Number.isSafeInteger(value.to_version) || value.to_version < 1 ||
+    value.to_version < value.from_version ||
+    !value.status || typeof value.status !== "object" || Array.isArray(value.status) ||
+    value.status.classification !== "current" ||
+    value.status.state !== "clean" ||
+    value.status.dirty !== false ||
+    value.status.compatible !== true ||
+    value.status.current !== true ||
+    value.status.current_version !== value.to_version ||
+    (value.state === "current" && value.from_version !== value.to_version) ||
+    (value.state === "migrated" && value.from_version >= value.to_version)
+  ) {
+    throw new Error("Relay schema migration result is invalid");
+  }
+  return value;
+}
+
+export function parseDockerWaitExitCode(stdout) {
+  if (typeof stdout !== "string" || stdout.includes("\0")) {
+    throw new Error("Relay schema migration wait result is invalid");
+  }
+  const canonical = stdout.replace(/\r\n/g, "\n");
+  const match = canonical.match(/^(0|[1-9]\d{0,2})\n?$/);
+  if (!match) throw new Error("Relay schema migration wait result is invalid");
+  const exitCode = Number(match[1]);
+  if (exitCode > 255) throw new Error("Relay schema migration wait result is invalid");
+  return exitCode;
+}
+
+async function waitForRelaySchemaMigration(container, forbiddenValues, timeoutMs = 180_000) {
+  const wait = await runCommand("docker", ["wait", container], {
+    timeoutMs,
+    failure: "Relay schema migration container did not exit within its deadline",
+    diagnosticForbiddenValues: forbiddenValues,
+  });
+  const exitCode = parseDockerWaitExitCode(wait.stdout);
+  if (wait.stderr.trim() !== "") {
+    throw new Error("Relay schema migration wait returned diagnostics");
+  }
+
+  const inspected = await inspectDocker("container", container);
+  if (
+    inspected.State?.Running !== false ||
+    inspected.State?.Status !== "exited" ||
+    inspected.State?.ExitCode !== exitCode
+  ) {
+    throw new Error("Relay schema migration container exit state is inconsistent");
+  }
+
+  const logs = await runCommand("docker", ["logs", container], {
+    failure: "Relay schema migration logs could not be audited",
+    diagnosticForbiddenValues: forbiddenValues,
+  });
+  assertNoForbiddenText(`${logs.stdout}\n${logs.stderr}`, forbiddenValues);
+
+  let result;
+  let failure;
+  if (exitCode !== 0) {
+    failure = new Error(
+      `candidate Relay schema migration failed (${classifyRelayStartupFailure(`${logs.stdout}\n${logs.stderr}`)})`,
+    );
+  } else {
+    try {
+      result = parseRelaySchemaMigrationResult(logs.stdout);
+    } catch (error) {
+      failure = error;
+    }
+  }
+  if (failure) {
+    try {
+      const diagnostic = redactAcceptanceDiagnostic(logs.stdout, logs.stderr, forbiddenValues);
+      if (diagnostic) {
+        Object.defineProperty(failure, redactedDiagnosticProperty, {
+          configurable: false,
+          enumerable: false,
+          value: diagnostic,
+          writable: false,
+        });
+      }
+    } catch {
+      // Fail closed with the generic migration failure when its logs cannot be
+      // proven safe for cleanup-gated disclosure.
+    }
+    throw failure;
+  }
+  return result;
+}
+
 async function assertRelayStillRunning(container, forbiddenValues) {
   const inspected = await inspectDocker("container", container);
   if (inspected.State?.Running === true) return;
@@ -735,26 +850,6 @@ async function waitForRelayRuntimeBound(
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   throw new Error("candidate Relay runtime identity did not become available");
-}
-
-async function waitForRelayPublicStatus(
-  url,
-  container,
-  forbiddenValues,
-  timeoutMs = 90_000,
-) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await assertRelayStillRunning(container, forbiddenValues);
-    try {
-      const result = await fetchJSON(`${url}/api/status`);
-      if (result.response.status === 200) return;
-    } catch {
-      // Startup connection failures are expected until migration completes.
-    }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
-  }
-  throw new Error("Relay schema bootstrap did not become HTTP-ready");
 }
 
 async function assertRuntimeIdentityIsProtected(url, relaySnapshot) {
@@ -842,12 +937,56 @@ async function postgresFingerprints(python, platformUrl, relayUrl) {
 async function seedRelayNativeChannel(
   python,
   relayDatabaseUrl,
-  { channelId, channelKey, model },
+  { channelId, channelKey, model, providerCredentialKeyring },
 ) {
   const script = String.raw`
+import base64
+import hashlib
+import hmac
+import json
 import os
+import re
 import time
+import uuid
+from datetime import datetime, timezone
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
+
+
+def reject_duplicate_keys(pairs):
+    output = {}
+    for key, value in pairs:
+        if key in output:
+            raise ValueError("duplicate keyring field")
+        output[key] = value
+    return output
+
+
+def assert_plaintext_guard(connection, channel_id, model):
+    try:
+        with connection.begin_nested():
+            connection.execute(
+                text("""
+                    INSERT INTO channels
+                        (id, type, \"key\", status, name, models, \"group\", created_time)
+                    VALUES
+                        (:id, 50, 'guard-probe-plaintext-must-fail', 2,
+                         'cost-acceptance-guard-probe', :model, 'default', :created_time)
+                """),
+                {"id": channel_id + 1, "model": model, "created_time": int(time.time())},
+            )
+    except DBAPIError as error:
+        diagnostic = getattr(error.orig, "diag", None)
+        if (
+            getattr(error.orig, "sqlstate", None) != "P0001"
+            or getattr(diagnostic, "message_primary", None)
+            != "plaintext provider channel credentials are forbidden"
+        ):
+            raise RuntimeError("Relay plaintext credential guard returned an unexpected rejection") from None
+    else:
+        raise RuntimeError("Relay plaintext credential guard accepted a forbidden write")
 
 engine = create_engine(os.environ["COST_ACCEPTANCE_RELAY_DATABASE_URL"], pool_pre_ping=True)
 deadline = time.monotonic() + 90
@@ -863,28 +1002,128 @@ while True:
         raise RuntimeError("Relay channels schema did not become ready")
     time.sleep(0.25)
 
+keyring = json.loads(
+    os.environ["COST_ACCEPTANCE_RELAY_PROVIDER_CREDENTIAL_KEYRING"],
+    object_pairs_hook=reject_duplicate_keys,
+)
+if set(keyring) != {"schema_version", "active_key_id", "keys"}:
+    raise RuntimeError("Relay provider credential keyring envelope is invalid")
+key_id = keyring["active_key_id"]
+keys = keyring["keys"]
+if (
+    keyring["schema_version"] != 1
+    or not isinstance(key_id, str)
+    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", key_id) is None
+    or not isinstance(keys, dict)
+    or set(keys) != {key_id}
+):
+    raise RuntimeError("Relay provider credential keyring metadata is invalid")
+encoded_kek = keys[key_id]
+try:
+    kek = base64.b64decode(encoded_kek, validate=True)
+except Exception:
+    raise RuntimeError("Relay provider credential KEK encoding is invalid") from None
+if len(kek) != 32 or base64.b64encode(kek).decode("ascii") != encoded_kek or len(set(kek)) < 8:
+    raise RuntimeError("Relay provider credential KEK is invalid")
+
+channel_id = int(os.environ["COST_ACCEPTANCE_RELAY_CHANNEL_ID"])
+channel_key = os.environ["COST_ACCEPTANCE_RELAY_CHANNEL_KEY"]
+model = os.environ["COST_ACCEPTANCE_RELAY_MODEL"]
+if not channel_key or channel_key.startswith("[") or "\n" in channel_key:
+    raise RuntimeError("Relay native channel credential fixture is invalid")
+credential_set_version = str(uuid.uuid4())
+schema_version = 1
+key_set_fingerprint = hashlib.sha256(channel_key.encode("utf-8")).hexdigest()
+key_count = 1
+nonce = os.urandom(12)
+aad = b"\x00".join([
+    b"new-api-provider-channel-credential-set",
+    str(schema_version).encode("ascii"),
+    credential_set_version.encode("ascii"),
+    str(channel_id).encode("ascii"),
+    key_id.encode("ascii"),
+    key_set_fingerprint.encode("ascii"),
+    str(key_count).encode("ascii"),
+])
+ciphertext = AESGCM(kek).encrypt(nonce, channel_key.encode("utf-8"), aad)
+
 with engine.begin() as connection:
+    guards = connection.execute(text("""
+        SELECT tgname, tgenabled
+          FROM pg_trigger
+         WHERE tgrelid IN (
+                   'public.channels'::regclass,
+                   'public.provider_channel_credential_set_versions'::regclass
+               )
+           AND NOT tgisinternal
+           AND tgname IN (
+                   'trg_channels_provider_credential_storage',
+                   'trg_provider_channel_credential_set_versions_no_update_delete',
+                   'trg_provider_channel_credential_set_versions_no_truncate'
+               )
+         ORDER BY tgname
+    """)).all()
+    if len(guards) != 3 or any(enabled != "O" for _, enabled in guards):
+        raise RuntimeError("Relay provider channel credential guards are not active")
+    assert_plaintext_guard(connection, channel_id, model)
+
+    connection.execute(
+        text("""
+            INSERT INTO provider_channel_credential_set_versions
+                (credential_set_version, channel_id, key_id, schema_version,
+                 key_set_fingerprint, key_count, nonce, ciphertext, created_at)
+            VALUES
+                (:credential_set_version, :channel_id, :key_id, :schema_version,
+                 :key_set_fingerprint, :key_count, :nonce, :ciphertext, :created_at)
+        """),
+        {
+            "credential_set_version": credential_set_version,
+            "channel_id": channel_id,
+            "key_id": key_id,
+            "schema_version": schema_version,
+            "key_set_fingerprint": key_set_fingerprint,
+            "key_count": key_count,
+            "nonce": nonce,
+            "ciphertext": ciphertext,
+            "created_at": datetime.now(timezone.utc),
+        },
+    )
     connection.execute(
         text("""
             INSERT INTO channels
-                (id, type, \"key\", status, name, models, \"group\", created_time)
+                (id, type, \"key\", credential_set_version, status, name,
+                 models, \"group\", created_time)
             VALUES
-                (:id, 50, :key, 2, 'cost-acceptance-native-channel',
-                 :model, 'default', :created_time)
+                (:id, 50, '', :credential_set_version, 2,
+                 'cost-acceptance-native-channel', :model, 'default', :created_time)
         """),
         {
-            "id": int(os.environ["COST_ACCEPTANCE_RELAY_CHANNEL_ID"]),
-            "key": os.environ["COST_ACCEPTANCE_RELAY_CHANNEL_KEY"],
-            "model": os.environ["COST_ACCEPTANCE_RELAY_MODEL"],
+            "id": channel_id,
+            "credential_set_version": credential_set_version,
+            "model": model,
             "created_time": int(time.time()),
         },
     )
     row = connection.execute(
-        text("SELECT id, type, \"key\", status FROM channels WHERE id = :id"),
-        {"id": int(os.environ["COST_ACCEPTANCE_RELAY_CHANNEL_ID"])},
+        text("""
+            SELECT channels.id, channels.type, channels.\"key\", channels.status,
+                   channels.credential_set_version, versions.key_id,
+                   versions.schema_version, versions.key_set_fingerprint,
+                   versions.key_count, versions.nonce, versions.ciphertext
+              FROM channels
+              JOIN provider_channel_credential_set_versions versions
+                ON versions.credential_set_version = channels.credential_set_version
+               AND versions.channel_id = channels.id
+             WHERE channels.id = :id
+        """),
+        {"id": channel_id},
     ).mappings().one()
     assert row["type"] == 50 and row["status"] == 2
-    assert row["key"] == os.environ["COST_ACCEPTANCE_RELAY_CHANNEL_KEY"]
+    assert row["key"] == "" and row["credential_set_version"] == credential_set_version
+    assert row["key_id"] == key_id and row["schema_version"] == schema_version
+    assert row["key_set_fingerprint"] == key_set_fingerprint and row["key_count"] == key_count
+    restored = AESGCM(kek).decrypt(bytes(row["nonce"]), bytes(row["ciphertext"]), aad)
+    assert hmac.compare_digest(restored, channel_key.encode("utf-8"))
 engine.dispose()
 `;
   await runCommand(python, ["-c", script], {
@@ -894,6 +1133,7 @@ engine.dispose()
       COST_ACCEPTANCE_RELAY_CHANNEL_ID: String(channelId),
       COST_ACCEPTANCE_RELAY_CHANNEL_KEY: channelKey,
       COST_ACCEPTANCE_RELAY_MODEL: model,
+      COST_ACCEPTANCE_RELAY_PROVIDER_CREDENTIAL_KEYRING: providerCredentialKeyring,
     },
     timeoutMs: 100_000,
     failure: "Relay native channel bootstrap failed",
@@ -1037,14 +1277,14 @@ async function main() {
       destination: "/data",
     },
   ];
-  const relayBootstrap = `${resourcePrefix}-relay-bootstrap`;
+  const relayMigration = `${resourcePrefix}-relay-migrate`;
   const relay = `${resourcePrefix}-relay`;
   const compiledIdentityContainer = `${resourcePrefix}-compiled-id`;
   const containers = [
     platformPostgres,
     relayPostgres,
     redis,
-    relayBootstrap,
+    relayMigration,
     relay,
     compiledIdentityContainer,
   ];
@@ -1065,6 +1305,13 @@ async function main() {
   const relayClientAPIValue = randomBytes(32).toString("base64url");
   const relayUpstreamValue = randomBytes(32).toString("base64url");
   const relayChannelKeyValue = randomBytes(32).toString("base64url");
+  const relayProviderCredentialKeyId = "cost-acceptance-v1";
+  const relayProviderCredentialKek = randomBytes(32).toString("base64");
+  const relayProviderCredentialKeyring = JSON.stringify({
+    schema_version: 1,
+    active_key_id: relayProviderCredentialKeyId,
+    keys: { [relayProviderCredentialKeyId]: relayProviderCredentialKek },
+  });
   const relayServiceTenantId = randomUUID();
   const contractRateId = randomUUID();
   const providerName = "cost-acceptance-provider";
@@ -1088,6 +1335,8 @@ async function main() {
     relayClientAPIValue,
     relayUpstreamValue,
     relayChannelKeyValue,
+    relayProviderCredentialKek,
+    relayProviderCredentialKeyring,
     relayServiceTenantId,
     processNonce,
     sessionValue,
@@ -1278,7 +1527,7 @@ async function main() {
     platformProcess.stdout?.resume();
     platformProcess.stderr?.resume();
 
-    const relayBootstrapEnvPath = resolve(tempRoot, "relay-bootstrap.env");
+    const relayMigrationEnvPath = resolve(tempRoot, "relay-migrate.env");
     const relayEnvPath = resolve(tempRoot, "relay.env");
     const relayInternalDatabaseUrl = `postgresql://cost_acceptance:${relayPassword}@relay-postgres:5432/relay_cost_acceptance?sslmode=disable`;
     const redisInternalUrl = `redis://:${redisPassword}@relay-redis:6379/0`;
@@ -1347,28 +1596,29 @@ async function main() {
     forbiddenValues.push(relayInternalDatabaseUrl, redisInternalUrl);
 
     // Contract-rate startup validation requires a configured native channel
-    // before route synchronization. Bootstrap only the schema with the exact
-    // candidate image, seed one manually-disabled channel, then start the
-    // acceptance process with the real route and immutable rate declarations.
-    await writePrivateFile(relayBootstrapEnvPath, envFileContents({
+    // before route synchronization. Run the candidate's dedicated one-shot
+    // migrator, prove its exact terminal result and remove it, seed one
+    // manually-disabled channel, then start the long-lived runtime.
+    const relayMigrationEnv = {
       TZ: "UTC",
-      PORT: "3000",
       SQL_DSN: relayInternalDatabaseUrl,
-      REDIS_CONN_STRING: redisInternalUrl,
-      SESSION_SECRET: sessionValue,
-      CRYPTO_SECRET: cryptoValue,
       NODE_TYPE: "master",
-      NODE_NAME: `${resourcePrefix}-bootstrap`,
+      NODE_NAME: `${resourcePrefix}-migrate`,
       ERROR_LOG_ENABLED: "false",
       BATCH_UPDATE_ENABLED: "false",
       UPDATE_TASK: "false",
       RELAY_COMPAT_ENABLED: "false",
-    }));
+      RELAY_PROVIDER_CREDENTIAL_KEYRING_JSON: relayProviderCredentialKeyring,
+    };
+    await writePrivateFile(relayMigrationEnvPath, envFileContents(relayMigrationEnv));
+    const relayMigrationForbiddenValues = [
+      ...forbiddenValues,
+      ...sensitiveEnvironmentValues(relayMigrationEnv),
+    ];
     await runCommand("docker", [
-      "run", "--detach", "--name", relayBootstrap,
+      "run", "--detach", "--name", relayMigration,
       ...acceptanceResourceLabels(runSuffix),
       "--network", network,
-      "--publish", "127.0.0.1::3000",
       "--user", "10001:10001",
       "--read-only",
       "--tmpfs", "/data:rw,noexec,nosuid,size=64m,uid=10001,gid=10001",
@@ -1376,27 +1626,28 @@ async function main() {
       "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges:true",
       "--pids-limit", "256",
-      "--env-file", relayBootstrapEnvPath,
+      "--env-file", relayMigrationEnvPath,
+      "--entrypoint", "/new-api",
       candidateImageId,
-    ], { timeoutMs: 180_000, failure: "Relay schema bootstrap container could not be started" });
-    const relayBootstrapPort = await publishedPort(relayBootstrap, 3000);
-    await waitForRelayPublicStatus(
-      `http://127.0.0.1:${relayBootstrapPort}`,
-      relayBootstrap,
-      forbiddenValues,
+      "relay-migrate",
+    ], { timeoutMs: 180_000, failure: "Relay schema migration container could not be started" });
+    await waitForRelaySchemaMigration(
+      relayMigration,
+      relayMigrationForbiddenValues,
     );
+    await runCommand("docker", ["rm", relayMigration], {
+      timeoutMs: 60_000,
+      failure: "Relay schema migration container could not be removed",
+    });
+    if (await commandSucceeds("docker", ["container", "inspect", relayMigration])) {
+      throw new Error("Relay schema migration container survived its bounded cleanup");
+    }
     await seedRelayNativeChannel(pythonExecutable, relayDatabaseUrl, {
       channelId: providerChannelId,
       channelKey: relayChannelKeyValue,
       model: relayModel,
+      providerCredentialKeyring: relayProviderCredentialKeyring,
     });
-    await runCommand("docker", ["rm", "--force", relayBootstrap], {
-      timeoutMs: 60_000,
-      failure: "Relay schema bootstrap container could not be removed",
-    });
-    if (await commandSucceeds("docker", ["container", "inspect", relayBootstrap])) {
-      throw new Error("Relay schema bootstrap container survived its bounded cleanup");
-    }
 
     await writePrivateFile(relayEnvPath, envFileContents({
       TZ: "UTC",
@@ -1416,6 +1667,7 @@ async function main() {
       RELAY_COMPAT_INTERNAL_ADMISSION_TOKEN: admissionValue,
       RELAY_COMPAT_CLIENT_CREDENTIALS_JSON: relayClientCredentials,
       RELAY_COMPAT_MODEL_ROUTES_JSON: relayModelRoutes,
+      RELAY_PROVIDER_CREDENTIAL_KEYRING_JSON: relayProviderCredentialKeyring,
       RELAY_COMPAT_SOURCE_REVISION: sourceBefore.relay.sha1,
       RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: sourceBefore.relay.sha256,
       RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: sourceBefore.relay.file_count,

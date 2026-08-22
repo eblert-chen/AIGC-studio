@@ -94,14 +94,14 @@ func TestRelaySchemaStatusValidatesStateLedgerCombinations(t *testing.T) {
 		database := newRelaySchemaSQLite(t)
 		require.NoError(t, ensureRelaySchemaMetadata(database))
 		require.NoError(t, database.Create(&RelaySchemaMigration{
-			Version: 3, Name: "future", Phase: "expand", Checksum: "sha256:future", CatalogSHA256: "sha256:v3",
+			Version: 4, Name: "future", Phase: "expand", Checksum: "sha256:future", CatalogSHA256: "sha256:v4",
 		}).Error)
 		require.NoError(t, database.Model(&RelaySchemaState{}).Where("id = ?", relaySchemaStateSingletonID).
 			Updates(map[string]any{
-				"baseline_version": 3, "fresh_bootstrap": false, "current_version": 3,
-				"target_version": 3, "current_checksum": "sha256:future",
-				"target_checksum": "sha256:future", "current_catalog_sha256": "sha256:v3",
-				"target_catalog_sha256": "sha256:v3",
+				"baseline_version": 4, "fresh_bootstrap": false, "current_version": 4,
+				"target_version": 4, "current_checksum": "sha256:future",
+				"target_checksum": "sha256:future", "current_catalog_sha256": "sha256:v4",
+				"target_catalog_sha256": "sha256:v4",
 			}).Error)
 		status, err := GetRelaySchemaStatus(database)
 		require.NoError(t, err)
@@ -113,7 +113,8 @@ func TestRelaySchemaDirtyResumeRequiresExactAttemptAndArtifact(t *testing.T) {
 	database := newRelaySchemaSQLite(t)
 	require.NoError(t, ensureRelaySchemaMetadata(database))
 	attemptID := uuid.NewString()
-	definition := relaySchemaMigrations()[1]
+	definitions := relaySchemaMigrations()
+	definition := definitions[len(definitions)-1]
 	require.NoError(t, database.Model(&RelaySchemaState{}).Where("id = ?", relaySchemaStateSingletonID).
 		Updates(map[string]any{
 			"target_version": definition.Version, "state": RelaySchemaStateFailed, "dirty": true,
@@ -152,7 +153,8 @@ func TestRelaySchemaCommitAckLossCannotRewriteCleanCommit(t *testing.T) {
 	database := newRelaySchemaSQLite(t)
 	result, err := RunRelaySchemaMigrations(context.Background(), "")
 	require.NoError(t, err)
-	definition := relaySchemaMigrations()[1]
+	definitions := relaySchemaMigrations()
+	definition := definitions[len(definitions)-1]
 	require.Error(t, markRelaySchemaFailed(database, definition, result.AttemptID, 0, "SIMULATED_ACK_LOSS"))
 	committed, err := reconcileRelaySchemaCommitOutcome(database, definition, result.AttemptID, 0)
 	require.NoError(t, err)
@@ -168,16 +170,16 @@ func TestRelaySchemaFreshAndLegacyDatabasesRecordBaseline(t *testing.T) {
 		result, err := RunRelaySchemaMigrations(context.Background(), "")
 		require.NoError(t, err)
 		require.True(t, result.Status.Current)
-		require.Equal(t, int64(2), result.Status.BaselineVersion)
-		require.Equal(t, int64(2), result.Status.CurrentVersion)
-		require.Equal(t, int64(2), result.Status.TargetVersion)
+		require.Equal(t, RelaySchemaTargetVersion, result.Status.BaselineVersion)
+		require.Equal(t, RelaySchemaTargetVersion, result.Status.CurrentVersion)
+		require.Equal(t, RelaySchemaTargetVersion, result.Status.TargetVersion)
 		require.Equal(t, int64(1), result.Status.MinVersion)
-		require.Equal(t, int64(2), result.Status.MaxVersion)
+		require.Equal(t, RelaySchemaMaxVersion, result.Status.MaxVersion)
 		require.False(t, result.Status.FreshBootstrap)
 		var ledger []RelaySchemaMigration
 		require.NoError(t, DB.Order("version ASC").Find(&ledger).Error)
 		require.Len(t, ledger, 1)
-		require.Equal(t, int64(2), ledger[0].Version)
+		require.Equal(t, RelaySchemaTargetVersion, ledger[0].Version)
 	})
 
 	t.Run("unversioned legacy v1", func(t *testing.T) {
@@ -293,7 +295,7 @@ func TestRelaySchemaV2PlanningNeverReplaysLiveV1(t *testing.T) {
 	})
 }
 
-func TestRelaySchemaV2TopLevelMigrationNeverExecutesLiveV1(t *testing.T) {
+func TestRelaySchemaV3TopLevelMigrationNeverExecutesLiveV1(t *testing.T) {
 	runWithSentinel := func(t *testing.T, seedV1 bool) {
 		t.Helper()
 		database := newRelaySchemaSQLite(t)
@@ -329,23 +331,68 @@ func TestRelaySchemaV2TopLevelMigrationNeverExecutesLiveV1(t *testing.T) {
 
 		result, err := RunRelaySchemaMigrations(context.Background(), "")
 		require.NoError(t, err)
-		require.Zero(t, liveV1Calls, "top-level v2 orchestration must never execute the live v1 definition")
+		require.Zero(t, liveV1Calls, "top-level v3 orchestration must never execute the live v1 definition")
 		require.True(t, result.Status.Current)
-		require.Equal(t, int64(2), result.Status.CurrentVersion)
+		require.Equal(t, int64(3), result.Status.CurrentVersion)
 		var ledger []RelaySchemaMigration
 		require.NoError(t, database.Order("version ASC").Find(&ledger).Error)
 		if seedV1 {
-			require.Len(t, ledger, 2)
+			require.Len(t, ledger, 3)
 			require.Equal(t, int64(1), ledger[0].Version)
 			require.Equal(t, int64(2), ledger[1].Version)
+			require.Equal(t, int64(3), ledger[2].Version)
 			return
 		}
 		require.Len(t, ledger, 1)
-		require.Equal(t, int64(2), ledger[0].Version)
+		require.Equal(t, int64(3), ledger[0].Version)
 	}
 
-	t.Run("fresh v2 bootstrap", func(t *testing.T) { runWithSentinel(t, false) })
-	t.Run("exact v1 to v2 bridge", func(t *testing.T) { runWithSentinel(t, true) })
+	t.Run("fresh v3 bootstrap", func(t *testing.T) { runWithSentinel(t, false) })
+	t.Run("exact v1 through v3 bridge", func(t *testing.T) { runWithSentinel(t, true) })
+}
+
+func TestRelaySchemaV2ToV3RunsOnlyVersionedCredentialCorrection(t *testing.T) {
+	database := newRelaySchemaSQLite(t)
+	require.NoError(t, ensureRelaySchemaMetadata(database))
+	definitions := relaySchemaMigrations()
+	v2Attempt := uuid.NewString()
+	require.NoError(t, markRelaySchemaApplying(database, definitions[1], v2Attempt))
+	require.NoError(t, runRelaySchemaBootstrapTransaction(
+		database,
+		definitions[:2],
+		definitions[1],
+		v2Attempt,
+	))
+
+	var v2Before RelaySchemaMigration
+	require.NoError(t, database.First(&v2Before, relaySchemaV2FrozenVersion).Error)
+	require.Equal(t, relaySchemaV2FrozenChecksumSHA256, v2Before.Checksum)
+
+	v2Calls := 0
+	v2Sentinel := func(*gorm.DB) error {
+		v2Calls++
+		return errors.New("historical v2 sentinel executed")
+	}
+	definitions[1].Up = v2Sentinel
+	definitions[1].Bootstrap = v2Sentinel
+	originalDefinitions := relaySchemaDefinitionsForRuntime
+	relaySchemaDefinitionsForRuntime = func() []relaySchemaMigrationDefinition { return definitions }
+	t.Cleanup(func() { relaySchemaDefinitionsForRuntime = originalDefinitions })
+
+	result, err := RunRelaySchemaMigrations(context.Background(), "")
+	require.NoError(t, err)
+	require.Zero(t, v2Calls, "v2-to-v3 upgrade must not replay the frozen v2 implementation")
+	require.Equal(t, relaySchemaV2FrozenVersion, result.FromVersion)
+	require.Equal(t, relaySchemaV3FrozenVersion, result.ToVersion)
+	require.True(t, result.Status.Current)
+	require.Equal(t, relaySchemaV3FrozenChecksumSHA256, result.Status.CurrentChecksum)
+
+	var ledger []RelaySchemaMigration
+	require.NoError(t, database.Order("version ASC").Find(&ledger).Error)
+	require.Len(t, ledger, 2)
+	require.Equal(t, v2Before, ledger[0], "v3 must not rewrite the append-only v2 event")
+	require.Equal(t, relaySchemaV3FrozenVersion, ledger[1].Version)
+	require.Equal(t, relaySchemaV3FrozenChecksumSHA256, ledger[1].Checksum)
 }
 
 func TestRelaySchemaCommitReconciliationAcceptsAttestedTooOldIntermediate(t *testing.T) {

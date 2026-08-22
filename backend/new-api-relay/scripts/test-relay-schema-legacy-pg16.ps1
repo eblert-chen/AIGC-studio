@@ -11,6 +11,10 @@ $pinnedCandidateSourceSnapshot = "sha256:6e4bb769e60cb91cd1408aa1102a0ff037da29f
 $pinnedCandidateSourceFileCount = "1962"
 $pinnedV1Revision = "709e9b45b25a6baa415ab985078bd7764a35eaf9"
 $pinnedV1FixturePatchSHA256 = "dd3bbe7dea195bf83222f2acb32ea0ab96208ac64d7f66dcbc2ddb5f5e3a3449"
+$pinnedV2GitRevision = "2535972505c63a059fdbe678e79577671481c358"
+$pinnedV2SourceRevision = "b64cc406eb4efc9393bccbcd94cec6b58400c2d3"
+$pinnedV2SourceSnapshot = "sha256:c4930050e31cfa2ce1ee7c17323b665a09770c29d136e7e23d5efa453c640e17"
+$pinnedV2SourceFileCount = "2061"
 $qualifiedPostgresImage = "ai-video-platform-postgres16-pgaudit-canary:16.1"
 $qualifiedPostgresImageID = "sha256:9c2d47297a4a7bfcdeaa8565bc66f40243e73bd3eab03f6cccbaadf652d76e10"
 $legacyPostgres = "ai-video-relay-schema-legacy-gate-pg16"
@@ -18,14 +22,21 @@ $referencePostgres = "ai-video-relay-schema-reference-gate-pg16"
 $candidateContainer = "ai-video-relay-schema-legacy-gate-candidate"
 $protectedSecretVolume = "ai-video-relay-schema-gate-protected-secrets"
 $pinnedV1SourceVolume = "ai-video-relay-schema-gate-v1-source"
+$pinnedV2SourceVolume = "ai-video-relay-schema-gate-v2-source"
+$currentV3BinaryVolume = "ai-video-relay-schema-gate-current-v3-binary"
+$pinnedV2BinaryVolume = "ai-video-relay-schema-gate-pinned-v2-binary"
 $postgresTLSVolume = "ai-video-relay-schema-gate-postgres-tls"
 $legacyPassword = "relay-schema-legacy-gate-admin-password"
 $referencePassword = "relay-schema-reference-gate-admin-password"
+$migrationPassword = "relay-migration-password-0123456789"
 $referenceRuntimePassword = "relay-runtime-password-0123456789-ab"
-$referenceDatabase = "relay_v2_fresh"
+$edgePassword = "relay-edge-password-0123456789-abcdef"
+$referenceDatabase = "relay_v3_fresh"
 $repository = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $pinnedV1FixturePatch = Join-Path $repository "scripts\fixtures\relay-schema-v1-pg16-tls-test-fixture.patch"
+$currentCandidateBaselinePath = Join-Path $repositoryRoot "artifacts\relay-candidate-current.json"
+$providerKeyringJSON = '{"schema_version":1,"active_key_id":"test-v1","keys":{"test-v1":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}}'
 
 function Remove-GateContainer([string]$Name) {
     $existing = docker ps -a --filter "name=^/$Name$" --format "{{.Names}}"
@@ -74,6 +85,16 @@ function Assert-GoTestPassed([string[]]$Output, [string]$TestName, [string]$Gate
     $Output | Write-Output
 }
 
+function Get-SingleJSONRecord([object[]]$Output, [string]$GateName) {
+    $records = @($Output | ForEach-Object {
+        try { "$_" | ConvertFrom-Json } catch { $null }
+    } | Where-Object { $_ -ne $null })
+    if ($records.Count -ne 1) {
+        throw "$GateName did not emit exactly one JSON result"
+    }
+    return $records[0]
+}
+
 try {
     $candidateInspectionJSON = docker image inspect $CandidateImage
     if ($LASTEXITCODE -ne 0) {
@@ -107,6 +128,10 @@ try {
     if ($LASTEXITCODE -ne 0 -or $actualPinnedV1Revision -ne $pinnedV1Revision) {
         throw "The immutable Relay schema v1 source revision is unavailable"
     }
+    $actualPinnedV2Revision = git -C $repositoryRoot rev-parse "$pinnedV2GitRevision^{commit}"
+    if ($LASTEXITCODE -ne 0 -or $actualPinnedV2Revision -ne $pinnedV2GitRevision) {
+        throw "The immutable Relay schema v2 source revision is unavailable"
+    }
     $actualFixturePatchSHA256 = (Get-FileHash -Algorithm SHA256 $pinnedV1FixturePatch).Hash.ToLowerInvariant()
     if ($actualFixturePatchSHA256 -ne $pinnedV1FixturePatchSHA256) {
         throw "The pinned v1 TLS test fixture patch does not match its frozen digest"
@@ -114,14 +139,38 @@ try {
     Write-Output "qualified-postgres-image-id=$actualQualifiedPostgresID"
     Write-Output "relay-schema-v1-source-revision=$actualPinnedV1Revision"
     Write-Output "relay-schema-v1-test-fixture-patch-sha256=sha256:$actualFixturePatchSHA256"
+    Write-Output "relay-schema-v2-source-revision=$actualPinnedV2Revision"
+    if (-not (Test-Path -LiteralPath $currentCandidateBaselinePath -PathType Leaf)) {
+        throw "The current Relay candidate baseline is unavailable"
+    }
+    $currentCandidateBaseline = Get-Content -LiteralPath $currentCandidateBaselinePath -Raw | ConvertFrom-Json
+    $currentV3SourceRevision = [string]$currentCandidateBaseline.source.sha1
+    $currentV3SourceSnapshot = [string]$currentCandidateBaseline.source.sha256
+    $currentV3SourceFileCount = [string]$currentCandidateBaseline.source.file_count
+    $currentV3UpstreamRevision = [string]$currentCandidateBaseline.upstream_git_revision
+    if ($currentV3SourceRevision -notmatch '^[0-9a-f]{40}$' -or
+        $currentV3SourceSnapshot -notmatch '^sha256:[0-9a-f]{64}$' -or
+        $currentV3SourceFileCount -notmatch '^[1-9][0-9]*$' -or
+        $currentV3UpstreamRevision -notmatch '^[0-9a-f]{40}$') {
+        throw "The current Relay candidate baseline provenance is invalid"
+    }
+    Write-Output "relay-schema-v3-source-revision=$currentV3SourceRevision"
+    Write-Output "relay-schema-v3-source-snapshot=$currentV3SourceSnapshot"
+    Write-Output "relay-schema-v3-source-file-count=$currentV3SourceFileCount"
     Remove-GateContainer $candidateContainer
     Remove-GateContainer $legacyPostgres
     Remove-GateContainer $referencePostgres
     docker volume rm -f $protectedSecretVolume *> $null
     docker volume rm -f $pinnedV1SourceVolume *> $null
+    docker volume rm -f $pinnedV2SourceVolume *> $null
+    docker volume rm -f $currentV3BinaryVolume *> $null
+    docker volume rm -f $pinnedV2BinaryVolume *> $null
     docker volume rm -f $postgresTLSVolume *> $null
     docker volume create $protectedSecretVolume | Out-Null
     docker volume create $pinnedV1SourceVolume | Out-Null
+    docker volume create $pinnedV2SourceVolume | Out-Null
+    docker volume create $currentV3BinaryVolume | Out-Null
+    docker volume create $pinnedV2BinaryVolume | Out-Null
     docker volume create $postgresTLSVolume | Out-Null
 
     docker run --rm -v "${repositoryRoot}:/workspace:ro" -v "${pinnedV1SourceVolume}:/v1" `
@@ -129,6 +178,37 @@ try {
       "git -c safe.directory=/workspace archive $pinnedV1Revision | tar -x -C /v1 && cd /v1 && git apply --check /workspace/backend/new-api-relay/scripts/fixtures/relay-schema-v1-pg16-tls-test-fixture.patch && git apply /workspace/backend/new-api-relay/scripts/fixtures/relay-schema-v1-pg16-tls-test-fixture.patch"
     if ($LASTEXITCODE -ne 0) {
         throw "The immutable Relay schema v1 test source could not be materialized"
+    }
+
+    docker run --rm -v "${repositoryRoot}:/workspace:ro" -v "${pinnedV2SourceVolume}:/v2" `
+      -w /workspace golang:1.25.1 bash -ec `
+      "git -c safe.directory=/workspace archive $pinnedV2GitRevision | tar -x -C /v2"
+    if ($LASTEXITCODE -ne 0) {
+        throw "The immutable Relay schema v2 source could not be materialized"
+    }
+
+    $currentV3Version = (Get-Content -LiteralPath (Join-Path $repository "VERSION") -Raw).Trim()
+    if ($currentV3Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:[+.-][0-9A-Za-z.+-]+)?$') {
+        throw "The current Relay release version is invalid"
+    }
+    $currentV3LinkerFlags = "-s -w -X github.com/QuantumNous/new-api/common.Version=$currentV3Version -X github.com/QuantumNous/new-api/service.platformRelayCompiledUpstreamRevision=$currentV3UpstreamRevision -X github.com/QuantumNous/new-api/service.platformRelayCompiledSourceRevision=$currentV3SourceRevision -X github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotSHA256=$currentV3SourceSnapshot -X github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotFileCount=$currentV3SourceFileCount -X github.com/QuantumNous/new-api/service.platformRelayCompiledRouteAcceptanceKeysSHA256=sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    docker run --rm -e "RELAY_GATE_LDFLAGS=$currentV3LinkerFlags" `
+      -v "${repository}:/src:ro" -v "${currentV3BinaryVolume}:/release" `
+      -v newapi-go-mod:/go/pkg/mod -v newapi-go-build:/root/.cache/go-build `
+      -w /src golang:1.25.1 bash -ec `
+      'exec /usr/local/go/bin/go build -ldflags "$RELAY_GATE_LDFLAGS" -o /release/new-api .'
+    if ($LASTEXITCODE -ne 0) {
+        throw "The current Relay schema v3 one-shot could not be built"
+    }
+
+    $pinnedV2LinkerFlags = "-s -w -X github.com/QuantumNous/new-api/common.Version=$currentV3Version -X github.com/QuantumNous/new-api/service.platformRelayCompiledUpstreamRevision=$pinnedCandidateUpstreamRevision -X github.com/QuantumNous/new-api/service.platformRelayCompiledSourceRevision=$pinnedV2SourceRevision -X github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotSHA256=$pinnedV2SourceSnapshot -X github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotFileCount=$pinnedV2SourceFileCount -X github.com/QuantumNous/new-api/service.platformRelayCompiledRouteAcceptanceKeysSHA256=sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    docker run --rm -e "RELAY_GATE_LDFLAGS=$pinnedV2LinkerFlags" `
+      -v "${pinnedV2SourceVolume}:/snapshot:ro" -v "${pinnedV2BinaryVolume}:/release" `
+      -v newapi-go-mod:/go/pkg/mod -v newapi-go-build:/root/.cache/go-build `
+      -w /snapshot/backend/new-api-relay golang:1.25.1 bash -ec `
+      'exec /usr/local/go/bin/go build -ldflags "$RELAY_GATE_LDFLAGS" -o /release/new-api .'
+    if ($LASTEXITCODE -ne 0) {
+        throw "The immutable max-v2 Relay one-shot could not be built"
     }
 
     $tlsScript = @'
@@ -191,8 +271,12 @@ chmod 0644 /tls/server.crt /tls/obs-server.crt /tls/ca.crt
 		$referenceTestOutput | Write-Output
         throw "The independently migrated PostgreSQL 16 reference failed"
     }
-    Assert-GoTestPassed $referenceTestOutput "TestRelaySchemaPostgresFreshCatalogRoleAndLock" "fresh Relay schema v2 reference"
-    Write-Output "fresh-v2-row2-only-gate=PASS"
+    Assert-GoTestPassed $referenceTestOutput "TestRelaySchemaPostgresFreshCatalogRoleAndLock" "fresh Relay schema v3 reference"
+    $freshV3State = docker exec $referencePostgres psql -U postgres -d $referenceDatabase -Atc "SELECT baseline_version || '|' || current_version || '|' || target_version || '|' || state || '|' || (SELECT string_agg(version::text, ',' ORDER BY version) FROM relay_schema_migrations) FROM relay_schema_state WHERE id = 1"
+    if ($LASTEXITCODE -ne 0 -or $freshV3State -ne "3|3|3|clean|3") {
+        throw "The independently migrated fresh-v3 ledger is not exact"
+    }
+    Write-Output "fresh-v3-row3-only-gate=PASS"
 
     $referenceRuntimeDSN = "postgresql://relay_runtime:$referenceRuntimePassword@host.docker.internal:$referencePort/${referenceDatabase}?sslmode=verify-full&sslrootcert=/tls/ca.crt&search_path=public"
     $referenceRuntimeVerifier = docker exec $referencePostgres psql -U postgres -d $referenceDatabase -Atc "SELECT rolpassword FROM pg_catalog.pg_authid WHERE rolname = 'relay_runtime'"
@@ -362,24 +446,101 @@ VALUES ('ApiInfo', json_build_array(json_build_object('url','https://api.example
     Write-Output "legacy-to-v1-gate=PASS"
     Write-Output "v1-compatible-no-runtime-side-effects=PASS"
 
-    $legacyV2TestOutput = & docker run --rm -e "TEST_POSTGRES_V1_UPGRADE_DSN=$legacyDSN" `
+    $historicalV1ToV2TestOutput = & docker run --rm -e "TEST_POSTGRES_V1_UPGRADE_DSN=$legacyDSN" `
       -e "TEST_PROTECTED_SECRET_SOURCE_DIR=/relay-secret-source" `
       -e "TEST_PROTECTED_SECRET_READONLY_DIR=/run/relay-secrets" `
       -v "${repository}:/src:ro" -v newapi-go-mod:/go/pkg/mod -v newapi-go-build:/root/.cache/go-build `
       -v "${postgresTLSVolume}:/tls:ro" `
       -v "${protectedSecretVolume}:/relay-secret-source:rw" -v "${protectedSecretVolume}:/run/relay-secrets:ro" `
       -w /src golang:1.25.1 /usr/local/go/bin/go test -json ./model -run "^TestRelaySchemaPostgresV1ToV2NoCatalogDelta$" -count=1
-    $legacyV2TestExitCode = $LASTEXITCODE
-    if ($legacyV2TestExitCode -ne 0) {
-		$legacyV2TestOutput | Write-Output
-        throw "The immutable-v1 to current-v2 no-catalog-delta gate failed"
+    $historicalV1ToV2TestExitCode = $LASTEXITCODE
+    if ($historicalV1ToV2TestExitCode -ne 0) {
+		$historicalV1ToV2TestOutput | Write-Output
+        throw "The immutable-v1 to frozen-v2 historical no-catalog-delta gate failed"
     }
-    Assert-GoTestPassed $legacyV2TestOutput "TestRelaySchemaPostgresV1ToV2NoCatalogDelta" "immutable Relay schema v1 to current v2"
+    Assert-GoTestPassed $historicalV1ToV2TestOutput "TestRelaySchemaPostgresV1ToV2NoCatalogDelta" "immutable Relay schema v1 to frozen historical v2"
+    Write-Output "historical-frozen-v1-to-v2-no-catalog-delta-gate=PASS"
     Write-Output "v1-to-v2-no-catalog-delta-gate=PASS"
 
-    $legacyMigrationDSN = "postgresql://relay_schema_migrator:relay-migration-password-0123456789@host.docker.internal:$legacyPort/new_api?sslmode=verify-full&sslrootcert=/tls/ca.crt&search_path=public&options=-c%20role%3Drelay_schema_owner"
+    $legacyMigrationDSN = "postgresql://relay_schema_migrator:$migrationPassword@host.docker.internal:$legacyPort/new_api?sslmode=verify-full&sslrootcert=/tls/ca.crt&search_path=public&options=-c%20role%3Drelay_schema_owner"
     $legacyRuntimeDSN = "postgresql://relay_runtime:$referenceRuntimePassword@host.docker.internal:$legacyPort/new_api?sslmode=verify-full&sslrootcert=/tls/ca.crt&search_path=public"
-    $postV2LifecycleOutput = & docker run --rm `
+    docker run --rm `
+      -e "ROLE_ADMIN_DSN=$legacyDSN" -e "MIGRATION_DSN=$legacyMigrationDSN" `
+      -e "MIGRATION_PASSWORD=$migrationPassword" -e "RUNTIME_PASSWORD=$referenceRuntimePassword" `
+      -e "EDGE_PASSWORD=$edgePassword" -e "PROVIDER_KEYRING=$providerKeyringJSON" `
+      -v "${protectedSecretVolume}:/secrets" $qualifiedPostgresImage bash -ec `
+      'umask 077; printf "%s" "$ROLE_ADMIN_DSN" > /secrets/current-v3-role-admin-dsn; printf "%s" "$MIGRATION_DSN" > /secrets/current-v3-migration-dsn; printf "%s" "$MIGRATION_PASSWORD" > /secrets/current-v3-migration-password; printf "%s" "$RUNTIME_PASSWORD" > /secrets/current-v3-runtime-password; printf "%s" "$EDGE_PASSWORD" > /secrets/current-v3-edge-password; printf "%s" "$PROVIDER_KEYRING" > /secrets/current-v3-provider-keyring.json; chmod 0400 /secrets/current-v3-*'
+    if ($LASTEXITCODE -ne 0) {
+        throw "The schema-v3 one-shot protected fixture could not be created"
+    }
+
+    $currentV3RolePreOutput = & docker run --rm `
+      -e APP_ENV=development -e DEPLOYMENT_ENV=development -e NODE_TYPE=master `
+      -e RELAY_LOCAL_DATABASE_ROLE_REHEARSAL=true `
+      -e RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED=true -e RELAY_DATABASE_TLS_ATTESTATION_REQUIRED=false `
+      -e RELAY_DATABASE_SECRET_FILES_REQUIRED=false -e RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED=true `
+      -e RELAY_SCHEMA_OWNER_DATABASE_ROLE=relay_schema_owner -e RELAY_MIGRATION_DATABASE_ROLE=relay_schema_migrator `
+      -e RELAY_RUNTIME_DATABASE_ROLE=relay_runtime -e RELAY_DATABASE_CA_FILE=/tls/ca.crt `
+      -e SQL_DSN_FILE=/run/relay-secrets/current-v3-role-admin-dsn `
+      -e RELAY_MIGRATION_DATABASE_PASSWORD_FILE=/run/relay-secrets/current-v3-migration-password `
+      -e RELAY_RUNTIME_DATABASE_PASSWORD_FILE=/run/relay-secrets/current-v3-runtime-password `
+      -e RELAY_DOWNLOAD_EDGE_DATABASE_PASSWORD_FILE=/run/relay-secrets/current-v3-edge-password `
+      -e "RELAY_COMPAT_SOURCE_REVISION=$currentV3SourceRevision" `
+      -e "RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256=$currentV3SourceSnapshot" `
+      -e "RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT=$currentV3SourceFileCount" `
+      -v "${currentV3BinaryVolume}:/release:ro" -v "${postgresTLSVolume}:/tls:ro" `
+      -v "${protectedSecretVolume}:/run/relay-secrets:ro" `
+      golang:1.25.1 /release/new-api relay-provision-database-roles
+    $currentV3RolePreExitCode = $LASTEXITCODE
+    if ($currentV3RolePreExitCode -ne 0) {
+        $currentV3RolePreOutput | Write-Output
+        throw "The current schema-v3 role-pre one-shot failed"
+    }
+    $currentV3RolePre = Get-SingleJSONRecord $currentV3RolePreOutput "current schema-v3 role-pre one-shot"
+    if ($currentV3RolePre.kind -ne "relay_database_role_provision" -or $currentV3RolePre.state -ne "provisioned") {
+        throw "The current schema-v3 role-pre receipt is invalid"
+    }
+
+    $currentV3MigrationOutput = & docker run --rm `
+      -e APP_ENV=development -e DEPLOYMENT_ENV=development -e NODE_TYPE=master `
+      -e RELAY_LOCAL_DATABASE_ROLE_REHEARSAL=true `
+      -e RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED=true -e RELAY_DATABASE_TLS_ATTESTATION_REQUIRED=false `
+      -e RELAY_DATABASE_SECRET_FILES_REQUIRED=false -e RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED=true `
+      -e RELAY_SCHEMA_OWNER_DATABASE_ROLE=relay_schema_owner -e RELAY_MIGRATION_DATABASE_ROLE=relay_schema_migrator `
+      -e RELAY_RUNTIME_DATABASE_ROLE=relay_runtime -e RELAY_DATABASE_CA_FILE=/tls/ca.crt `
+      -e SQL_DSN_FILE=/run/relay-secrets/current-v3-migration-dsn `
+      -e RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE=/run/relay-secrets/current-v3-provider-keyring.json `
+      -e "RELAY_COMPAT_SOURCE_REVISION=$currentV3SourceRevision" `
+      -e "RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256=$currentV3SourceSnapshot" `
+      -e "RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT=$currentV3SourceFileCount" `
+      -v "${currentV3BinaryVolume}:/release:ro" -v "${postgresTLSVolume}:/tls:ro" `
+      -v "${protectedSecretVolume}:/run/relay-secrets:ro" `
+      golang:1.25.1 /release/new-api relay-migrate
+    $currentV3MigrationExitCode = $LASTEXITCODE
+    if ($currentV3MigrationExitCode -ne 0) {
+        $currentV3MigrationOutput | Write-Output
+        throw "The exact frozen-v2 to current-v3 one-shot migration failed"
+    }
+    $currentV3Migration = Get-SingleJSONRecord $currentV3MigrationOutput "current schema-v3 migration one-shot"
+    if ($currentV3Migration.kind -ne "relay_schema_migration" -or
+        $currentV3Migration.state -ne "migrated" -or
+        [int64]$currentV3Migration.from_version -ne 2 -or [int64]$currentV3Migration.to_version -ne 3 -or
+        [int64]$currentV3Migration.status.baseline_version -ne 1 -or
+        [int64]$currentV3Migration.status.current_version -ne 3 -or
+        [int64]$currentV3Migration.status.target_version -ne 3 -or
+        [int64]$currentV3Migration.status.min_version -ne 1 -or
+        [int64]$currentV3Migration.status.max_version -ne 3 -or
+        -not [bool]$currentV3Migration.status.current) {
+        throw "The exact frozen-v2 to current-v3 migration result is invalid"
+    }
+    $exactV1ToV3State = docker exec $legacyPostgres psql -U postgres -d new_api -Atc "SELECT baseline_version || '|' || current_version || '|' || target_version || '|' || state || '|' || (SELECT string_agg(version::text, ',' ORDER BY version) FROM relay_schema_migrations) FROM relay_schema_state WHERE id = 1"
+    if ($LASTEXITCODE -ne 0 -or $exactV1ToV3State -ne "1|3|3|clean|1,2,3") {
+        throw "The exact-v1 through current-v3 ledger is not exact"
+    }
+    Write-Output "v2-to-v3-one-shot-gate=PASS"
+    Write-Output "exact-v1-to-v3-ledger-gate=PASS"
+
+    $postV3LifecycleOutput = & docker run --rm `
       --add-host "obs.lifecycle-gate.myhuaweicloud.com:127.0.0.2" `
       --add-host "relay-lifecycle-artifacts.obs.lifecycle-gate.myhuaweicloud.com:127.0.0.2" `
       -e "TEST_POSTGRES_LIFECYCLE_ADMIN_DSN=$legacyDSN" `
@@ -396,17 +557,48 @@ VALUES ('ApiInfo', json_build_array(json_build_object('url','https://api.example
       -v "${protectedSecretVolume}:/relay-secret-source:rw" -v "${protectedSecretVolume}:/run/relay-secrets:ro" `
       -w /src golang:1.25.1 bash -ec `
       'cat /tls/ca.crt >> /etc/ssl/certs/ca-certificates.crt && exec /usr/local/go/bin/go test -json ./model -run "^TestRelaySchemaPostgresProtectedLifecycleProcess$" -count=1'
-    $postV2LifecycleExitCode = $LASTEXITCODE
-    if ($postV2LifecycleExitCode -ne 0) {
-		$postV2LifecycleOutput | Write-Output
-        throw "The same-database current-v2 proof/root/principal/API lifecycle gate failed"
+    $postV3LifecycleExitCode = $LASTEXITCODE
+    if ($postV3LifecycleExitCode -ne 0) {
+		$postV3LifecycleOutput | Write-Output
+        throw "The same-database current-v3 proof/root/principal/API lifecycle gate failed"
     }
-    Assert-GoTestPassed $postV2LifecycleOutput "TestRelaySchemaPostgresProtectedLifecycleProcess" "same-database current-v2 proof/root/principal/API lifecycle"
-    $v2ProtectedState = docker exec $legacyPostgres psql -U postgres -d new_api -Atc "SELECT baseline_version || '|' || current_version || '|' || target_version || '|' || state || '|' || (SELECT string_agg(version::text, ',' ORDER BY version) FROM relay_schema_migrations) || '|' || (SELECT count(*) FROM users WHERE role = 100) || '|' || (SELECT count(*) FROM setups) || '|' || (SELECT count(*) FROM users WHERE remark = 'platform-relay-service-v1') || '|' || (SELECT count(*) FROM tokens WHERE left(name, 15) = 'platform-relay:') FROM relay_schema_state WHERE id = 1"
-    if ($LASTEXITCODE -ne 0 -or $v2ProtectedState -ne "1|2|2|clean|1,2|1|1|4|4") {
-        throw "The same-database current-v2 protected lifecycle terminal state is not exact"
+    Assert-GoTestPassed $postV3LifecycleOutput "TestRelaySchemaPostgresProtectedLifecycleProcess" "same-database current-v3 proof/root/principal/API lifecycle"
+    $v3ProtectedState = docker exec $legacyPostgres psql -U postgres -d new_api -Atc "SELECT baseline_version || '|' || current_version || '|' || target_version || '|' || state || '|' || (SELECT string_agg(version::text, ',' ORDER BY version) FROM relay_schema_migrations) || '|' || (SELECT count(*) FROM users WHERE role = 100) || '|' || (SELECT count(*) FROM setups) || '|' || (SELECT count(*) FROM users WHERE remark = 'platform-relay-service-v1') || '|' || (SELECT count(*) FROM tokens WHERE left(name, 15) = 'platform-relay:') FROM relay_schema_state WHERE id = 1"
+    if ($LASTEXITCODE -ne 0 -or $v3ProtectedState -ne "1|3|3|clean|1,2,3|1|1|4|4") {
+        throw "The same-database current-v3 protected lifecycle terminal state is not exact"
     }
-    Write-Output "post-v2-proof-root-principal-api-current-gate=PASS"
+    Write-Output "post-v3-proof-root-principal-api-current-gate=PASS"
+
+    $savedErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $pinnedV2AheadOutput = @(& docker run --rm `
+      -e APP_ENV=development -e DEPLOYMENT_ENV=development -e NODE_TYPE=master `
+      -e RELAY_LOCAL_DATABASE_ROLE_REHEARSAL=true `
+      -e RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED=true -e RELAY_DATABASE_TLS_ATTESTATION_REQUIRED=false `
+      -e RELAY_DATABASE_SECRET_FILES_REQUIRED=false -e RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED=true `
+      -e RELAY_SCHEMA_OWNER_DATABASE_ROLE=relay_schema_owner -e RELAY_MIGRATION_DATABASE_ROLE=relay_schema_migrator `
+      -e RELAY_RUNTIME_DATABASE_ROLE=relay_runtime -e RELAY_DATABASE_CA_FILE=/tls/ca.crt `
+      -e SQL_DSN_FILE=/run/relay-secrets/current-v3-migration-dsn `
+      -e RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE=/run/relay-secrets/current-v3-provider-keyring.json `
+      -e "RELAY_COMPAT_SOURCE_REVISION=$pinnedV2SourceRevision" `
+      -e "RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256=$pinnedV2SourceSnapshot" `
+      -e "RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT=$pinnedV2SourceFileCount" `
+      -v "${pinnedV2BinaryVolume}:/release:ro" -v "${postgresTLSVolume}:/tls:ro" `
+      -v "${protectedSecretVolume}:/run/relay-secrets:ro" `
+      golang:1.25.1 /release/new-api relay-migrate 2>&1)
+    $pinnedV2AheadExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $savedErrorActionPreference
+    if ($pinnedV2AheadExitCode -eq 0) {
+        throw "The immutable max-v2 image accepted the current-v3 database"
+    }
+    $pinnedV2Ahead = Get-SingleJSONRecord $pinnedV2AheadOutput "immutable max-v2 ahead probe"
+    if ($pinnedV2Ahead.status.classification -ne "ahead" -or
+        [int64]$pinnedV2Ahead.status.current_version -ne 3 -or
+        [int64]$pinnedV2Ahead.status.target_version -ne 2 -or
+        [int64]$pinnedV2Ahead.status.max_version -ne 2) {
+        throw "The immutable max-v2 image did not fail closed as ahead on current v3"
+    }
+    Write-Output "max-v2-ahead-no-direct-rollback-gate=PASS"
     Write-Output "legacy-schema-upgrade-gate=PASS"
 }
 finally {
@@ -415,5 +607,8 @@ finally {
     Remove-GateContainer $referencePostgres
     docker volume rm -f $protectedSecretVolume *> $null
     docker volume rm -f $pinnedV1SourceVolume *> $null
+    docker volume rm -f $pinnedV2SourceVolume *> $null
+    docker volume rm -f $currentV3BinaryVolume *> $null
+    docker volume rm -f $pinnedV2BinaryVolume *> $null
     docker volume rm -f $postgresTLSVolume *> $null
 }

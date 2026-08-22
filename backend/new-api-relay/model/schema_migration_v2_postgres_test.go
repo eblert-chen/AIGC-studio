@@ -29,6 +29,31 @@ func TestRelaySchemaPostgresV1ToV2NoCatalogDelta(t *testing.T) {
 	databaseName := strings.TrimPrefix(parsed.Path, "/")
 	require.Regexp(t, `^[a-z_][a-z0-9_]{0,62}$`, databaseName)
 
+	// Exercise the immutable v2 release contract even when the current binary
+	// has advanced. This gate must prove the historical v1-to-v2 bridge without
+	// accidentally executing the live v3 definition.
+	frozenDefinitions := append([]relaySchemaMigrationDefinition(nil), relaySchemaMigrations()[:2]...)
+	originalDefinitions := relaySchemaDefinitionsForRuntime
+	originalContract := relaySchemaContractForRuntime
+	relaySchemaDefinitionsForRuntime = func() []relaySchemaMigrationDefinition {
+		return frozenDefinitions
+	}
+	relaySchemaContractForRuntime = func() RelaySchemaContract {
+		return RelaySchemaContract{
+			TargetVersion: relaySchemaV2FrozenVersion,
+			MinVersion:    RelaySchemaMinVersion,
+			MaxVersion:    relaySchemaV2FrozenVersion,
+			Checksums: map[int64]string{
+				1: RelaySchemaV1Checksum(),
+				2: RelaySchemaV2Checksum(),
+			},
+		}
+	}
+	t.Cleanup(func() {
+		relaySchemaDefinitionsForRuntime = originalDefinitions
+		relaySchemaContractForRuntime = originalContract
+	})
+
 	admin, err := gorm.Open(postgres.Open(adminDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
 	adminSQL, err := admin.DB()
@@ -148,7 +173,7 @@ func TestRelaySchemaPostgresV1ToV2NoCatalogDelta(t *testing.T) {
 		"protected API readiness must reject compatible-but-not-current v1 at the Current gate")
 	require.NoError(t, runtimeBeforeSQL.Close())
 	require.EqualError(t,
-		VerifyRelayDownloadEdgeDatabaseRole(migrationDB, RelaySchemaTargetVersion),
+		VerifyRelayDownloadEdgeDatabaseRole(migrationDB, relaySchemaV2FrozenVersion),
 		"Relay download edge requires the exact current schema catalog",
 		"protected edge readiness must reject compatible-but-not-current v1 at the Current gate",
 	)

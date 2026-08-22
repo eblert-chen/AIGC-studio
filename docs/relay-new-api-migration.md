@@ -38,7 +38,9 @@ server default 从 `legacy-default-v1` 改为 `new-api-v1`，合同仍为 `gener
 
 new-api 使用自己的 PostgreSQL、Redis、artifact/OBS namespace 和 release proof。Python
 Alembic head `0012_generation_contract_v1` 只描述离线 oracle artifact 的冻结形状，不能替代
-new-api `target=2,min=1,max=2` schema/release-proof 链，也不属于正常生产发布步骤。
+new-api `target=3,min=1,max=3` schema/release-proof 链，也不属于正常生产发布步骤。fresh v3
+ledger 只能是 `[3]`；exact v1 必须经 historical frozen v1→v2 与当前 v2→v3 后得到
+`[1,2,3]`。v3 成功后 max-v2 镜像会判为 `ahead`，不能直接回滚。
 
 ## 3. 一次性切换前排空
 
@@ -90,7 +92,7 @@ new-api `target=2,min=1,max=2` schema/release-proof 链，也不属于正常生�
 生产回滚的目标只能是**上一版已验证、schema-compatible 的 new-api 不可变镜像**；Python Relay 不是生产回滚目标。
 
 1. 立即关闭新准入，保持当前 new-api 对已经接受的任务、unknown submission、artifact、callback 和 cost evidence 的所有权。
-2. 若旧镜像仍兼容当前 schema 和 release proof，按同一 role/proof/secret-isolation 链部署旧 digest；否则前向修复，不能降级数据库或伪造 proof。
+2. 若旧镜像仍兼容 Current v3 schema 和 release proof，按同一 role/proof/secret-isolation 链部署旧 digest；`max=2` 镜像必须因 `ahead` 失败关闭，不能直接回滚。其他不兼容情况同样只能前向修复，不能降级数据库或伪造 proof。
 3. 已接受任务绝不改写 `relay_backend_id`、Provider route 或 submission token，也不跨数据面重投。
 4. 数据库 restore 只允许在任何生产流量和业务写入之前使用已验证恢复点；一旦当前 release 接受业务写入，默认采用前向迁移/修复。
 5. 回滚后继续保存失败 release 的数据库、日志、callback、Provider 和成本证据，直到全部对账完成。

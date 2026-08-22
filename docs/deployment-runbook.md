@@ -295,8 +295,8 @@ Provider Monitor 和告警在生产配置中 fail-closed：Monitor 必须启用�
 2. 备份平台数据库、中转站数据库和关键 OBS 元数据。
 3. 在 staging 使用同一镜像执行迁移与完整冒烟测试。
 4. new-api 按 secret validator → database role-pre → migration → role-post → root/principal
-   lifecycle 顺序验证 `target=2,min=1,max=2`、catalog、ACL 与 generation-bound release proof；
-   protected API/edge/Worker 只接受 Current v2。
+   lifecycle 顺序验证 `target=3,min=1,max=3`、catalog、ACL 与 generation-bound release proof；
+   protected API/edge/Worker 只接受 Current v3。
 5. 客户平台执行 `python -m alembic upgrade head`、`python -m alembic check` 和
    `python -m alembic current`，唯一 head 必须为 `0040_showcase_management`，直接前序为
    `0039_new_api_relay_defaults`。0040 新增 Owner-only 首页精选案例草稿、不可变发布版本和
@@ -312,38 +312,42 @@ Provider Monitor 和告警在生产配置中 fail-closed：Monitor 必须启用�
 10. 观察错误率、队列积压、预占余额、生成耗时、转存失败、Provider 健康样本、活动告警和
    告警投递状态至少 30 分钟。
 
-### 扩展 new-api Relay 原生数据库 v2
+### 扩展 new-api Relay 原生数据库 v3
 
 Python Relay 的 `0012_generation_contract_v1` 只冻结离线行为 oracle artifact，既不是生产
 发布步骤，也不是回滚目标。new-api 本次发布契约固定为
-`target=2,min=1,max=2`，使用 `relay-schema-status` 与 `relay-migrate`，不得用 Alembic
+`target=3,min=1,max=3`，使用 `relay-schema-status` 与 `relay-migrate`，不得用 Alembic
 命令或生成接口的 `schema_version=1` 代替其状态证明。
 
-- fresh v2 必须报告 `from=0`、`baseline=current=target=2`，ledger 只能有 version 2
-  一行；不得为没有执行的 v1 伪造历史。
-- exact v1 输入在迁移诊断中可为 `compatible,current=false`；桥接后必须为
-  `baseline=1,current=target=2`，ledger 精确为 1、2 两行，原 v1 行完全不变。v1/v2
-  PostgreSQL catalog digest 相同是本次经冻结的 no-catalog-delta 设计，v2 source/checksum
-  仍必须独立；当前冻结值分别为
+- fresh v3 必须报告 `from=0`、`baseline=current=target=3`，ledger 只能有 version 3
+  一行，即 `[3]`；不得为没有执行的 v1/v2 伪造历史。
+- exact v1 输入在迁移诊断中可为 `compatible,current=false`；它必须先由冻结的 historical
+  v1→v2 no-catalog-delta bridge 形成 exact v2，再由当前 one-shot 执行 v2→v3 修复。最终必须为
+  `baseline=1,current=target=3`，ledger 精确为 `[1,2,3]`，原 v1、v2 行完全不变。v1/v2/v3
+  PostgreSQL catalog digest 相同是经冻结的设计；v2 source/checksum 仍必须独立，冻结值分别为
   `sha256:03de3ed038c3a9f7b6e160ac720e4350b9d468c09417cdc9e280289ed390fef2` 与
-  `sha256:a3dc154ca42086544096cc0c3e3f2c84479e52e2ad76bd4d32aa2806c2c9af0e`。
+  `sha256:a3dc154ca42086544096cc0c3e3f2c84479e52e2ad76bd4d32aa2806c2c9af0e`；v3 source/checksum
+  分别为 `sha256:4d784286e5480a10a83f4408b303eec075a347fa405d45650e12c19425e4659d` 与
+  `sha256:0295d36ca5032088cc2e0b3b7f935aaeb24c3c5847a6b0a92a4dc3099d58e553`。
 - raw/unversioned previous-candidate 必须先由固定的 v1 migrator 转成 exact v1，再由当前
-  v2 bridge 升级。当前 v2 image 直接重放 live v1、测试 SKIP、dirty/partial/ahead/unknown、
-  catalog/ACL/ledger drift 都是发布失败。
+  代码中的冻结 v2 合同完成 historical bridge，最后由当前 v3 one-shot 升级。当前 v3 image
+  直接重放 live v1/v2、测试 SKIP、dirty/partial/ahead/unknown、catalog/ACL/ledger drift 都是发布失败。
 - pinned v1 段只准新增 schema/ledger/catalog/roles；旧候选中既有的唯一
   `lifecycle_root` 与 setup marker 必须和普通用户、业务行、加密 credential 一样逐行 digest
   后原样保留，不得新增或改写 root/setup，principal 仍必须为零，且不准启动 API/edge。
-  v2 bridge 必须在同一数据库再次重核这些数据，随后完整执行 proof -> root exact replay
-  (`unchanged`) -> principal creation -> API Current-v2 lifecycle；fresh 参考库不能替代这项
+  historical v2 bridge 与 v3 correction 必须在同一数据库再次重核这些数据，随后完整执行
+  proof -> root exact replay (`unchanged`) -> principal creation -> API Current-v3 lifecycle；fresh 参考库不能替代这项
   同库终态证据。
 - 受保护的 post、service-principal provision/rotation、root bootstrap、API、download
-  edge、database-release proof consumer 与 runtime readiness 全部要求 Current v2；只有
-  role-pre 与 migrate proof path 可读取 compatible v1 以完成升级。
+  edge、database-release proof consumer 与 runtime readiness 全部要求 Current v3；只有
+  role-pre 与 migrate proof path 可读取 compatible v1/v2 以完成升级。v3 成功后，`max=2`
+  镜像必须把数据库判为 `ahead` 并失败关闭，不能直接回滚；旧镜像不兼容时只能前向修复。
 
 运行 `make test-relay-schema-legacy-pg16` 时归档固定 PG16.14/pgaudit16.1/TLS image、固定
-v1 source 与 test-only fixture digest，以及 fresh-row2-only、legacy-to-v1、v1 保留既有
-root/setup 且无新增 runtime side effect、
-v1-to-v2 no-catalog-delta、同库 post-v2 proof/root/principal/API 五项明确非 SKIP PASS；两项
+v1/v2 source 与 test-only fixture digest，以及 fresh-v3-row3-only、legacy-to-v1、v1 保留既有
+root/setup 且无新增 runtime side effect、historical frozen v1-to-v2 no-catalog-delta、
+v2-to-v3 one-shot、同库 exact-v1-to-v3 ledger、post-v3 proof/root/principal/API 与
+max-v2-ahead/no-direct-rollback 各项明确 PASS；Go 测试与两项
 rotation 测试也必须有 JSON PASS event，缺失或 SKIP 均失败。完整 protected Compose 仍按
 `validator -> role-pre -> migrate -> post -> root/principal/API/edge` 的既定 proof 顺序执行。
 

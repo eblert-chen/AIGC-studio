@@ -46,6 +46,10 @@ func TestRelaySchemaV1ArtifactsAreFrozen(t *testing.T) {
 }
 
 func TestRelaySchemaV2ArtifactsAreFrozen(t *testing.T) {
+	if !relaySchemaV2LiveArtifactValidationRequired(RelaySchemaTargetVersion) {
+		assertRelaySchemaV2HistoricalDefinition(t)
+		return
+	}
 	modelDigest := sha256.Sum256(relaySchemaV2LiveModelManifestBytes())
 	actualModel := fmt.Sprintf("sha256:%x", modelDigest[:])
 	if actualModel != relaySchemaV2ModelArtifactSHA256 {
@@ -69,6 +73,53 @@ func TestRelaySchemaV2ArtifactsAreFrozen(t *testing.T) {
 	assertRelaySchemaV2HistoricalDefinition(t)
 }
 
+func TestRelaySchemaV3ArtifactsAreFrozen(t *testing.T) {
+	modelDigest := sha256.Sum256(relaySchemaV3LiveModelManifestBytes())
+	actualModel := fmt.Sprintf("sha256:%x", modelDigest[:])
+	if actualModel != relaySchemaV3ModelArtifactSHA256 {
+		t.Errorf("v3 model artifact changed: got %s; add a new migration version instead of reinterpreting v3", actualModel)
+	}
+
+	source, err := relaySchemaV3LiveSourceArtifact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceDigest := sha256.Sum256(source)
+	actualSource := fmt.Sprintf("sha256:%x", sourceDigest[:])
+	if actualSource != relaySchemaV3SourceArtifactSHA256 {
+		t.Errorf("v3 source artifact changed: got %s; add a new migration version instead of editing v3", actualSource)
+	}
+	if relaySchemaV3FrozenChecksumSHA256 == "sha256:pending" {
+		t.Errorf("freeze v3 migration checksum as %s", RelaySchemaV3Checksum())
+	} else if RelaySchemaV3Checksum() != relaySchemaV3FrozenChecksumSHA256 {
+		t.Errorf("v3 migration checksum changed: got %s", RelaySchemaV3Checksum())
+	}
+	assertRelaySchemaV3HistoricalDefinition(t)
+}
+
+func TestRelaySchemaV3ArtifactIncludesExecutedV2Incremental(t *testing.T) {
+	plan, err := buildRelaySchemaExecutionPlan(RelaySchemaStatus{
+		Classification:  RelaySchemaStatusCompatible,
+		BaselineVersion: relaySchemaV1FrozenVersion,
+		CurrentVersion:  relaySchemaV1FrozenVersion,
+	}, relaySchemaMigrations(), relaySchemaV3FrozenVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Incremental) != 2 || plan.Incremental[0].Version != relaySchemaV2FrozenVersion ||
+		plan.Incremental[1].Version != relaySchemaV3FrozenVersion {
+		t.Fatal("exact v1-to-v3 planning must execute the v2 incremental before v3")
+	}
+
+	source, err := relaySchemaV3LiveSourceArtifact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(source, []byte("func:migrateRelaySchemaV2NoCatalogDelta\n")) {
+		t.Fatal("v3 source artifact does not recursively freeze the still-executed v2 incremental")
+	}
+}
+
 func TestRelaySchemaCurrentArtifactFreezeCannotSkip(t *testing.T) {
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -82,7 +133,7 @@ func TestRelaySchemaCurrentArtifactFreezeCannotSkip(t *testing.T) {
 	var freeze *ast.FuncDecl
 	for _, declaration := range parsed.Decls {
 		function, isFunction := declaration.(*ast.FuncDecl)
-		if isFunction && function.Name.Name == "TestRelaySchemaV2ArtifactsAreFrozen" {
+		if isFunction && function.Name.Name == "TestRelaySchemaV3ArtifactsAreFrozen" {
 			freeze = function
 			break
 		}
@@ -140,6 +191,23 @@ func TestRelayDownloadEdgeDatabasePrivilegeManifestV2IsFrozen(t *testing.T) {
 	}
 }
 
+func TestRelayDownloadEdgeDatabasePrivilegeManifestV3IsFrozen(t *testing.T) {
+	manifest, err := relayDownloadEdgeDatabasePrivilegeManifestForVersion(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relayDownloadEdgeDatabasePrivilegeManifestSHA256(manifest) != relayDownloadEdgeDatabasePrivilegeManifestV3SHA256 {
+		t.Fatal("v3 download edge privilege manifest digest changed")
+	}
+	v2, err := relayDownloadEdgeDatabasePrivilegeManifestForVersion(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relayDownloadEdgeDatabasePrivilegeManifestCanonical(manifest) != relayDownloadEdgeDatabasePrivilegeManifestCanonical(v2) {
+		t.Fatal("no-ACL-delta v3 download edge manifest differs from v2")
+	}
+}
+
 func TestRelayRuntimeDatabasePrivilegeManifestV1IsFrozen(t *testing.T) {
 	staticManifest, err := relayRuntimeDatabasePrivilegeManifestForVersion(1)
 	if relayRuntimeDatabasePrivilegeManifestV1Artifact == "" {
@@ -189,6 +257,23 @@ func TestRelayRuntimeDatabasePrivilegeManifestV2IsFrozen(t *testing.T) {
 	}
 }
 
+func TestRelayRuntimeDatabasePrivilegeManifestV3IsFrozen(t *testing.T) {
+	manifest, err := relayRuntimeDatabasePrivilegeManifestForVersion(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relayRuntimeDatabasePrivilegeManifestSHA256(manifest) != relayRuntimeDatabasePrivilegeManifestV3SHA256 {
+		t.Fatal("v3 runtime privilege manifest digest changed")
+	}
+	v2, err := relayRuntimeDatabasePrivilegeManifestForVersion(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relayRuntimeDatabasePrivilegeManifestCanonical(manifest) != relayRuntimeDatabasePrivilegeManifestCanonical(v2) {
+		t.Fatal("no-ACL-delta v3 runtime manifest differs from v2")
+	}
+}
+
 func assertRelaySchemaV1HistoricalDefinition(t *testing.T) {
 	t.Helper()
 	definitions := relaySchemaMigrations()
@@ -211,12 +296,130 @@ func assertRelaySchemaV2HistoricalDefinition(t *testing.T) {
 	}
 }
 
+func assertRelaySchemaV3HistoricalDefinition(t *testing.T) {
+	t.Helper()
+	definitions := relaySchemaMigrations()
+	if len(definitions) < 3 || definitions[2].Version != relaySchemaV3FrozenVersion ||
+		definitions[2].Name != relaySchemaV3FrozenName || definitions[2].Phase != relaySchemaV3FrozenPhase ||
+		definitions[2].Checksum != relaySchemaV3FrozenChecksumSHA256 ||
+		RelaySchemaV3Checksum() != relaySchemaV3FrozenChecksumSHA256 {
+		t.Fatal("historical v3 registry definition changed")
+	}
+}
+
 // relaySchemaV2LiveSourceArtifact uses a corrected declaration boundary: it
 // follows package functions referenced as identifiers, and follows a selector
 // method only when that method name resolves to one package-local declaration.
 // It therefore captures actual nested migration helpers without pulling every
 // unrelated Update/Delete/Scan method in the model package into the release.
 func relaySchemaV2LiveSourceArtifact() ([]byte, error) {
+	return relaySchemaLiveSourceArtifact([]string{
+		"func:GetRelaySchemaContract",
+		"func:relaySchemaMigrations",
+		"func:RunRelaySchemaMigrations",
+		"func:RequireRelaySchemaCompatible",
+		"func:RequireRelaySchemaCurrent",
+		"func:relaySchemaV2BootstrapSteps",
+		"func:migrateRelaySchemaV2Bootstrap",
+		"func:migrateRelaySchemaV2Models",
+		"func:migrateRelaySchemaV2PreviousCandidateCatalog",
+		"func:migrateRelaySchemaV2SubscriptionPlan",
+		"func:migrateRelaySchemaV2NoCatalogDelta",
+		"func:buildRelaySchemaExecutionPlan",
+		"func:validateRelaySchemaRegistry",
+		"func:ensureRelaySchemaMetadata",
+		"func:installRelaySchemaLedgerGuards",
+		"func:GetRelaySchemaStatus",
+		"func:markRelaySchemaApplying",
+		"func:markRelaySchemaFailed",
+		"func:reconcileRelaySchemaCommitOutcome",
+		"func:runRelaySchemaBootstrapTransaction",
+		"func:runRelaySchemaDefinitionTransaction",
+		"func:GetRelaySchemaCatalogFingerprint",
+	}, map[string]bool{
+		"RelaySchemaV1Checksum":                        true,
+		"RelaySchemaV2Checksum":                        true,
+		"relaySchemaV1CanonicalBytes":                  true,
+		"relaySchemaV2CanonicalBytes":                  true,
+		"relaySchemaV1SourceArtifactSHA256":            true,
+		"relaySchemaV1ModelArtifactSHA256":             true,
+		"relaySchemaV1FrozenChecksumSHA256":            true,
+		"relaySchemaV2SourceArtifactSHA256":            true,
+		"relaySchemaV2ModelArtifactSHA256":             true,
+		"relaySchemaV2FrozenChecksumSHA256":            true,
+		"relaySchemaV1LiveModelManifestBytes":          true,
+		"relaySchemaV2LiveModelManifestBytes":          true,
+		"relaySchemaV1Models":                          true,
+		"relaySchemaV1ArtifactModels":                  true,
+		"relaySchemaV1Steps":                           true,
+		"migrateRelaySchemaV1":                         true,
+		"migrateRelaySchemaV1Models":                   true,
+		"migrateRelaySchemaV1SubscriptionPlan":         true,
+		"migrateRelaySchemaV1PreviousCandidateCatalog": true,
+	}, 2)
+}
+
+func relaySchemaV3LiveSourceArtifact() ([]byte, error) {
+	return relaySchemaLiveSourceArtifact([]string{
+		"func:GetRelaySchemaContract",
+		"func:relaySchemaMigrations",
+		"func:RunRelaySchemaMigrations",
+		"func:RequireRelaySchemaCompatible",
+		"func:RequireRelaySchemaCurrent",
+		"func:relaySchemaV3BootstrapSteps",
+		"func:migrateRelaySchemaV3Bootstrap",
+		"func:migrateRelaySchemaV3Models",
+		"func:migrateRelaySchemaV3PreviousCandidateCatalog",
+		"func:migrateRelaySchemaV3SubscriptionPlan",
+		"func:migrateRelaySchemaV3ProviderChannelCredentialOrdering",
+		"func:buildRelaySchemaExecutionPlan",
+		"func:validateRelaySchemaRegistry",
+		"func:ensureRelaySchemaMetadata",
+		"func:installRelaySchemaLedgerGuards",
+		"func:GetRelaySchemaStatus",
+		"func:markRelaySchemaApplying",
+		"func:markRelaySchemaFailed",
+		"func:reconcileRelaySchemaCommitOutcome",
+		"func:runRelaySchemaBootstrapTransaction",
+		"func:runRelaySchemaDefinitionTransaction",
+		"func:GetRelaySchemaCatalogFingerprint",
+	}, map[string]bool{
+		"RelaySchemaV1Checksum":                        true,
+		"RelaySchemaV2Checksum":                        true,
+		"RelaySchemaV3Checksum":                        true,
+		"relaySchemaV1CanonicalBytes":                  true,
+		"relaySchemaV2CanonicalBytes":                  true,
+		"relaySchemaV3CanonicalBytes":                  true,
+		"relaySchemaV1SourceArtifactSHA256":            true,
+		"relaySchemaV1ModelArtifactSHA256":             true,
+		"relaySchemaV1FrozenChecksumSHA256":            true,
+		"relaySchemaV2SourceArtifactSHA256":            true,
+		"relaySchemaV2ModelArtifactSHA256":             true,
+		"relaySchemaV2FrozenChecksumSHA256":            true,
+		"relaySchemaV3SourceArtifactSHA256":            true,
+		"relaySchemaV3ModelArtifactSHA256":             true,
+		"relaySchemaV3FrozenChecksumSHA256":            true,
+		"relaySchemaV1LiveModelManifestBytes":          true,
+		"relaySchemaV2LiveModelManifestBytes":          true,
+		"relaySchemaV3LiveModelManifestBytes":          true,
+		"relaySchemaV1Models":                          true,
+		"relaySchemaV1ArtifactModels":                  true,
+		"relaySchemaV1Steps":                           true,
+		"migrateRelaySchemaV1":                         true,
+		"migrateRelaySchemaV1Models":                   true,
+		"migrateRelaySchemaV1SubscriptionPlan":         true,
+		"migrateRelaySchemaV1PreviousCandidateCatalog": true,
+		"relaySchemaV2Models":                          true,
+		"relaySchemaV2ArtifactModels":                  true,
+		"relaySchemaV2BootstrapSteps":                  true,
+		"migrateRelaySchemaV2Bootstrap":                true,
+		"migrateRelaySchemaV2Models":                   true,
+		"migrateRelaySchemaV2SubscriptionPlan":         true,
+		"migrateRelaySchemaV2PreviousCandidateCatalog": true,
+	}, 3)
+}
+
+func relaySchemaLiveSourceArtifact(queue []string, identityNames map[string]bool, version int64) ([]byte, error) {
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
 		return nil, fmt.Errorf("schema artifact source directory is unavailable")
@@ -288,52 +491,7 @@ func relaySchemaV2LiveSourceArtifact() ([]byte, error) {
 		}
 	}
 
-	queue := []string{
-		"func:GetRelaySchemaContract",
-		"func:relaySchemaMigrations",
-		"func:RunRelaySchemaMigrations",
-		"func:RequireRelaySchemaCompatible",
-		"func:RequireRelaySchemaCurrent",
-		"func:relaySchemaV2BootstrapSteps",
-		"func:migrateRelaySchemaV2Bootstrap",
-		"func:migrateRelaySchemaV2Models",
-		"func:migrateRelaySchemaV2PreviousCandidateCatalog",
-		"func:migrateRelaySchemaV2SubscriptionPlan",
-		"func:migrateRelaySchemaV2NoCatalogDelta",
-		"func:buildRelaySchemaExecutionPlan",
-		"func:validateRelaySchemaRegistry",
-		"func:ensureRelaySchemaMetadata",
-		"func:installRelaySchemaLedgerGuards",
-		"func:GetRelaySchemaStatus",
-		"func:markRelaySchemaApplying",
-		"func:markRelaySchemaFailed",
-		"func:reconcileRelaySchemaCommitOutcome",
-		"func:runRelaySchemaBootstrapTransaction",
-		"func:runRelaySchemaDefinitionTransaction",
-		"func:GetRelaySchemaCatalogFingerprint",
-	}
 	selected := make(map[string]declaration)
-	identityNames := map[string]bool{
-		"RelaySchemaV1Checksum":                        true,
-		"RelaySchemaV2Checksum":                        true,
-		"relaySchemaV1CanonicalBytes":                  true,
-		"relaySchemaV2CanonicalBytes":                  true,
-		"relaySchemaV1SourceArtifactSHA256":            true,
-		"relaySchemaV1ModelArtifactSHA256":             true,
-		"relaySchemaV1FrozenChecksumSHA256":            true,
-		"relaySchemaV2SourceArtifactSHA256":            true,
-		"relaySchemaV2ModelArtifactSHA256":             true,
-		"relaySchemaV2FrozenChecksumSHA256":            true,
-		"relaySchemaV1LiveModelManifestBytes":          true,
-		"relaySchemaV2LiveModelManifestBytes":          true,
-		"relaySchemaV1Models":                          true,
-		"relaySchemaV1ArtifactModels":                  true,
-		"relaySchemaV1Steps":                           true,
-		"migrateRelaySchemaV1":                         true,
-		"migrateRelaySchemaV1Models":                   true,
-		"migrateRelaySchemaV1SubscriptionPlan":         true,
-		"migrateRelaySchemaV1PreviousCandidateCatalog": true,
-	}
 	for len(queue) > 0 {
 		key := queue[0]
 		queue = queue[1:]
@@ -342,7 +500,7 @@ func relaySchemaV2LiveSourceArtifact() ([]byte, error) {
 		}
 		decl, exists := declarations[key]
 		if !exists {
-			return nil, fmt.Errorf("schema v2 artifact declaration %s is missing", key)
+			return nil, fmt.Errorf("schema v%d artifact declaration %s is missing", version, key)
 		}
 		selected[key] = decl
 		selectorIdentifiers := make(map[*ast.Ident]bool)

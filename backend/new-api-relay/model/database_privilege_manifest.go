@@ -112,6 +112,10 @@ const relayRuntimeDatabasePrivilegeManifestV1SHA256 = "sha256:b10950f53737ba40ed
 const relayRuntimeDatabasePrivilegeManifestV2Artifact = relayRuntimeDatabasePrivilegeManifestV1Artifact
 const relayRuntimeDatabasePrivilegeManifestV2SHA256 = "sha256:b10950f53737ba40edf7c7548c5e9afecd75ec017da21bd8e8975861a8310709"
 
+// v3 is an explicit no-ACL-delta release snapshot.
+const relayRuntimeDatabasePrivilegeManifestV3Artifact = relayRuntimeDatabasePrivilegeManifestV2Artifact
+const relayRuntimeDatabasePrivilegeManifestV3SHA256 = "sha256:b10950f53737ba40edf7c7548c5e9afecd75ec017da21bd8e8975861a8310709"
+
 func relayRuntimeDatabasePrivilegeManifestLiveV1(db *gorm.DB) (map[string]relayTablePrivilegeSet, error) {
 	manifest := make(map[string]relayTablePrivilegeSet)
 	for _, value := range relaySchemaV1ArtifactModels() {
@@ -137,6 +141,8 @@ func relayRuntimeDatabasePrivilegeManifestForVersion(version int64) (map[string]
 		artifact = relayRuntimeDatabasePrivilegeManifestV1Artifact
 	case 2:
 		artifact = relayRuntimeDatabasePrivilegeManifestV2Artifact
+	case 3:
+		artifact = relayRuntimeDatabasePrivilegeManifestV3Artifact
 	default:
 		return nil, errors.New("Relay runtime database privilege manifest version is unavailable")
 	}

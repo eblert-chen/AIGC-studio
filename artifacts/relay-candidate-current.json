@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "kind": "ai_video_new_api_relay_candidate_baseline",
-  "generated_at_utc": "2026-08-22T07:59:53.716Z",
+  "generated_at_utc": "2026-08-22T10:23:38.926Z",
   "status": "UNVERIFIED",
   "production_cutover_authorized": false,
   "active_production_relay": "new-api-v1",
@@ -10,8 +10,8 @@
   "upstream_git_revision": "0ab02020603d22e5613bc4cf46bfab06f8567769",
   "source": {
     "format": "sorted-portable-path-nul-content-nul-v1",
-    "sha1": "b64cc406eb4efc9393bccbcd94cec6b58400c2d3",
-    "sha256": "sha256:c4930050e31cfa2ce1ee7c17323b665a09770c29d136e7e23d5efa453c640e17",
+    "sha1": "9d1ea67c9d8be3462c975c2f5b71b4532de8904c",
+    "sha256": "sha256:c793805748019ff266e231cf41581b9cf2dc48f4a069afe926a9998e67214e7b",
     "file_count": 2061
   },
   "platform_source": {
@@ -22,8 +22,8 @@
   },
   "acceptance_harness": {
     "format": "sorted-portable-path-nul-content-nul-v1",
-    "sha1": "649446c9ff9b3cd96481a4899e6a7fbf76afab49",
-    "sha256": "sha256:7f2befc93b72af4550de730840d629d23886d6825dbe0838cf6e03432f748dd9",
+    "sha1": "379081ad5a5ad8ab9e483c94108d89a39e5ea57e",
+    "sha256": "sha256:db16935e96229cc8d52174634bedafb0e58c4d849805c3d8ea94b6cf062c2d15",
     "file_count": 68
   },
   "gates": {

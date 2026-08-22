@@ -83,7 +83,9 @@ API 与全部 Worker 只能只读验证对应证明后启动。客户平台当�
 认证生命周期继续保留）；0040 新增仅
 Platform Owner 可管理的首页精选案例草稿、不可变发布版本、紧急下线事件和最小权限存储索引，
 0039 仍只负责新 task/outbox 的 new-api affinity 默认值；
-new-api 原生数据库合同为 `target=2,min=1,max=2`。Python Relay 的
+new-api 原生数据库合同为 `target=3,min=1,max=3`：fresh v3 只记录 ledger `[3]`，
+exact v1 依次经过冻结的 historical v1→v2 no-catalog-delta bridge 与 v2→v3 修复后记录
+`[1,2,3]`；迁移到 v3 后，`max=2` 的旧镜像会把数据库判为 `ahead`，不能作为直接回滚目标。Python Relay 的
 `0012_generation_contract_v1` 仅冻结离线 oracle artifact，不是生产迁移或回滚目标。根级
 `.github/workflows/ci.yml` 会持续执行前端、Platform、new-api Web/Go race、真实
 PostgreSQL/Redis integration、跨服务成本门禁，以及明确隔离的历史 oracle 回归。

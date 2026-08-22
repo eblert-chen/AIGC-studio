@@ -12,6 +12,8 @@ import {
   platformSourceSnapshot,
   platformSnapshotDirectoryIgnored,
   parseCompiledBuildIdentity,
+  parseDockerWaitExitCode,
+  parseRelaySchemaMigrationResult,
   redactAcceptanceDiagnostic,
   resolveCanonicalPythonExecutable,
   sensitiveEnvironmentValues,
@@ -368,6 +370,47 @@ test("offline compiled identity parser is strict and diagnostic-free", () => {
   );
 });
 
+test("Relay schema migration completion parsers reject ambiguous wait and result output", () => {
+  assert.equal(parseDockerWaitExitCode("0\n"), 0);
+  assert.equal(parseDockerWaitExitCode("137\r\n"), 137);
+  for (const invalid of ["", "0\n0\n", "-1\n", "256\n", "exit 0\n", "0\0\n"]) {
+    assert.throws(() => parseDockerWaitExitCode(invalid), /wait result is invalid/);
+  }
+
+  const migrated = {
+    schema_version: 1,
+    kind: "relay_schema_migration",
+    state: "migrated",
+    from_version: 0,
+    to_version: 3,
+    attempt_id: "11111111-2222-4333-8444-555555555555",
+    status: {
+      classification: "current",
+      current_version: 3,
+      state: "clean",
+      dirty: false,
+      compatible: true,
+      current: true,
+    },
+  };
+  assert.deepEqual(parseRelaySchemaMigrationResult(`${JSON.stringify(migrated)}\n`), migrated);
+  assert.throws(
+    () => parseRelaySchemaMigrationResult(`${JSON.stringify(migrated)}\nwarning\n`),
+    /exactly one JSON document/,
+  );
+  assert.throws(
+    () => parseRelaySchemaMigrationResult(JSON.stringify({ ...migrated, unexpected: true })),
+    /result is invalid/,
+  );
+  assert.throws(
+    () => parseRelaySchemaMigrationResult(JSON.stringify({
+      ...migrated,
+      status: { ...migrated.status, current: false },
+    })),
+    /result is invalid/,
+  );
+});
+
 test("evidence is create-only and its canonical payload digest detects tampering", async () => {
   const directory = resolve(tmpdir(), `cost-evidence-${process.pid}-${Date.now()}`);
   const path = resolve(directory, "acceptance.json");
@@ -471,8 +514,9 @@ test("cross-service cost acceptance exercises the Relay runtime materializer", a
 
   for (const required of [
     "seedRelayNativeChannel",
-    "waitForRelayPublicStatus",
-    "relayBootstrap",
+    "waitForRelaySchemaMigration",
+    "relayMigration",
+    '"relay-migrate"',
     "RELAY_COMPAT_MODEL_ROUTES_JSON",
     "RELAY_PROVIDER_CONTRACT_RATES_JSON",
     "NEW_API_CHANNEL_COST_IT_URL",
@@ -481,6 +525,22 @@ test("cross-service cost acceptance exercises the Relay runtime materializer", a
     "NEW_API_CHANNEL_COST_IT_SERVICE_TENANT_ID",
     "NEW_API_CHANNEL_COST_IT_CONTRACT_RATE_ID",
   ]) assert(runner.includes(required), `runtime materializer runner is missing ${required}`);
+
+  const migrationStart = runner.indexOf('"run", "--detach", "--name", relayMigration');
+  const migrationWait = runner.indexOf("await waitForRelaySchemaMigration(", migrationStart);
+  const migrationRemove = runner.indexOf('["rm", relayMigration]', migrationWait);
+  const channelSeed = runner.indexOf("await seedRelayNativeChannel(", migrationRemove);
+  const runtimeEnvironment = runner.indexOf("await writePrivateFile(relayEnvPath", channelSeed);
+  assert(migrationStart > 0);
+  assert(migrationWait > migrationStart);
+  assert(migrationRemove > migrationWait);
+  assert(channelSeed > migrationRemove);
+  assert(runtimeEnvironment > channelSeed);
+  const migrationLaunch = runner.slice(migrationStart, migrationWait);
+  assert(migrationLaunch.includes("...acceptanceResourceLabels(runSuffix)"));
+  assert(migrationLaunch.includes('"--entrypoint", "/new-api"'));
+  assert(migrationLaunch.includes("candidateImageId"));
+  assert(!migrationLaunch.includes('"--publish"'));
 
   for (const required of [
     "/v1/generations",
@@ -506,4 +566,62 @@ test("cross-service cost acceptance exercises the Relay runtime materializer", a
     integration.indexOf("wrong_company_payload ="),
   );
   assert(!positiveFlow.includes("_insert_rejection_delivery_fixture"));
+});
+
+test("native channel bootstrap uses the guarded encrypted credential-set path", async () => {
+  const runner = await readFile(
+    new URL("../scripts/run-cross-service-cost-acceptance.mjs", import.meta.url),
+    "utf8",
+  );
+  const seedStart = runner.indexOf("async function seedRelayNativeChannel(");
+  const seedEnd = runner.indexOf("async function declaredMigrationHeads(", seedStart);
+  assert(seedStart > 0);
+  assert(seedEnd > seedStart);
+  const seed = runner.slice(seedStart, seedEnd);
+
+  for (const required of [
+    "from cryptography.hazmat.primitives.ciphers.aead import AESGCM",
+    "INSERT INTO provider_channel_credential_set_versions",
+    "new-api-provider-channel-credential-set",
+    "AESGCM(kek).encrypt",
+    "AESGCM(kek).decrypt",
+    "trg_channels_provider_credential_storage",
+    "trg_provider_channel_credential_set_versions_no_update_delete",
+    "trg_provider_channel_credential_set_versions_no_truncate",
+    "plaintext provider channel credentials are forbidden",
+    "assert_plaintext_guard(connection, channel_id, model)",
+  ]) assert(seed.includes(required), `encrypted native channel bootstrap is missing ${required}`);
+
+  const encryptedVersionInsert = seed.indexOf(
+    "INSERT INTO provider_channel_credential_set_versions",
+  );
+  const guardedChannelInsert = seed.indexOf(
+    "(id, type, \\\"key\\\", credential_set_version, status, name",
+    encryptedVersionInsert,
+  );
+  assert(encryptedVersionInsert > 0);
+  assert(guardedChannelInsert > encryptedVersionInsert);
+  assert.match(
+    seed.slice(guardedChannelInsert),
+    /VALUES\s*\(\s*:id,\s*50,\s*'',\s*:credential_set_version/,
+  );
+  assert.doesNotMatch(seed, /"key":\s*os\.environ\["COST_ACCEPTANCE_RELAY_CHANNEL_KEY"\]/);
+  assert.match(seed, /row\["key"\] == ""/);
+
+  assert.equal(
+    runner.match(/RELAY_PROVIDER_CREDENTIAL_KEYRING_JSON:\s*relayProviderCredentialKeyring/g)?.length,
+    2,
+  );
+  assert.match(
+    runner,
+    /const relayProviderCredentialKeyring = JSON\.stringify\([\s\S]*?relayProviderCredentialKek[\s\S]*?const forbiddenValues = \[[\s\S]*?relayProviderCredentialKek,[\s\S]*?relayProviderCredentialKeyring,/,
+  );
+  assert.match(
+    runner,
+    /seedRelayNativeChannel\(pythonExecutable, relayDatabaseUrl,[\s\S]*?providerCredentialKeyring:\s*relayProviderCredentialKeyring/,
+  );
+  assert.match(
+    seed,
+    /COST_ACCEPTANCE_RELAY_PROVIDER_CREDENTIAL_KEYRING:\s*providerCredentialKeyring/,
+  );
 });

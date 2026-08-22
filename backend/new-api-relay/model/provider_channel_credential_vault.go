@@ -421,10 +421,48 @@ func RotateChannelCredentialSet(channelID int, raw string) error {
 // append-only guards before commit. A concurrent old pod is fenced by the table
 // lock and resumes only after the guard exists, at which point its write fails.
 func MigrateProviderChannelCredentialVaultStorage() error {
-	return MigrateProviderChannelCredentialVaultStorageWithDB(DB)
+	return migrateProviderChannelCredentialVaultStorageV3WithDB(DB)
 }
 
 func MigrateProviderChannelCredentialVaultStorageWithDB(db *gorm.DB) error {
+	if db == nil {
+		return errors.New("provider channel credential database is not initialized")
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		if db.Dialector.Name() == "postgres" {
+			if err := tx.Exec("ALTER TABLE public.channels ALTER COLUMN key SET DEFAULT ''").Error; err != nil {
+				return errors.New("provider channel credential legacy column default could not be normalized")
+			}
+			if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", providerChannelCredentialMigrationLock).Error; err != nil {
+				return errors.New("provider channel credential migration lock could not be acquired")
+			}
+			if err := tx.Exec("LOCK TABLE channels, provider_channel_credential_set_versions IN SHARE ROW EXCLUSIVE MODE").Error; err != nil {
+				return errors.New("provider channel credential migration tables could not be fenced")
+			}
+		} else if db.Dialector.Name() == "sqlite" {
+			if err := tx.Exec("UPDATE provider_channel_credential_set_versions SET credential_set_version = credential_set_version WHERE 1 = 0").Error; err != nil {
+				return errors.New("provider channel credential SQLite migration could not reserve the writer")
+			}
+		}
+		if err := migrateLegacyProviderChannelCredentialsTx(tx); err != nil {
+			return err
+		}
+		if db.Dialector.Name() == "postgres" {
+			return installProviderChannelCredentialPostgresGuardsTx(tx)
+		}
+		if db.Dialector.Name() == "sqlite" {
+			return installProviderChannelCredentialSQLiteGuardsTx(tx)
+		}
+		return nil
+	})
+}
+
+// migrateProviderChannelCredentialVaultStorageV3WithDB is the schema v3
+// correction. It acquires the migration and table locks before altering the
+// legacy default and resolves application tables through the caller's pinned
+// search_path, so isolated PostgreSQL integration schemas and production's
+// public schema follow the same fenced sequence.
+func migrateProviderChannelCredentialVaultStorageV3WithDB(db *gorm.DB) error {
 	if db == nil {
 		return errors.New("provider channel credential database is not initialized")
 	}

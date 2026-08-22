@@ -13,6 +13,8 @@ const productionEnv = read("deploy/relay-production.env.example");
 const runbook = read("docs/new-api-production-deployment.md");
 const deploymentRunbook = read("docs/deployment-runbook.md");
 const releaseReadiness = read("docs/release-readiness.md");
+const projectReadme = read("README.md");
+const relayMigrationGuide = read("docs/relay-new-api-migration.md");
 const platformIngress = read("infra/nginx/platform-api.conf");
 const gitignore = read(".gitignore");
 const relayVersion = read("backend/new-api-relay/VERSION");
@@ -95,11 +97,15 @@ test("makes the immutable previous-candidate PostgreSQL 16 upgrade a mandatory r
     "qualified-postgres-image-id=",
     "relay-schema-v1-source-revision=",
     "relay-schema-v1-test-fixture-patch-sha256=",
-    "fresh-v2-row2-only-gate=PASS",
+    "fresh-v3-row3-only-gate=PASS",
     "legacy-to-v1-gate=PASS",
     "v1-compatible-no-runtime-side-effects=PASS",
+    "historical-frozen-v1-to-v2-no-catalog-delta-gate=PASS",
     "v1-to-v2-no-catalog-delta-gate=PASS",
-    "post-v2-proof-root-principal-api-current-gate=PASS",
+    "v2-to-v3-one-shot-gate=PASS",
+    "exact-v1-to-v3-ledger-gate=PASS",
+    "post-v3-proof-root-principal-api-current-gate=PASS",
+    "max-v2-ahead-no-direct-rollback-gate=PASS",
     "legacy-schema-upgrade-gate=PASS",
   ]) {
     assert.ok(relayLegacySchemaGate.includes(evidence), `missing legacy gate evidence ${evidence}`);
@@ -124,6 +130,12 @@ test("makes the immutable previous-candidate PostgreSQL 16 upgrade a mandatory r
     relayLegacySchemaGate,
     /TestRelaySchemaPostgresV1ToV2NoCatalogDelta/,
   );
+  assert.match(relayLegacySchemaGate, /2535972505c63a059fdbe678e79577671481c358/);
+  assert.match(relayLegacySchemaGate, /relay-provision-database-roles/);
+  assert.match(relayLegacySchemaGate, /\/release\/new-api relay-migrate/);
+  assert.match(relayLegacySchemaGate, /3\|3\|3\|clean\|3/);
+  assert.match(relayLegacySchemaGate, /1\|3\|3\|clean\|1,2,3/);
+  assert.match(relayLegacySchemaGate, /status\.classification -ne "ahead"/);
   assert.match(
     relayLegacySchemaGate,
     /TestRelaySchemaPostgresProtectedLifecycleProcess/,
@@ -186,14 +198,14 @@ test("makes the immutable previous-candidate PostgreSQL 16 upgrade a mandatory r
   assert.match(runbook, /make test-relay-schema-legacy-pg16/);
   assert.match(runbook, /not an optional developer\s+smoke test/);
   assert.match(runbook, /missing image[\s\S]+release failure/);
-  assert.match(runbook, /raw\/unversioned[\s\S]+immutable schema-v1[\s\S]+v1-to-v2/i);
+  assert.match(runbook, /raw\/unversioned[\s\S]+immutable schema-v1[\s\S]+v1-to-v2[\s\S]+v2-to-v3/i);
   assert.match(runbook, /absent test event or `skip` as failure/);
 });
 
-test("freezes native Relay schema v2 without rewriting v1 or weakening protected readiness", () => {
-  assert.match(relaySchemaContract, /RelaySchemaTargetVersion\s+int64\s*=\s*2/);
+test("preserves frozen Relay schema v2 and versions the credential-order correction as v3", () => {
+  assert.match(relaySchemaContract, /RelaySchemaTargetVersion\s+int64\s*=\s*3/);
   assert.match(relaySchemaContract, /RelaySchemaMinVersion\s+int64\s*=\s*1/);
-  assert.match(relaySchemaContract, /RelaySchemaMaxVersion\s+int64\s*=\s*2/);
+  assert.match(relaySchemaContract, /RelaySchemaMaxVersion\s+int64\s*=\s*3/);
   assert.match(
     relaySchemaContract,
     /relaySchemaV1FrozenChecksumSHA256\s*=\s*"sha256:369af2b5c47652ae9e03a2f79ba64f56c3b517deb7f4c8f933ce3957082698a7"/,
@@ -206,6 +218,14 @@ test("freezes native Relay schema v2 without rewriting v1 or weakening protected
     relaySchemaContract,
     /relaySchemaV2FrozenChecksumSHA256\s*=\s*"sha256:a3dc154ca42086544096cc0c3e3f2c84479e52e2ad76bd4d32aa2806c2c9af0e"/,
   );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV3SourceArtifactSHA256\s*=\s*"sha256:4d784286e5480a10a83f4408b303eec075a347fa405d45650e12c19425e4659d"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV3FrozenChecksumSHA256\s*=\s*"sha256:0295d36ca5032088cc2e0b3b7f935aaeb24c3c5847a6b0a92a4dc3099d58e553"/,
+  );
   const catalogDigest =
     "sha256:0ebe3f289439193f207f087452c289504fdd231759ac2b3d0159f8cc61d6cb6d";
   assert.match(
@@ -216,12 +236,16 @@ test("freezes native Relay schema v2 without rewriting v1 or weakening protected
     relaySchemaIntegrity,
     new RegExp(`relaySchemaV2PostgresCatalogSHA256 = "${catalogDigest}"`),
   );
+  assert.match(
+    relaySchemaIntegrity,
+    new RegExp(`relaySchemaV3PostgresCatalogSHA256 = "${catalogDigest}"`),
+  );
 
   for (const evidence of [
     /Equal\(t, int64\(0\), result\.FromVersion\)/,
-    /Equal\(t, int64\(2\), result\.Status\.BaselineVersion\)/,
-    /Len\(t, freshLedger, 1, "fresh v2 must not fabricate an unexecuted v1 ledger event"\)/,
-    /Equal\(t, int64\(2\), freshLedger\[0\]\.Version\)/,
+    /Equal\(t, RelaySchemaTargetVersion, result\.Status\.BaselineVersion\)/,
+    /Len\(t, freshLedger, 1, "fresh v3 must not fabricate unexecuted historical ledger events"\)/,
+    /Equal\(t, RelaySchemaTargetVersion, freshLedger\[0\]\.Version\)/,
   ]) {
     assert.match(relaySchemaPostgresGate, evidence);
   }
@@ -230,7 +254,7 @@ test("freezes native Relay schema v2 without rewriting v1 or weakening protected
     /RelaySchemaStatusCompatible/,
     /RequireRelaySchemaCompatible\(migrationDB\)[\s\S]+RequireRelaySchemaCurrent\(migrationDB\)/,
     /VerifyRelayRuntimeDatabaseRole\(runtimeBefore\)[\s\S]+protected API readiness must reject compatible-but-not-current v1/,
-    /VerifyRelayDownloadEdgeDatabaseRole\(migrationDB, RelaySchemaTargetVersion\)[\s\S]+protected edge readiness must reject compatible-but-not-current v1/,
+    /VerifyRelayDownloadEdgeDatabaseRole\(migrationDB, relaySchemaV2FrozenVersion\)[\s\S]+protected edge readiness must reject compatible-but-not-current v1/,
     /Equal\(t, int64\(1\), result\.FromVersion\)/,
     /Equal\(t, int64\(2\), result\.ToVersion\)/,
     /Equal\(t, v1Before, ledger\[0\]/,
@@ -252,7 +276,7 @@ test("freezes native Relay schema v2 without rewriting v1 or weakening protected
   }
   assert.match(
     relaySchemaMigrationGate,
-    /TestRelaySchemaV2TopLevelMigrationNeverExecutesLiveV1[\s\S]+liveV1Sentinel[\s\S]+fresh v2 bootstrap[\s\S]+exact v1 to v2 bridge/,
+    /TestRelaySchemaV3TopLevelMigrationNeverExecutesLiveV1[\s\S]+liveV1Sentinel[\s\S]+fresh v3 bootstrap[\s\S]+exact v1 through v3 bridge/,
   );
 
   assert.match(
@@ -276,7 +300,7 @@ test("freezes native Relay schema v2 without rewriting v1 or weakening protected
   const proofCurrentConsumers = verifyProofFunction.match(
     /switch consumer \{[\s\S]+?Relay database release proof requires the current schema/,
   )?.[0];
-  assert.ok(proofCurrentConsumers, "missing database-proof Current-v2 consumer gate");
+  assert.ok(proofCurrentConsumers, "missing database-proof Current-v3 consumer gate");
   for (const consumer of ["Post", "Principal", "API", "RootBootstrap", "Edge"]) {
     assert.match(proofCurrentConsumers, new RegExp(`Consumer${consumer}`));
   }
@@ -287,13 +311,20 @@ test("freezes native Relay schema v2 without rewriting v1 or weakening protected
   );
 
   for (const document of [runbook, deploymentRunbook, releaseReadiness]) {
-    assert.match(document, /target=2,min=1,max=2/);
     assert.match(document, /no-catalog-delta/i);
-    assert.match(
-      document,
-      /ledger[\s\S]+version[ -]2|version[ -]2[\s\S]+ledger/i,
-    );
     assert.match(document, /root[\s\S]+principal[\s\S]+API/i);
+  }
+  for (const document of [
+    projectReadme,
+    runbook,
+    deploymentRunbook,
+    releaseReadiness,
+    relayMigrationGuide,
+  ]) {
+    assert.match(document, /target=3,min=1,max=3/);
+    assert.match(document, /fresh v3[\s\S]+\[3\]/i);
+    assert.match(document, /\[1,2,3\]/);
+    assert.match(document, /max(?:[=-]|-v)2[\s\S]+ahead/i);
   }
   assert.match(deploymentRunbook, /0012_generation_contract_v1/);
   assert.match(releaseReadiness, /schema_version=1/);

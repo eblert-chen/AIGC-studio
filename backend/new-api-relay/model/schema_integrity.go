@@ -21,6 +21,10 @@ const relaySchemaV1PostgresCatalogSHA256 = "sha256:0ebe3f289439193f207f087452c28
 // fingerprint or imply that the v1 migration was replayed.
 const relaySchemaV2PostgresCatalogSHA256 = "sha256:0ebe3f289439193f207f087452c289504fdd231759ac2b3d0159f8cc61d6cb6d"
 
+// v3 changes migration execution ordering without changing the resulting
+// PostgreSQL catalog.
+const relaySchemaV3PostgresCatalogSHA256 = "sha256:0ebe3f289439193f207f087452c289504fdd231759ac2b3d0159f8cc61d6cb6d"
+
 type relaySchemaCatalogObject struct {
 	Kind       string `gorm:"column:kind"`
 	Identity   string `gorm:"column:identity"`
@@ -34,6 +38,8 @@ func expectedRelaySchemaCatalogFingerprint(dialect string, version int64) string
 			return relaySchemaV1PostgresCatalogSHA256
 		case 2:
 			return relaySchemaV2PostgresCatalogSHA256
+		case 3:
+			return relaySchemaV3PostgresCatalogSHA256
 		}
 	}
 	return ""
@@ -42,7 +48,7 @@ func expectedRelaySchemaCatalogFingerprint(dialect string, version int64) string
 func relaySchemaCatalogAlgorithmAvailable(dialect string, version int64) bool {
 	switch dialect {
 	case "postgres":
-		return version == 1 || version == 2
+		return version == 1 || version == 2 || version == 3
 	case "sqlite", "mysql":
 		return version >= 1
 	default:

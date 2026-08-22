@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	RelaySchemaTargetVersion int64 = 2
+	RelaySchemaTargetVersion int64 = 3
 	RelaySchemaMinVersion    int64 = 1
-	RelaySchemaMaxVersion    int64 = 2
+	RelaySchemaMaxVersion    int64 = 3
 
 	RelaySchemaStateClean    = "clean"
 	RelaySchemaStateApplying = "applying"
@@ -61,8 +61,24 @@ const (
 	relaySchemaV2FrozenChecksumSHA256 = "sha256:a3dc154ca42086544096cc0c3e3f2c84479e52e2ad76bd4d32aa2806c2c9af0e"
 )
 
+const (
+	relaySchemaV3FrozenVersion int64 = 3
+	relaySchemaV3FrozenName          = "provider_channel_credential_ordering_v3"
+	relaySchemaV3FrozenPhase         = "hardening"
+)
+
+const (
+	relaySchemaV3SourceArtifactSHA256 = "sha256:4d784286e5480a10a83f4408b303eec075a347fa405d45650e12c19425e4659d"
+	relaySchemaV3ModelArtifactSHA256  = "sha256:dfbb25b9c63da6134574548c7519fc7262abac327f0cd7b1feb977d5b04c5e56"
+	relaySchemaV3FrozenChecksumSHA256 = "sha256:0295d36ca5032088cc2e0b3b7f935aaeb24c3c5847a6b0a92a4dc3099d58e553"
+)
+
 func relaySchemaV1LiveArtifactValidationRequired(targetVersion int64) bool {
 	return targetVersion == 1
+}
+
+func relaySchemaV2LiveArtifactValidationRequired(targetVersion int64) bool {
+	return targetVersion == 2
 }
 
 type RelaySchemaContract struct {
@@ -79,6 +95,11 @@ func RelaySchemaV1Checksum() string {
 
 func RelaySchemaV2Checksum() string {
 	digest := sha256.Sum256(relaySchemaV2CanonicalBytes())
+	return fmt.Sprintf("sha256:%x", digest[:])
+}
+
+func RelaySchemaV3Checksum() string {
+	digest := sha256.Sum256(relaySchemaV3CanonicalBytes())
 	return fmt.Sprintf("sha256:%x", digest[:])
 }
 
@@ -113,6 +134,40 @@ func relaySchemaV2CanonicalBytes() []byte {
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("incremental-step|attest-exact-v1-no-catalog-delta-v2\n")
+	return []byte(builder.String())
+}
+
+// relaySchemaV3CanonicalBytes binds the standalone fresh-v3 snapshot and the
+// exact v2-to-v3 correction to the frozen v2 release. The PostgreSQL catalog
+// and principal surfaces are deliberately unchanged; v3 fixes only the
+// credential-vault migration's lock ordering and search-path resolution.
+func relaySchemaV3CanonicalBytes() []byte {
+	var builder strings.Builder
+	builder.WriteString("ai-video/new-api-relay/schema/v3\n")
+	builder.WriteString("requires-v2-checksum|")
+	builder.WriteString(relaySchemaV2FrozenChecksumSHA256)
+	builder.WriteByte('\n')
+	builder.WriteString("source-artifact|")
+	builder.WriteString(relaySchemaV3SourceArtifactSHA256)
+	builder.WriteByte('\n')
+	builder.WriteString("model-artifact|")
+	builder.WriteString(relaySchemaV3ModelArtifactSHA256)
+	builder.WriteByte('\n')
+	builder.WriteString("postgres-catalog|")
+	builder.WriteString(relaySchemaV3PostgresCatalogSHA256)
+	builder.WriteByte('\n')
+	builder.WriteString("runtime-privilege-manifest|")
+	builder.WriteString(relayRuntimeDatabasePrivilegeManifestV3SHA256)
+	builder.WriteByte('\n')
+	builder.WriteString("download-edge-privilege-manifest|")
+	builder.WriteString(relayDownloadEdgeDatabasePrivilegeManifestV3SHA256)
+	builder.WriteByte('\n')
+	for _, step := range relaySchemaV3BootstrapSteps() {
+		builder.WriteString("bootstrap-step|")
+		builder.WriteString(step.ID)
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("incremental-step|provider-channel-credential-lock-ordering-v3\n")
 	return []byte(builder.String())
 }
 
@@ -226,6 +281,51 @@ func relaySchemaV2LiveModelManifestBytes() []byte {
 	return []byte(builder.String())
 }
 
+// relaySchemaV3LiveModelManifestBytes is the independent fresh-v3 model
+// snapshot used by the current-version artifact freeze test.
+func relaySchemaV3LiveModelManifestBytes() []byte {
+	var builder strings.Builder
+	seen := make(map[reflect.Type]bool)
+	var writeType func(reflect.Type)
+	writeType = func(typeOf reflect.Type) {
+		for typeOf.Kind() == reflect.Pointer || typeOf.Kind() == reflect.Slice || typeOf.Kind() == reflect.Array {
+			typeOf = typeOf.Elem()
+		}
+		if typeOf.Kind() != reflect.Struct || typeOf.PkgPath() == "time" || seen[typeOf] {
+			return
+		}
+		seen[typeOf] = true
+		builder.WriteString("type|")
+		builder.WriteString(typeOf.PkgPath())
+		builder.WriteByte('|')
+		builder.WriteString(typeOf.Name())
+		builder.WriteByte('\n')
+		for index := 0; index < typeOf.NumField(); index++ {
+			field := typeOf.Field(index)
+			builder.WriteString("field|")
+			builder.WriteString(field.Name)
+			builder.WriteByte('|')
+			builder.WriteString(field.Type.String())
+			builder.WriteByte('|')
+			builder.WriteString(string(field.Tag))
+			builder.WriteByte('\n')
+			writeType(field.Type)
+		}
+	}
+	for _, value := range relaySchemaV3ArtifactModels() {
+		typeOf := reflect.TypeOf(value)
+		builder.WriteString("model|")
+		builder.WriteString(typeOf.String())
+		if table, ok := value.(interface{ TableName() string }); ok {
+			builder.WriteByte('|')
+			builder.WriteString(table.TableName())
+		}
+		builder.WriteByte('\n')
+		writeType(typeOf)
+	}
+	return []byte(builder.String())
+}
+
 func relaySchemaV1ArtifactModels() []any {
 	models := append([]any{}, relaySchemaV1Models()...)
 	models = append(models,
@@ -249,6 +349,27 @@ func relaySchemaV1ArtifactModels() []any {
 
 func relaySchemaV2ArtifactModels() []any {
 	models := append([]any{}, relaySchemaV2Models()...)
+	models = append(models,
+		&RelaySchemaState{}, &RelaySchemaMigration{}, &SubscriptionPlan{},
+		&PlatformArtifactUploadIntent{}, &PlatformGenerationReconciliationEvent{},
+		&PlatformGenerationCallbackRedriveEvent{}, &PlatformChannelControlOperation{},
+	)
+	models = append(models, PlatformProviderMonitorAndCostModels()...)
+	seen := make(map[reflect.Type]bool, len(models))
+	unique := make([]any, 0, len(models))
+	for _, model := range models {
+		typeOf := reflect.TypeOf(model)
+		if seen[typeOf] {
+			continue
+		}
+		seen[typeOf] = true
+		unique = append(unique, model)
+	}
+	return unique
+}
+
+func relaySchemaV3ArtifactModels() []any {
+	models := append([]any{}, relaySchemaV3Models()...)
 	models = append(models,
 		&RelaySchemaState{}, &RelaySchemaMigration{}, &SubscriptionPlan{},
 		&PlatformArtifactUploadIntent{}, &PlatformGenerationReconciliationEvent{},
@@ -313,6 +434,29 @@ func relaySchemaV2Models() []any {
 	return models
 }
 
+// relaySchemaV3Models is a standalone fresh-bootstrap snapshot. It is
+// intentionally independent of both historical model registries.
+func relaySchemaV3Models() []any {
+	models := []any{
+		&Channel{}, &ProviderChannelCredentialSetVersion{}, &ProviderCredentialVersion{},
+		&Token{}, &User{}, &UserSession{}, &AuthFlow{}, &ExternalIdentityClaim{},
+		&PasskeyCredential{}, &Option{}, &Redemption{}, &Ability{}, &Log{},
+		&Midjourney{}, &TopUp{}, &QuotaData{}, &Task{}, &Model{}, &Vendor{},
+		&PrefillGroup{}, &Setup{}, &TwoFA{}, &TwoFABackupCode{}, &Checkin{},
+		&SubscriptionOrder{}, &UserSubscription{}, &SubscriptionPreConsumeRecord{},
+		&CustomOAuthProvider{}, &UserOAuthBinding{}, &PerfMetric{}, &SystemInstance{},
+		&SystemTask{}, &SystemTaskLock{}, &PlatformGenerationJob{},
+		&PlatformGenerationOutbox{}, &PlatformGenerationProviderAccountState{},
+		&PlatformGenerationProviderRoute{}, &PlatformGenerationRouteAdmission{},
+		&PlatformGenerationCallbackDelivery{}, &PlatformProviderMonitorLease{},
+		&PlatformProviderRouteHealth{}, &PlatformProviderTerminalOutcome{},
+		&PlatformProviderIncident{}, &PlatformProviderAlertEvent{},
+		&PlatformProviderRetirementAcknowledgement{}, &PlatformChannelCostEvent{},
+		&PlatformRelayExternalDelivery{}, &CasbinRule{}, &AuthzRole{},
+	}
+	return models
+}
+
 func GetRelaySchemaContract() RelaySchemaContract {
 	return RelaySchemaContract{
 		TargetVersion: RelaySchemaTargetVersion,
@@ -321,6 +465,7 @@ func GetRelaySchemaContract() RelaySchemaContract {
 		Checksums: map[int64]string{
 			1: RelaySchemaV1Checksum(),
 			2: RelaySchemaV2Checksum(),
+			3: RelaySchemaV3Checksum(),
 		},
 	}
 }

@@ -16,19 +16,22 @@ from the same pinned image, creates the exact raw legacy schema with the
 immutable previous-candidate image, and inserts only synthetic secret-free
 fixtures. Raw/unversioned state is first converted by the immutable schema-v1
 source revision `709e9b45b25a6baa415ab985078bd7764a35eaf9`; only after that test
-records an explicit, non-skipped PASS may the current image execute the v1-to-v2
-no-catalog-delta bridge. The current v2 image must never replay its live v1
-bootstrap against raw legacy state. The immutable-v1 stage creates only the
+records an explicit, non-skipped PASS may the frozen historical v2 contract
+execute its v1-to-v2 no-catalog-delta bridge. The current v3 image then executes
+only the versioned v2-to-v3 credential-order correction. The current image must
+never replay its live v1 or frozen v2 bootstrap against raw legacy state. The
+immutable-v1 stage creates only the
 exact schema, ledger, catalog, and protected roles. The synthetic legacy
 candidate already contains one exact production-shaped root and its setup
 marker; immutable v1 must preserve both byte-for-byte while also preserving
 the ordinary user and credential fixtures. It must create no service-principal
 rows, and no protected API or edge runtime may start at v1.
-The gate compares the catalog with an independently bootstrapped fresh-v2
+The gate compares the catalog with an independently bootstrapped fresh-v3
 database, verifies the complete business-row evidence and intended v1 data
 transforms, and decrypts the migrated synthetic credentials through the
-production vault boundary. After the v2 bridge it compares every legacy fixture
-and encrypted credential row with its pre-bridge digest, then runs the complete
+production vault boundary. After the historical v2 bridge and current v3
+correction it compares every legacy fixture and encrypted credential row with
+its pre-bridge digest, then runs the complete
 proof -> exact-root replay (`unchanged`) -> principal creation -> API lifecycle
 on that same legacy database. The
 fresh reference database cannot substitute for this same-database terminal
@@ -39,15 +42,17 @@ The currently frozen input is
 The script also pins and prints its OCI/source evidence: candidate ID,
 RepoDigest, source revision, upstream revision, source-snapshot SHA-256, and
 source file count. The script also pins the qualified PostgreSQL image, the v1
-source revision, and the digest of a test-only TLS/side-effect assertion patch; that
+and max-v2 source revisions, and the digest of a test-only TLS/side-effect assertion patch; that
 patch changes no v1 production declaration or behavior. Archive those lines
 together with explicit test PASS events and
-`fresh-v2-row2-only-gate=PASS`, `legacy-to-v1-gate=PASS`,
+`fresh-v3-row3-only-gate=PASS`, `legacy-to-v1-gate=PASS`,
 `v1-compatible-no-runtime-side-effects=PASS`,
-`v1-to-v2-no-catalog-delta-gate=PASS`,
-`post-v2-proof-root-principal-api-current-gate=PASS`, and
+`historical-frozen-v1-to-v2-no-catalog-delta-gate=PASS`,
+`v2-to-v3-one-shot-gate=PASS`, `exact-v1-to-v3-ledger-gate=PASS`,
+`post-v3-proof-root-principal-api-current-gate=PASS`,
+`max-v2-ahead-no-direct-rollback-gate=PASS`, and
 `legacy-schema-upgrade-gate=PASS`. The runner parses `go test -json` and treats
-an absent test event or `skip` as failure for the schema, post-v2 lifecycle,
+an absent test event or `skip` as failure for the schema, post-v3 lifecycle,
 and both rotation tests; process exit zero alone is not PASS.
 A missing image, missing or changed label/revision/fixture digest, wrong
 PostgreSQL/pgaudit/TLS identity, partial old-image startup, catalog drift,
@@ -495,40 +500,48 @@ failed, then rerun post. Preserve the failed database and logs for diagnosis;
 do not run another image against a dirty attempt.
 
 The native new-api database contract for this release is
-`target=2,min=1,max=2`. Schema v1 contains the irreversible plaintext-vault
+`target=3,min=1,max=3`. Schema v1 contains the irreversible plaintext-vault
 cleanup and write guards and remains compatible only for migration diagnosis;
 protected post, service-principal provisioning/rotation, root bootstrap, API,
 download edge, database-release proof consumers, and runtime readiness all
-require exact Current v2. Role-pre and the migrator proof path are the only
-release steps allowed to inspect compatible v1 so they can perform the bridge.
+require exact Current v3. Role-pre and the migrator proof path are the only
+release steps allowed to inspect compatible v1/v2 so they can perform the bridges.
 
-A fresh v2 bootstrap executes the independently frozen v2 source/model
-snapshot and records `from=0`, `baseline=current=target=2`, with exactly one
-ledger row for version 2. It must not fabricate a version-1 event. An existing
-database is accepted only when its state, single v1 ledger row, v1 catalog,
+A fresh v3 bootstrap executes the independently frozen v3 source/model
+snapshot and records `from=0`, `baseline=current=target=3`, with exactly one
+ledger row `[3]`. It must not fabricate version-1 or version-2 events. An exact
+v1 database is accepted only when its state, single v1 ledger row, v1 catalog,
 runtime manifest, role topology, and pre-migration edge surface are exact. The
-bridge executes no catalog DDL, preserves the v1 ledger row byte-for-structure,
-appends the real v2 event, and finishes with `baseline=1,current=target=2` and
-ledger rows 1 and 2. The frozen PostgreSQL catalog digest is deliberately
-unchanged across v1 and v2. The independently frozen v2 source artifact is
+frozen historical v1-to-v2 bridge executes no catalog DDL, preserves the v1
+ledger row byte-for-structure, and appends the real v2 event. The current
+v2-to-v3 correction then preserves both historical rows, appends the real v3
+event, and finishes with `baseline=1,current=target=3` and ledger `[1,2,3]`.
+The frozen PostgreSQL catalog digest is deliberately unchanged across v1, v2,
+and v3. The independently frozen v2 source artifact is
 `sha256:03de3ed038c3a9f7b6e160ac720e4350b9d468c09417cdc9e280289ed390fef2`
 and its migration checksum is
 `sha256:a3dc154ca42086544096cc0c3e3f2c84479e52e2ad76bd4d32aa2806c2c9af0e`;
-the source closure includes the top-level migration and Current/Compatible
-gates, while sentinel tests prove that neither fresh nor v1-to-v2 orchestration
-executes the live v1 definition.
+the v3 source artifact is
+`sha256:4d784286e5480a10a83f4408b303eec075a347fa405d45650e12c19425e4659d`
+and its migration checksum is
+`sha256:0295d36ca5032088cc2e0b3b7f935aaeb24c3c5847a6b0a92a4dc3099d58e553`.
+The source closure includes the top-level migration and Current/Compatible
+gates, while sentinel tests prove that fresh v3 and exact-v1-through-v3
+orchestration execute neither the live v1 definition nor the frozen v2
+implementation.
 Dirty, unversioned, partial, ahead, unknown, catalog-drifted, ACL-drifted, or
 ledger-gap state remains fail-closed.
 
 The safe rollback window for backup restore ends before production traffic and
-before accepting new v2 work. After migration, never boot the older max-v1
-image. A failed feature rollout may return only to a v2-compatible bridge; the
-old max=1 image is not a rollback target. Existing new-api jobs remain on the
+before accepting new v3 work. After migration, never boot an older max-v2
+image: it must classify Current v3 as `ahead` and fail closed. A failed feature
+rollout may return only to a v3-compatible image; max=1 and max=2 images are not
+direct rollback targets. Existing new-api jobs remain on the
 new-api worker/affinity path until drained; historical Python-bound rows must
 have reached a reconciled business terminal state before the one-time cutover
 and cannot be called from protected runtime. The `schema_version=1` fields in generation,
 secret-bundle, receipt, and CLI JSON envelopes are protocol versions and must
-not be changed to 2 merely because the database contract is v2.
+not be changed to 3 merely because the database contract is v3.
 
 Before starting application processes, upgrade the customer Platform database
 to `0040_showcase_management`. Its direct predecessor is
@@ -948,7 +961,7 @@ artifact. Never translate a successful Compose render, local unit test, or
 
 Rollback never changes Relay implementation or task affinity. Stop new
 admission, keep accepted `new-api-v1` jobs on their exact job/route/token chain,
-and deploy only a previously verified, Current-v2-compatible new-api immutable
+   and deploy only a previously verified, Current-v3-compatible new-api immutable
 digest through the same secret/role/proof lifecycle. If the previous image is
 not compatible, use a forward fix. Python Relay is not a production rollback
 target, and no runtime client may be added for it. Unknown submissions never

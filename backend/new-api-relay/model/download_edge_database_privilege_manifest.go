@@ -18,6 +18,7 @@ import (
 
 const relayDownloadEdgeDatabasePrivilegeManifestV1SHA256 = "sha256:00dc794c68c74a51b351b579841214fbc7cbdb23be3ae00eae4ba09962518ad5"
 const relayDownloadEdgeDatabasePrivilegeManifestV2SHA256 = "sha256:00dc794c68c74a51b351b579841214fbc7cbdb23be3ae00eae4ba09962518ad5"
+const relayDownloadEdgeDatabasePrivilegeManifestV3SHA256 = "sha256:00dc794c68c74a51b351b579841214fbc7cbdb23be3ae00eae4ba09962518ad5"
 
 type relayDownloadEdgePrivilegeManifest struct {
 	Tables        map[string]relayTablePrivilegeSet
@@ -46,6 +47,17 @@ var relayDownloadEdgeV2UpdateColumns = map[string][]string{
 	},
 }
 
+var relayDownloadEdgeV3UpdateColumns = map[string][]string{
+	"platform_download_edge_tickets": {
+		"state", "claim_token", "claimed_at", "claim_expires_at", "gateway_request_id",
+		"failure_code", "completed_at", "updated_at",
+	},
+	"platform_relay_external_deliveries": {
+		"state", "attempts", "available_at", "claim_token", "claimed_at", "claim_expires_at",
+		"response_status", "last_error", "delivered_at", "dead_lettered_at", "updated_at",
+	},
+}
+
 func relayDownloadEdgeDatabasePrivilegeManifestForVersion(version int64) (relayDownloadEdgePrivilegeManifest, error) {
 	var updateColumns map[string][]string
 	switch version {
@@ -53,6 +65,8 @@ func relayDownloadEdgeDatabasePrivilegeManifestForVersion(version int64) (relayD
 		updateColumns = relayDownloadEdgeV1UpdateColumns
 	case 2:
 		updateColumns = relayDownloadEdgeV2UpdateColumns
+	case 3:
+		updateColumns = relayDownloadEdgeV3UpdateColumns
 	default:
 		return relayDownloadEdgePrivilegeManifest{}, errors.New("Relay download edge privilege manifest version is unavailable")
 	}
