@@ -1,0 +1,722 @@
+name: ai-video
+
+x-platform-environment: &platform-environment
+  ENVIRONMENT: development
+  DATABASE_URL: postgresql+psycopg://ai_video:${POSTGRES_PASSWORD:-local-only-password}@postgres:5432/ai_video_platform
+  AUTO_CREATE_TABLES: "false"
+  # Development-only escape hatches are explicit and fail closed in Settings.
+  DEVELOPMENT_HEADER_AUTH_ENABLED: ${PLATFORM_DEVELOPMENT_HEADER_AUTH_ENABLED:-true}
+  ENABLE_BOOTSTRAP: ${PLATFORM_ENABLE_BOOTSTRAP:-true}
+  BOOTSTRAP_TOKEN: ${PLATFORM_BOOTSTRAP_TOKEN:-local-platform-bootstrap-secret-2026-08-14}
+  CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173","http://localhost:5174","http://127.0.0.1:5174"]'
+  # new-api is the only deployable Relay data plane. The Python implementation
+  # remains source-only as a contract oracle and has no Compose service,
+  # credential surface, network attachment, or production admission path.
+  RELAY_DEFAULT_BACKEND_ID: new-api-v1
+  RELAY_DEFAULT_CONTRACT_REVISION: generations.v1
+  RELAY_BACKENDS: >-
+    {"new-api-v1":{"base_url":"${PLATFORM_RELAY_BASE_URL:-http://relay-new-api:3000}","client_id":"${RELAY_CLIENT_ID:-customer-platform}","api_key":"${RELAY_API_KEY:-local-customer-platform-relay-key-change-me}","contract_revision":"generations.v1"}}
+  RELAY_OPERATIONS_BASE_URL: ${PLATFORM_RELAY_OPERATIONS_BASE_URL:-http://relay-new-api:3000}
+  # Server-owned origin for the owner-only new-api break-glass console. The
+  # Platform appends /channels and never forwards browser credentials.
+  RELAY_NATIVE_ADMIN_CONSOLE_ORIGIN: ${PLATFORM_RELAY_NATIVE_ADMIN_CONSOLE_ORIGIN:-}
+  RELAY_TENANT_ID: ${PLATFORM_RELAY_OPERATIONS_TENANT_ID:-00000000-0000-4000-8000-000000000001}
+  RELAY_OPERATIONS_TOKEN: ${PLATFORM_RELAY_OPERATIONS_TOKEN:-local-platform-relay-operations-token-change-me-03}
+  RELAY_RECONCILIATION_APPROVAL_KEY_ID: ${PLATFORM_RELAY_RECONCILIATION_APPROVAL_KEY_ID:-local-platform-approval-v1}
+  RELAY_RECONCILIATION_APPROVAL_SECRET: ${PLATFORM_RELAY_RECONCILIATION_APPROVAL_SECRET:-local-platform-reconciliation-approval-secret-change-me-04}
+  RELAY_DISPATCH_MAX_ATTEMPTS: ${RELAY_DISPATCH_MAX_ATTEMPTS:-12}
+  RELAY_CALLBACK_PUBLIC_URL: http://platform-api:8000/internal/relay-callbacks
+  RELAY_CALLBACK_SIGNING_SECRETS: >-
+    {"new-api-v1":"${RELAY_CALLBACK_SIGNING_SECRET:-local-relay-callback-signing-secret-change-me}"}
+  TASK_QUEUED_TIMEOUT_SECONDS: ${TASK_QUEUED_TIMEOUT_SECONDS:-3600}
+  TASK_PROCESSING_TIMEOUT_SECONDS: ${TASK_PROCESSING_TIMEOUT_SECONDS:-21600}
+  TASK_TIMEOUT_SCAN_INTERVAL_SECONDS: ${TASK_TIMEOUT_SCAN_INTERVAL_SECONDS:-30}
+  TASK_TIMEOUT_BATCH_SIZE: ${TASK_TIMEOUT_BATCH_SIZE:-100}
+  PUBLISHING_WORKER_ENABLED: ${PUBLISHING_WORKER_ENABLED:-true}
+  PUBLISHING_MOCK_ENABLED: ${PUBLISHING_MOCK_ENABLED:-false}
+  PUBLISHING_ADAPTERS: ${PUBLISHING_ADAPTERS:-}
+  PUBLISHING_OAUTH_CALLBACK_URL: ${PUBLISHING_OAUTH_CALLBACK_URL:-http://127.0.0.1:8200/api/v1/publishing/oauth/callback}
+  PUBLISHING_OAUTH_SUCCESS_URL: ${PUBLISHING_OAUTH_SUCCESS_URL:-http://127.0.0.1:4173/publishing}
+  PUBLISHING_OAUTH_STATE_TTL_SECONDS: ${PUBLISHING_OAUTH_STATE_TTL_SECONDS:-600}
+  PUBLISHING_MEDIA_RESOLVER: ${PUBLISHING_MEDIA_RESOLVER:-}
+  PUBLISHING_WORKER_POLL_INTERVAL_SECONDS: ${PUBLISHING_WORKER_POLL_INTERVAL_SECONDS:-1}
+  PUBLISHING_WORKER_BATCH_SIZE: ${PUBLISHING_WORKER_BATCH_SIZE:-50}
+  PUBLISHING_LEASE_SECONDS: ${PUBLISHING_LEASE_SECONDS:-60}
+  PUBLISHING_MAX_ATTEMPTS: ${PUBLISHING_MAX_ATTEMPTS:-5}
+  INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-${NEW_API_RELAY_PLATFORM_INTERNAL_SERVICE_TOKEN:-local-internal-service-token-change-me-04}}
+  DOWNLOAD_EDGE_COMPLETION_SERVICE_TOKEN: ${DOWNLOAD_EDGE_COMPLETION_SERVICE_TOKEN:-local-edge-completion-service-token-change-me-06}
+  CHANNEL_COST_SIGNING_SECRET: ${CHANNEL_COST_SIGNING_SECRET:-${NEW_API_RELAY_PLATFORM_CHANNEL_COST_SIGNING_SECRET:-local-channel-cost-signing-secret-change-me}}
+  CHANNEL_COST_SIGNATURE_REQUIRED: ${CHANNEL_COST_SIGNATURE_REQUIRED:-true}
+  CHANNEL_COST_SIGNATURE_MAX_AGE_SECONDS: ${CHANNEL_COST_SIGNATURE_MAX_AGE_SECONDS:-300}
+  RELAY_TELEMETRY_SIGNING_SECRET: ${RELAY_TELEMETRY_SIGNING_SECRET:-local-relay-telemetry-signing-secret-change-me-05}
+  RELAY_TELEMETRY_SIGNATURE_MAX_AGE_SECONDS: ${RELAY_TELEMETRY_SIGNATURE_MAX_AGE_SECONDS:-300}
+  # new-api Relay -> Platform provider-alert receipt, then Platform -> the
+  # operator-owned downstream. Inbound and outbound signing keys are distinct.
+  PROVIDER_ALERT_SIGNING_SECRET: ${NEW_API_RELAY_PROVIDER_ALERT_SIGNING_SECRET:-}
+  PROVIDER_ALERT_SIGNATURE_MAX_AGE_SECONDS: ${PROVIDER_ALERT_SIGNATURE_MAX_AGE_SECONDS:-300}
+  PROVIDER_ALERT_FORWARD_WEBHOOK_URL: ${PROVIDER_ALERT_FORWARD_WEBHOOK_URL:-}
+  PROVIDER_ALERT_FORWARD_SIGNING_SECRET: ${PROVIDER_ALERT_FORWARD_SIGNING_SECRET:-}
+  PROVIDER_ALERT_FORWARD_TIMEOUT_SECONDS: ${PROVIDER_ALERT_FORWARD_TIMEOUT_SECONDS:-5}
+  DOWNLOAD_COMPLETION_EDGE_GATEWAY_SIGNING_SECRET: ${DOWNLOAD_COMPLETION_EDGE_GATEWAY_SIGNING_SECRET:-local-edge-download-signing-secret-change-me}
+  DOWNLOAD_COMPLETION_OBS_ACCESS_LOG_SIGNING_SECRET: ${DOWNLOAD_COMPLETION_OBS_ACCESS_LOG_SIGNING_SECRET:-local-obs-download-signing-secret-change-me}
+  DOWNLOAD_COMPLETION_SIGNATURE_MAX_AGE_SECONDS: ${DOWNLOAD_COMPLETION_SIGNATURE_MAX_AGE_SECONDS:-300}
+  # The Platform never returns the OBS signed URL when the controlled download
+  # gateway is configured. These credentials authenticate ticket registration,
+  # not completion delivery, and must remain independent from every Relay key.
+  # The controlled edge is part of the active new-api data plane in every
+  # topology. Local defaults remain development-only; protected overlays
+  # replace every credential with process-scoped secret files.
+  DOWNLOAD_GATEWAY_REGISTRATION_URL: ${DOWNLOAD_GATEWAY_REGISTRATION_URL:-http://relay-download-edge:8080/internal/v1/download-tickets}
+  DOWNLOAD_GATEWAY_PUBLIC_BASE_URL: ${DOWNLOAD_GATEWAY_PUBLIC_BASE_URL:-http://127.0.0.1:8400}
+  DOWNLOAD_GATEWAY_SERVICE_TOKEN: ${DOWNLOAD_GATEWAY_SERVICE_TOKEN:-local-download-gateway-service-token-change-me-01}
+  DOWNLOAD_GATEWAY_REGISTRATION_SIGNING_SECRET: ${DOWNLOAD_GATEWAY_REGISTRATION_SIGNING_SECRET:-local-download-gateway-registration-signing-change-me-02}
+  # Development-only deterministic key. Production must inject an independent
+  # cryptographically random 32-byte key encoded as canonical base64.
+  DOWNLOAD_GATEWAY_ATTEMPT_ENCRYPTION_KEY_BASE64: ${DOWNLOAD_GATEWAY_ATTEMPT_ENCRYPTION_KEY_BASE64:-AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=}
+  DOWNLOAD_GATEWAY_TIMEOUT_SECONDS: ${DOWNLOAD_GATEWAY_TIMEOUT_SECONDS:-10}
+  DOWNLOAD_GATEWAY_REGISTRATION_WORKER_ENABLED: ${DOWNLOAD_GATEWAY_REGISTRATION_WORKER_ENABLED:-true}
+  RELAY_ALLOW_LEGACY_ARTIFACT_DOWNLOAD_RESPONSE: "false"
+  DOWNLOAD_GATEWAY_REGISTRATION_POLL_INTERVAL_SECONDS: ${DOWNLOAD_GATEWAY_REGISTRATION_POLL_INTERVAL_SECONDS:-1}
+  DOWNLOAD_GATEWAY_REGISTRATION_BATCH_SIZE: ${DOWNLOAD_GATEWAY_REGISTRATION_BATCH_SIZE:-50}
+  DOWNLOAD_GATEWAY_REGISTRATION_LEASE_SECONDS: ${DOWNLOAD_GATEWAY_REGISTRATION_LEASE_SECONDS:-30}
+  DOWNLOAD_GATEWAY_REGISTRATION_LEASE_MARGIN_SECONDS: ${DOWNLOAD_GATEWAY_REGISTRATION_LEASE_MARGIN_SECONDS:-10}
+  DOWNLOAD_GATEWAY_REGISTRATION_MAX_ATTEMPTS: ${DOWNLOAD_GATEWAY_REGISTRATION_MAX_ATTEMPTS:-8}
+  DOWNLOAD_GATEWAY_REGISTRATION_RETRY_BASE_SECONDS: ${DOWNLOAD_GATEWAY_REGISTRATION_RETRY_BASE_SECONDS:-1}
+  DOWNLOAD_GATEWAY_REGISTRATION_RETRY_CAP_SECONDS: ${DOWNLOAD_GATEWAY_REGISTRATION_RETRY_CAP_SECONDS:-60}
+  DOWNLOAD_GATEWAY_TICKET_TTL_SECONDS: ${NEW_API_RELAY_DOWNLOAD_EDGE_TICKET_TTL_SECONDS:-300}
+  DOWNLOAD_GATEWAY_SOURCE_TTL_MARGIN_SECONDS: ${DOWNLOAD_GATEWAY_SOURCE_TTL_MARGIN_SECONDS:-60}
+  RELAY_ARTIFACT_SIGNED_URL_TTL_SECONDS: ${NEW_API_RELAY_ARTIFACT_SIGNED_URL_TTL_SECONDS:-600}
+  INPUT_ASSET_STORE: filesystem
+  INPUT_ASSET_FILESYSTEM_ROOT: /input-assets
+  INPUT_ASSET_PUBLIC_BASE_URL: http://127.0.0.1:${PLATFORM_HOST_PORT:-8200}
+  INPUT_ASSET_RELAY_BASE_URL: http://platform-api:8000
+  INPUT_ASSET_SIGNING_SECRET: ${INPUT_ASSET_SIGNING_SECRET:-local-input-asset-signing-secret-change-me}
+  INPUT_ASSET_SIGNED_URL_SECONDS: ${INPUT_ASSET_SIGNED_URL_SECONDS:-300}
+  INPUT_ASSET_RELAY_SIGNED_URL_SECONDS: ${INPUT_ASSET_RELAY_SIGNED_URL_SECONDS:-3600}
+
+x-new-api-relay-build: &new-api-relay-build
+  context: ./backend/new-api-relay
+  args:
+    RELAY_BUILD_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+    # Local images carry an explicit development identity so the protected
+    # one-shot path exercises the same provenance gate as secure staging.
+    RELAY_BUILD_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:-1111111111111111111111111111111111111111}
+    RELAY_BUILD_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:-sha256:1111111111111111111111111111111111111111111111111111111111111111}
+    RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:-1}
+    RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:-sha256:1111111111111111111111111111111111111111111111111111111111111111}
+
+x-new-api-relay-environment: &new-api-relay-environment
+  TZ: Asia/Shanghai
+  PORT: "3000"
+  APP_ENV: development
+  DEPLOYMENT_ENV: development
+  SQL_DSN_FILE: /run/relay-local-db-secrets/relay-local-runtime-sql-dsn
+  REDIS_CONN_STRING: redis://:${NEW_API_REDIS_PASSWORD:-local-new-api-redis-password}@relay-new-api-redis:6379/0
+  SESSION_SECRET: ${NEW_API_SESSION_SECRET:-local-new-api-session-secret-change-me}
+  CRYPTO_SECRET: ${NEW_API_CRYPTO_SECRET:-local-new-api-crypto-secret-change-me}
+  NODE_TYPE: ${NEW_API_RELAY_NODE_TYPE:-master}
+  NODE_NAME: ${NEW_API_RELAY_NODE_NAME:-relay-new-api-local-1}
+  ERROR_LOG_ENABLED: "true"
+  # Protected local PostgreSQL uses the synchronous accounting path until the
+  # batch writer has a lifecycle-fenced, lossless final flush.
+  BATCH_UPDATE_ENABLED: "false"
+  # Codex refresh rotates upstream state before local persistence. Keep it off
+  # until durable unknown-outcome/re-authentication reconciliation exists.
+  RELAY_CODEX_CREDENTIAL_AUTO_REFRESH_ENABLED: "false"
+  # Generic new-api provider endpoints have no durable Platform billing or
+  # submission-unknown state machine. Protected Relay exposes only the
+  # Platform generation contract and its fenced internal native bridge.
+  RELAY_NATIVE_PAID_COMPAT_ENABLED: "false"
+  UPDATE_TASK: "true"
+  RELAY_COMPAT_ENABLED: "true"
+  RELAY_COMPAT_ENVIRONMENT: ${NEW_API_RELAY_COMPAT_ENVIRONMENT:-development}
+  RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:-1111111111111111111111111111111111111111}
+  RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:-}
+  RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:-sha256:1111111111111111111111111111111111111111111111111111111111111111}
+  RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:-1}
+  # The base profile is intentionally development-only. Secure overlays switch
+  # this to true and install the typed A/B secret files before startup.
+  RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "false"
+  RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:-relay_schema_owner}
+  RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:-relay_schema_migrator}
+  RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+  # Development-only keyring. Secure overlays replace it with an owner-only
+  # file bind and reject this inline source.
+  RELAY_PROVIDER_CREDENTIAL_KEYRING_JSON: '${NEW_API_RELAY_LOCAL_PROVIDER_CREDENTIAL_KEYRING_JSON:-{"schema_version":1,"active_key_id":"local-v1","keys":{"local-v1":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}}}'
+  # Public verification keys only. The corresponding canonical JSON digest is
+  # embedded in production images; acceptance private keys never enter Relay.
+  RELAY_COMPAT_ROUTE_ACCEPTANCE_PUBLIC_KEYS_JSON: '${NEW_API_RELAY_ROUTE_ACCEPTANCE_PUBLIC_KEYS_JSON:-}'
+  # The compatibility client key preserves the frozen Platform contract. The
+  # upstream token is a separate native new-api token provisioned in its active
+  # control plane.
+  RELAY_COMPAT_CLIENT_CREDENTIALS_JSON: >-
+    {"${RELAY_CLIENT_ID:-customer-platform}":{"tenant_id":"${RELAY_TENANT_ID:-00000000-0000-4000-8000-000000000001}","api_key":"${RELAY_API_KEY:-local-customer-platform-relay-key-change-me}","upstream_token":"${NEW_API_CUSTOMER_PLATFORM_UPSTREAM_TOKEN:-replace-with-new-api-customer-platform-token}","callback_url":"http://platform-api:8000/internal/relay-callbacks","callback_signing_secret":"${RELAY_CALLBACK_SIGNING_SECRET:-local-relay-callback-signing-secret-change-me}"},"internal-tiktok":{"tenant_id":"${INTERNAL_TIKTOK_RELAY_TENANT_ID:-00000000-0000-4000-8000-000000000002}","api_key":"${INTERNAL_TIKTOK_RELAY_API_KEY:-local-internal-tiktok-relay-key-change-me}","upstream_token":"${NEW_API_INTERNAL_TIKTOK_UPSTREAM_TOKEN:-replace-with-new-api-internal-tiktok-token}"}}
+  # SHA-256 digests of separate tenant-scoped operations tokens. These tokens
+  # serve task reconciliation; only the canonical customer Platform tenant
+  # below may additionally use the global, secret-free channel-control facade.
+  RELAY_COMPAT_OPERATIONS_CREDENTIALS_JSON: '${NEW_API_RELAY_OPERATIONS_CREDENTIALS_JSON:-[{"tenant_id":"00000000-0000-4000-8000-000000000001","token_sha256":"56e12910b642ccd23bb552175d2e9f465dc1a696d72e05e7a5c895bdee51bd4d"}]}'
+  RELAY_PLATFORM_CONTROL_TENANT_ID: ${PLATFORM_RELAY_OPERATIONS_TENANT_ID:-00000000-0000-4000-8000-000000000001}
+  # A second, independent key proves the Platform approval payload. Unlike the
+  # bearer-token catalog, Relay must hold this HMAC secret to verify signatures.
+  RELAY_COMPAT_RECONCILIATION_APPROVAL_KEYS_JSON: '${NEW_API_RELAY_RECONCILIATION_APPROVAL_KEYS_JSON:-[{"tenant_id":"00000000-0000-4000-8000-000000000001","key_id":"local-platform-approval-v1","secret":"local-platform-reconciliation-approval-secret-change-me-04"}]}'
+  # Keep both empty on first boot. After native channels exist, configure
+  # exactly one source: route declarations are required for production, while
+  # direct capabilities are a development-only contract harness.
+  RELAY_COMPAT_MODEL_ROUTES_JSON: '${NEW_API_RELAY_MODEL_ROUTES_JSON:-}'
+  RELAY_COMPAT_MODEL_CAPABILITIES_JSON: '${NEW_API_RELAY_MODEL_CAPABILITIES_JSON:-}'
+  # new-api owns the default generation path, so its durable workers are active.
+  # Production replaces this development token through the API secret bundle.
+  RELAY_COMPAT_WORKER_ENABLED: ${NEW_API_RELAY_WORKER_ENABLED:-true}
+  RELAY_COMPAT_INTERNAL_ADMISSION_TOKEN: ${NEW_API_RELAY_INTERNAL_ADMISSION_TOKEN:-local-new-api-internal-admission-token-change-me}
+  RELAY_COMPAT_SUBMISSION_TIMEOUT_SECONDS: ${NEW_API_RELAY_SUBMISSION_TIMEOUT_SECONDS:-120}
+  RELAY_COMPAT_DELAY_QUEUE_NAMESPACE: ${NEW_API_RELAY_DELAY_QUEUE_NAMESPACE:-new-api-relay}
+  RELAY_COMPAT_DELAY_QUEUE_LEASE_SECONDS: ${NEW_API_RELAY_DELAY_QUEUE_LEASE_SECONDS:-30}
+  RELAY_COMPAT_DELAY_QUEUE_RECOVERY_SECONDS: ${NEW_API_RELAY_DELAY_QUEUE_RECOVERY_SECONDS:-1}
+  RELAY_COMPAT_DELAY_QUEUE_RECOVERY_BATCH: ${NEW_API_RELAY_DELAY_QUEUE_RECOVERY_BATCH:-256}
+  RELAY_PROVIDER_FAILURE_THRESHOLD: ${NEW_API_RELAY_PROVIDER_FAILURE_THRESHOLD:-3}
+  RELAY_PROVIDER_COOLDOWN_SECONDS: ${NEW_API_RELAY_PROVIDER_COOLDOWN_SECONDS:-30}
+  RELAY_ARTIFACT_STORE: ${NEW_API_RELAY_ARTIFACT_STORE:-filesystem}
+  RELAY_ARTIFACT_FILESYSTEM_ROOT: /artifacts
+  RELAY_ARTIFACT_PUBLIC_BASE_URL: http://127.0.0.1:${NEW_API_RELAY_HOST_PORT:-8300}
+  RELAY_ARTIFACT_SIGNING_SECRET: ${NEW_API_RELAY_ARTIFACT_SIGNING_SECRET:-local-new-api-artifact-signing-secret-change-me}
+  RELAY_ARTIFACT_MAX_BYTES: ${NEW_API_RELAY_ARTIFACT_MAX_BYTES:-536870912}
+  RELAY_ARTIFACT_TIMEOUT_SECONDS: ${NEW_API_RELAY_ARTIFACT_TIMEOUT_SECONDS:-60}
+  # The source URL must outlive a 300s Gateway ticket plus registration/retry
+  # and clock margin. Production validation keeps this explicit.
+  RELAY_ARTIFACT_SIGNED_URL_TTL_SECONDS: ${NEW_API_RELAY_ARTIFACT_SIGNED_URL_TTL_SECONDS:-600}
+  HUAWEI_OBS_ENDPOINT: ${HUAWEI_OBS_ENDPOINT:-}
+  HUAWEI_OBS_BUCKET: ${HUAWEI_OBS_BUCKET:-}
+  HUAWEI_OBS_ACCESS_KEY_ID: ${HUAWEI_OBS_ACCESS_KEY_ID:-}
+  HUAWEI_OBS_SECRET_ACCESS_KEY: ${HUAWEI_OBS_SECRET_ACCESS_KEY:-}
+  HUAWEI_OBS_SECURITY_TOKEN: ${HUAWEI_OBS_SECURITY_TOKEN:-}
+  # Provider monitoring and external delivery remain disabled for an empty
+  # control-plane first boot. Production validation requires the monitor,
+  # signed public alert sink, and Platform cost ingest sink to be configured.
+  RELAY_PROVIDER_MONITOR_ENABLED: ${NEW_API_RELAY_PROVIDER_MONITOR_ENABLED:-false}
+  RELAY_PROVIDER_MONITOR_INTERVAL_SECONDS: ${NEW_API_RELAY_PROVIDER_MONITOR_INTERVAL_SECONDS:-30}
+  RELAY_PROVIDER_MONITOR_LEASE_SECONDS: ${NEW_API_RELAY_PROVIDER_MONITOR_LEASE_SECONDS:-120}
+  RELAY_PROVIDER_MONITOR_ACQUIRE_RETRY_SECONDS: ${NEW_API_RELAY_PROVIDER_MONITOR_ACQUIRE_RETRY_SECONDS:-5}
+  RELAY_PROVIDER_HEALTHCHECK_TIMEOUT_SECONDS: ${NEW_API_RELAY_PROVIDER_HEALTHCHECK_TIMEOUT_SECONDS:-5}
+  RELAY_PROVIDER_CHANNEL_TEST_MAX_AGE_SECONDS: ${NEW_API_RELAY_PROVIDER_CHANNEL_TEST_MAX_AGE_SECONDS:-300}
+  # Native scheduled channel tests are the source of Channel.TestTime consumed
+  # by the provider monitor. Development stays opt-in; secure overrides require
+  # an explicit master node, true enablement, and a bounded frequency.
+  CHANNEL_TEST_ENABLED: ${NEW_API_RELAY_CHANNEL_TEST_ENABLED:-false}
+  CHANNEL_TEST_FREQUENCY: ${NEW_API_RELAY_CHANNEL_TEST_FREQUENCY:-10}
+  RELAY_PROVIDER_MONITOR_WINDOW_SECONDS: ${NEW_API_RELAY_PROVIDER_MONITOR_WINDOW_SECONDS:-300}
+  RELAY_PROVIDER_MONITOR_MIN_OUTCOMES: ${NEW_API_RELAY_PROVIDER_MONITOR_MIN_OUTCOMES:-20}
+  RELAY_PROVIDER_MONITOR_MIN_SUCCESS_RATE: ${NEW_API_RELAY_PROVIDER_MONITOR_MIN_SUCCESS_RATE:-0.80}
+  RELAY_PROVIDER_MONITOR_SUCCESS_RECOVERY_RATE: ${NEW_API_RELAY_PROVIDER_MONITOR_SUCCESS_RECOVERY_RATE:-0.95}
+  RELAY_PROVIDER_MONITOR_WIDESPREAD_FAILURE_RATIO: ${NEW_API_RELAY_PROVIDER_MONITOR_WIDESPREAD_FAILURE_RATIO:-0.50}
+  RELAY_PROVIDER_MONITOR_WIDESPREAD_RECOVERY_RATIO: ${NEW_API_RELAY_PROVIDER_MONITOR_WIDESPREAD_RECOVERY_RATIO:-0.20}
+  RELAY_PROVIDER_MONITOR_WIDESPREAD_MIN_ROUTES: ${NEW_API_RELAY_PROVIDER_MONITOR_WIDESPREAD_MIN_ROUTES:-2}
+  RELAY_PROVIDER_MONITOR_BATCH_DISABLED_THRESHOLD: ${NEW_API_RELAY_PROVIDER_MONITOR_BATCH_DISABLED_THRESHOLD:-3}
+  RELAY_PROVIDER_ALERT_WEBHOOK_URL: ${NEW_API_RELAY_PROVIDER_ALERT_WEBHOOK_URL:-}
+  RELAY_PROVIDER_ALERT_SIGNING_SECRET: ${NEW_API_RELAY_PROVIDER_ALERT_SIGNING_SECRET:-}
+  RELAY_PROVIDER_ALERT_CLAIM_LEASE_SECONDS: ${NEW_API_RELAY_PROVIDER_ALERT_CLAIM_LEASE_SECONDS:-60}
+  RELAY_PROVIDER_ALERT_POLL_SECONDS: ${NEW_API_RELAY_PROVIDER_ALERT_POLL_SECONDS:-0.5}
+  RELAY_PLATFORM_CHANNEL_COST_URL: ${NEW_API_RELAY_PLATFORM_CHANNEL_COST_URL:-http://platform-api:8000/internal/channel-costs}
+  RELAY_PROVIDER_CONTRACT_RATES_JSON: '${NEW_API_RELAY_PROVIDER_CONTRACT_RATES_JSON:-}'
+  RELAY_PLATFORM_INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-${NEW_API_RELAY_PLATFORM_INTERNAL_SERVICE_TOKEN:-local-internal-service-token-change-me-04}}
+  RELAY_PLATFORM_CHANNEL_COST_SIGNING_SECRET: ${CHANNEL_COST_SIGNING_SECRET:-${NEW_API_RELAY_PLATFORM_CHANNEL_COST_SIGNING_SECRET:-local-channel-cost-signing-secret-change-me}}
+  RELAY_CHANNEL_COST_CLAIM_LEASE_SECONDS: ${NEW_API_RELAY_CHANNEL_COST_CLAIM_LEASE_SECONDS:-60}
+  RELAY_CHANNEL_COST_POLL_SECONDS: ${NEW_API_RELAY_CHANNEL_COST_POLL_SECONDS:-0.5}
+  RELAY_PLATFORM_TASK_STAGE_URL: ${NEW_API_RELAY_PLATFORM_TASK_STAGE_URL:-http://platform-api:8000/internal/relay/task-stages}
+  RELAY_PLATFORM_OPERATIONS_SNAPSHOT_URL: ${NEW_API_RELAY_PLATFORM_OPERATIONS_SNAPSHOT_URL:-http://platform-api:8000/internal/relay/operations-snapshots}
+  RELAY_TELEMETRY_SIGNING_SECRET: ${RELAY_TELEMETRY_SIGNING_SECRET:-local-relay-telemetry-signing-secret-change-me-05}
+  RELAY_TELEMETRY_CLAIM_LEASE_SECONDS: ${NEW_API_RELAY_TELEMETRY_CLAIM_LEASE_SECONDS:-60}
+  RELAY_TELEMETRY_POLL_SECONDS: ${NEW_API_RELAY_TELEMETRY_POLL_SECONDS:-0.5}
+
+x-new-api-download-edge-environment: &new-api-download-edge-environment
+  # Deliberately do not inherit x-new-api-relay-environment. The public download
+  # edge must never receive Redis, tenant/channel credentials, OBS AK/SK,
+  # callback, provider-monitor, alert, or channel-cost secrets. In production
+  # this DSN should name a dedicated DML-only PostgreSQL role.
+  RELAY_DOWNLOAD_EDGE_SQL_DSN_FILE: /run/relay-local-db-secrets/relay-local-download-edge-sql-dsn
+  RELAY_DOWNLOAD_EDGE_ENVIRONMENT: ${NEW_API_RELAY_DOWNLOAD_EDGE_ENVIRONMENT:-development}
+  RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "false"
+  RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:-relay_schema_owner}
+  RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:-relay_schema_migrator}
+  RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+  RELAY_DOWNLOAD_EDGE_LISTEN_ADDRESS: ":8080"
+  RELAY_DOWNLOAD_EDGE_PUBLIC_BASE_URL: ${DOWNLOAD_GATEWAY_PUBLIC_BASE_URL:-http://127.0.0.1:8400}
+  # Exact comma-separated signed-URL hosts. Wildcards and arbitrary suffixes
+  # are deliberately unsupported. Production accepts Huawei OBS hosts only.
+  RELAY_DOWNLOAD_EDGE_ALLOWED_OBS_HOSTS: ${NEW_API_RELAY_DOWNLOAD_EDGE_ALLOWED_OBS_HOSTS:-}
+  RELAY_DOWNLOAD_EDGE_REGISTRATION_TOKEN: ${DOWNLOAD_GATEWAY_SERVICE_TOKEN:-local-download-gateway-service-token-change-me-01}
+  RELAY_DOWNLOAD_EDGE_REGISTRATION_SIGNING_SECRET: ${DOWNLOAD_GATEWAY_REGISTRATION_SIGNING_SECRET:-local-download-gateway-registration-signing-change-me-02}
+  RELAY_DOWNLOAD_EDGE_TICKET_TOKEN_KEY_BASE64: ${NEW_API_RELAY_DOWNLOAD_EDGE_TICKET_TOKEN_KEY_BASE64:-dGlja2V0LXRva2VuLWtleS0zMi1ieXRlLXZhbHVlMDE=}
+  RELAY_DOWNLOAD_EDGE_SOURCE_ENCRYPTION_KEY_BASE64: ${NEW_API_RELAY_DOWNLOAD_EDGE_SOURCE_ENCRYPTION_KEY_BASE64:-c291cmNlLWVuY3J5cHRpb24ta2V5LTMyLWJ5dGUtMDI=}
+  RELAY_DOWNLOAD_EDGE_PLATFORM_COMPLETION_URL: ${NEW_API_RELAY_DOWNLOAD_EDGE_PLATFORM_COMPLETION_URL:-http://platform-api:8000/internal/artifact-download-completions/edge-gateway}
+  RELAY_DOWNLOAD_EDGE_PLATFORM_INTERNAL_TOKEN: ${DOWNLOAD_EDGE_COMPLETION_SERVICE_TOKEN:-local-edge-completion-service-token-change-me-06}
+  RELAY_DOWNLOAD_EDGE_COMPLETION_SIGNING_SECRET: ${DOWNLOAD_COMPLETION_EDGE_GATEWAY_SIGNING_SECRET:-local-edge-download-signing-secret-change-me}
+  RELAY_DOWNLOAD_EDGE_PROOF_PRIVATE_KEY_BASE64: ${NEW_API_RELAY_DOWNLOAD_EDGE_PROOF_PRIVATE_KEY_BASE64:-cHJvb2YtcHJpdmF0ZS1zZWVkLTMyLWJ5dGVzLWtleTM=}
+  RELAY_DOWNLOAD_EDGE_PROOF_KEY_ID: ${NEW_API_RELAY_DOWNLOAD_EDGE_PROOF_KEY_ID:-local-edge-proof-key-1}
+  RELAY_DOWNLOAD_EDGE_PROOF_READ_TOKEN: ${NEW_API_RELAY_DOWNLOAD_EDGE_PROOF_READ_TOKEN:-local-download-proof-read-token-change-me-03}
+  RELAY_DOWNLOAD_EDGE_PRODUCER_SUBJECT: ${NEW_API_RELAY_DOWNLOAD_EDGE_PRODUCER_SUBJECT:-relay-download-edge/local}
+  RELAY_DOWNLOAD_EDGE_TICKET_TTL_SECONDS: ${NEW_API_RELAY_DOWNLOAD_EDGE_TICKET_TTL_SECONDS:-300}
+  RELAY_DOWNLOAD_EDGE_SOURCE_EXPIRY_MARGIN_SECONDS: ${NEW_API_RELAY_DOWNLOAD_EDGE_SOURCE_EXPIRY_MARGIN_SECONDS:-60}
+  RELAY_DOWNLOAD_EDGE_REGISTRATION_MAX_AGE_SECONDS: ${NEW_API_RELAY_DOWNLOAD_EDGE_REGISTRATION_MAX_AGE_SECONDS:-300}
+  RELAY_DOWNLOAD_EDGE_TRANSFER_TIMEOUT_SECONDS: ${NEW_API_RELAY_DOWNLOAD_EDGE_TRANSFER_TIMEOUT_SECONDS:-300}
+  RELAY_DOWNLOAD_EDGE_TRANSFER_COMPLETION_MARGIN_SECONDS: ${NEW_API_RELAY_DOWNLOAD_EDGE_TRANSFER_COMPLETION_MARGIN_SECONDS:-10}
+  RELAY_DOWNLOAD_EDGE_TICKET_CLAIM_LEASE_SECONDS: ${NEW_API_RELAY_DOWNLOAD_EDGE_TICKET_CLAIM_LEASE_SECONDS:-330}
+  RELAY_DOWNLOAD_EDGE_DELIVERY_CLAIM_LEASE_SECONDS: ${NEW_API_RELAY_DOWNLOAD_EDGE_DELIVERY_CLAIM_LEASE_SECONDS:-60}
+  RELAY_DOWNLOAD_EDGE_DELIVERY_COMMIT_MARGIN_SECONDS: ${NEW_API_RELAY_DOWNLOAD_EDGE_DELIVERY_COMMIT_MARGIN_SECONDS:-10}
+  RELAY_DOWNLOAD_EDGE_DELIVERY_POLL_SECONDS: ${NEW_API_RELAY_DOWNLOAD_EDGE_DELIVERY_POLL_SECONDS:-1}
+  RELAY_DOWNLOAD_EDGE_DELIVERY_MAX_ATTEMPTS: ${NEW_API_RELAY_DOWNLOAD_EDGE_DELIVERY_MAX_ATTEMPTS:-8}
+  RELAY_DOWNLOAD_EDGE_MAX_ARTIFACT_BYTES: ${NEW_API_RELAY_DOWNLOAD_EDGE_MAX_ARTIFACT_BYTES:-5368709120}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ai_video
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-only-password}
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init-local-databases.sql:/docker-entrypoint-initdb.d/10-ai-video-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_video -d postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # new-api Relay is the ordinary development data plane. The same service
+  # names are hardened by the secure overlay for staging and production.
+  relay-new-api-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: new_api
+      POSTGRES_PASSWORD: ${NEW_API_POSTGRES_PASSWORD:-local-new-api-postgres-password-x}
+      POSTGRES_DB: new_api
+    volumes:
+      - relay-new-api-postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init-new-api-database-isolation.sql:/docker-entrypoint-initdb.d/20-new-api-database-isolation.sql:ro
+    networks:
+      - relay-new-api-data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U new_api -d new_api"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  relay-new-api-redis:
+    image: redis:7-alpine
+    environment:
+      NEW_API_REDIS_PASSWORD: ${NEW_API_REDIS_PASSWORD:-local-new-api-redis-password}
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--appendfsync",
+        "everysec",
+        "--requirepass",
+        "${NEW_API_REDIS_PASSWORD:-local-new-api-redis-password}",
+      ]
+    volumes:
+      - relay-new-api-redis-data:/data
+    networks:
+      - relay-new-api-data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli --no-auth-warning -a \"$$NEW_API_REDIS_PASSWORD\" ping | grep -q PONG",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # The Relay image runs as uid/gid 10001. Existing named volumes may have
+  # been created by an older root-running image, so repair ownership before
+  # every start instead of weakening the long-lived service back to root.
+  relay-new-api-volume-init:
+    build: *new-api-relay-build
+    image: ai-video/new-api-relay:${NEW_API_RELAY_IMAGE_TAG:-0ab0202-local}
+    user: "0:0"
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        chown -R 10001:10001 /data /app/logs /artifacts &&
+        chmod 0700 /data /app/logs /artifacts &&
+        install -d -o 10001 -g 10001 -m 0700 /run/relay-local-db-secrets &&
+        for secret in relay-local-role-admin-dsn relay-local-migration-db-password
+        relay-local-runtime-db-password relay-local-download-edge-db-password
+        relay-local-migration-sql-dsn relay-local-runtime-sql-dsn
+        relay-local-download-edge-sql-dsn; do
+        test -f "/bootstrap-secrets/$$secret" &&
+        install -o 10001 -g 10001 -m 0400
+        "/bootstrap-secrets/$$secret" "/run/relay-local-db-secrets/$$secret";
+        done
+    volumes:
+      - relay-new-api-runtime-data:/data
+      - relay-new-api-logs:/app/logs
+      - relay-new-api-artifacts:/artifacts
+      - relay-new-api-local-db-secrets:/run/relay-local-db-secrets
+      - ./deploy/secrets/relay-local-role-admin-dsn:/bootstrap-secrets/relay-local-role-admin-dsn:ro
+      - ./deploy/secrets/relay-local-migration-db-password:/bootstrap-secrets/relay-local-migration-db-password:ro
+      - ./deploy/secrets/relay-local-runtime-db-password:/bootstrap-secrets/relay-local-runtime-db-password:ro
+      - ./deploy/secrets/relay-local-download-edge-db-password:/bootstrap-secrets/relay-local-download-edge-db-password:ro
+      - ./deploy/secrets/relay-local-migration-sql-dsn:/bootstrap-secrets/relay-local-migration-sql-dsn:ro
+      - ./deploy/secrets/relay-local-runtime-sql-dsn:/bootstrap-secrets/relay-local-runtime-sql-dsn:ro
+      - ./deploy/secrets/relay-local-download-edge-sql-dsn:/bootstrap-secrets/relay-local-download-edge-sql-dsn:ro
+    restart: "no"
+
+  # The exact API image owns the privileged predecessor as a native command.
+  # It derives SCRAM verifiers in memory and atomically creates the protected
+  # role topology plus edge NOLOGIN/zero-ACL stub under the lifecycle lock.
+  relay-new-api-db-role-pre:
+    build: *new-api-relay-build
+    image: ai-video/new-api-relay:${NEW_API_RELAY_IMAGE_TAG:-0ab0202-local}
+    entrypoint: ["/new-api", "relay-provision-database-roles"]
+    environment:
+      APP_ENV: development
+      DEPLOYMENT_ENV: development
+      NODE_TYPE: master
+      SQL_DSN_FILE: /run/relay-local-db-secrets/relay-local-role-admin-dsn
+      RELAY_LOCAL_DATABASE_ROLE_REHEARSAL: "true"
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "false"
+      RELAY_DATABASE_SECRET_FILES_REQUIRED: "false"
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:-relay_schema_owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:-relay_schema_migrator}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:-1111111111111111111111111111111111111111}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:-sha256:1111111111111111111111111111111111111111111111111111111111111111}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:-1}
+      RELAY_MIGRATION_DATABASE_PASSWORD_FILE: /run/relay-local-db-secrets/relay-local-migration-db-password
+      RELAY_RUNTIME_DATABASE_PASSWORD_FILE: /run/relay-local-db-secrets/relay-local-runtime-db-password
+      RELAY_DOWNLOAD_EDGE_DATABASE_PASSWORD_FILE: /run/relay-local-db-secrets/relay-local-download-edge-db-password
+    volumes:
+      - relay-new-api-local-db-secrets:/run/relay-local-db-secrets:ro
+    networks:
+      - relay-new-api-data
+    depends_on:
+      relay-new-api-volume-init:
+        condition: service_completed_successfully
+      relay-new-api-postgres:
+        condition: service_healthy
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700
+    restart: "no"
+
+  # Schema/data change is a one-shot command in the exact API image. The
+  # migrator receives neither Redis nor caller/provider/OBS credentials.
+  relay-new-api-migrate:
+    build: *new-api-relay-build
+    image: ai-video/new-api-relay:${NEW_API_RELAY_IMAGE_TAG:-0ab0202-local}
+    entrypoint: ["/new-api", "relay-migrate"]
+    environment:
+      APP_ENV: development
+      DEPLOYMENT_ENV: development
+      NODE_TYPE: master
+      SQL_DSN_FILE: /run/relay-local-db-secrets/relay-local-migration-sql-dsn
+      RELAY_LOCAL_DATABASE_ROLE_REHEARSAL: "true"
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:-relay_schema_owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:-relay_schema_migrator}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:-1111111111111111111111111111111111111111}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:-sha256:1111111111111111111111111111111111111111111111111111111111111111}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:-1}
+      RELAY_PROVIDER_CREDENTIAL_KEYRING_JSON: '${NEW_API_RELAY_LOCAL_PROVIDER_CREDENTIAL_KEYRING_JSON:-{"schema_version":1,"active_key_id":"local-v1","keys":{"local-v1":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}}}'
+    volumes:
+      - relay-new-api-local-db-secrets:/run/relay-local-db-secrets:ro
+    networks:
+      - relay-new-api-data
+    depends_on:
+      relay-new-api-db-role-pre:
+        condition: service_completed_successfully
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700
+    restart: "no"
+
+  # The post step never grants DML or mutates schema. It attaches the edge
+  # login only after the versioned migration manifest has committed.
+  relay-new-api-db-role-post:
+    build: *new-api-relay-build
+    image: ai-video/new-api-relay:${NEW_API_RELAY_IMAGE_TAG:-0ab0202-local}
+    environment:
+      APP_ENV: development
+      DEPLOYMENT_ENV: development
+      NODE_TYPE: master
+      RELAY_LOCAL_DATABASE_ROLE_REHEARSAL: "true"
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:-relay_schema_owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:-relay_schema_migrator}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:-1111111111111111111111111111111111111111}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:-sha256:1111111111111111111111111111111111111111111111111111111111111111}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:-1}
+      SQL_DSN_FILE: /run/relay-local-db-secrets/relay-local-role-admin-dsn
+    entrypoint: ["/new-api", "relay-provision-edge-login"]
+    command: []
+    volumes:
+      - relay-new-api-local-db-secrets:/run/relay-local-db-secrets:ro
+    networks:
+      - relay-new-api-data
+    depends_on:
+      relay-new-api-migrate:
+        condition: service_completed_successfully
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    restart: "no"
+
+  relay-new-api:
+    build: *new-api-relay-build
+    image: ai-video/new-api-relay:${NEW_API_RELAY_IMAGE_TAG:-0ab0202-local}
+    labels:
+      com.ai-video.relay.upstream-revision: "0ab02020603d22e5613bc4cf46bfab06f8567769"
+    command: ["--log-dir", "/app/logs"]
+    environment: *new-api-relay-environment
+    ports:
+      - "127.0.0.1:${NEW_API_RELAY_HOST_PORT:-8300}:3000"
+    volumes:
+      - relay-new-api-runtime-data:/data
+      - relay-new-api-logs:/app/logs
+      - relay-new-api-artifacts:/artifacts
+      - relay-new-api-local-db-secrets:/run/relay-local-db-secrets:ro
+    networks:
+      - relay-new-api-edge
+      - relay-new-api-data
+    depends_on:
+      relay-new-api-volume-init:
+        condition: service_completed_successfully
+      relay-new-api-postgres:
+        condition: service_healthy
+      relay-new-api-redis:
+        condition: service_healthy
+      relay-new-api-migrate:
+        condition: service_completed_successfully
+      relay-new-api-db-role-post:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "body=$$(wget -q -O - http://127.0.0.1:3000/health/ready) && printf '%s' \"$$body\" | grep -Eq '\"state\"[[:space:]]*:[[:space:]]*\"(healthy|degraded)\"'",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    # Normal shutdown may spend up to 120s draining database workers and then
+    # 120s draining HTTP. Keep Compose from SIGKILLing before locks/pools close.
+    stop_grace_period: 260s
+    restart: unless-stopped
+
+  relay-download-edge:
+    build: *new-api-relay-build
+    image: ai-video/new-api-relay:${NEW_API_RELAY_IMAGE_TAG:-0ab0202-local}
+    entrypoint: ["/relay-download-edge"]
+    environment: *new-api-download-edge-environment
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700
+    ports:
+      - "127.0.0.1:${NEW_API_RELAY_DOWNLOAD_EDGE_HOST_PORT:-8400}:8080"
+    volumes:
+      - relay-new-api-local-db-secrets:/run/relay-local-db-secrets:ro
+    networks:
+      - relay-new-api-edge
+      - relay-new-api-data
+    depends_on:
+      relay-new-api-postgres:
+        condition: service_healthy
+      relay-new-api:
+        condition: service_healthy
+      relay-new-api-db-role-post:
+        condition: service_completed_successfully
+      platform-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O - http://127.0.0.1:8080/health/ready | grep -q '\"status\"[[:space:]]*:[[:space:]]*\"ready\"'",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    # Covers the edge's 15s HTTP and worker drain windows plus lock cleanup.
+    stop_grace_period: 40s
+    restart: unless-stopped
+
+  platform-input-asset-init:
+    build:
+      context: ./backend/platform
+    user: "0:0"
+    command:
+      - /bin/sh
+      - -c
+      - chown -R app:app /input-assets && chmod 700 /input-assets
+    volumes:
+      - platform-input-assets:/input-assets
+    restart: "no"
+
+  platform-api:
+    build:
+      context: ./backend/platform
+    environment: *platform-environment
+    command:
+      - /bin/sh
+      - -c
+      - alembic upgrade head && uvicorn platform_api.main:app --host 0.0.0.0 --port 8000 --proxy-headers
+    ports:
+      - "127.0.0.1:${PLATFORM_HOST_PORT:-8200}:8000"
+    volumes:
+      - platform-input-assets:/input-assets
+    networks:
+      - default
+      - relay-new-api-edge
+    depends_on:
+      postgres:
+        condition: service_healthy
+      relay-new-api:
+        condition: service_healthy
+      platform-input-asset-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  platform-dispatcher:
+    build:
+      context: ./backend/platform
+    environment: *platform-environment
+    command: ["python", "-m", "platform_api.dispatcher"]
+    volumes:
+      - platform-input-assets:/input-assets
+    networks:
+      - default
+      - relay-new-api-edge
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  platform-relay-sync:
+    build:
+      context: ./backend/platform
+    environment: *platform-environment
+    command: ["python", "-m", "platform_api.relay_sync_worker"]
+    networks:
+      - default
+      - relay-new-api-edge
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  platform-timeout-worker:
+    build:
+      context: ./backend/platform
+    environment: *platform-environment
+    command: ["python", "-m", "platform_api.timeout_worker"]
+    networks:
+      - default
+      - relay-new-api-edge
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  platform-publishing-worker:
+    build:
+      context: ./backend/platform
+    environment: *platform-environment
+    command: ["python", "-m", "platform_api.publishing_worker"]
+    volumes:
+      - platform-input-assets:/input-assets
+    networks:
+      - default
+      - relay-new-api-edge
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  platform-download-gateway-registration-worker:
+    build:
+      context: ./backend/platform
+    # The registration worker is always part of the active controlled-download
+    # chain and never falls back to a provider or legacy Relay URL.
+    environment:
+      <<: *platform-environment
+      DOWNLOAD_GATEWAY_REGISTRATION_URL: ${DOWNLOAD_GATEWAY_REGISTRATION_URL:-http://relay-download-edge:8080/internal/v1/download-tickets}
+      DOWNLOAD_GATEWAY_PUBLIC_BASE_URL: ${DOWNLOAD_GATEWAY_PUBLIC_BASE_URL:-http://127.0.0.1:8400}
+      DOWNLOAD_GATEWAY_SERVICE_TOKEN: ${DOWNLOAD_GATEWAY_SERVICE_TOKEN:-local-download-gateway-service-token-change-me-01}
+      DOWNLOAD_GATEWAY_REGISTRATION_SIGNING_SECRET: ${DOWNLOAD_GATEWAY_REGISTRATION_SIGNING_SECRET:-local-download-gateway-registration-signing-change-me-02}
+      DOWNLOAD_GATEWAY_REGISTRATION_WORKER_ENABLED: "true"
+    command:
+      ["python", "-m", "platform_api.download_gateway_registration_worker"]
+    networks:
+      - default
+      - relay-new-api-edge
+    depends_on:
+      platform-api:
+        condition: service_healthy
+      relay-download-edge:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api-gateway:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./infra/nginx/platform-api.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:${GATEWAY_HOST_PORT:-8180}:8080"
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  platform-input-assets:
+  relay-new-api-postgres-data:
+  relay-new-api-redis-data:
+  relay-new-api-runtime-data:
+  relay-new-api-logs:
+  relay-new-api-artifacts:
+  relay-new-api-local-db-secrets:
+
+networks:
+  relay-new-api-edge:
+  relay-new-api-data:
+    internal: true

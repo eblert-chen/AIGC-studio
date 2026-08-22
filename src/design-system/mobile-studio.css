@@ -1,0 +1,1168 @@
+/**
+ * Studio mobile composition
+ *
+ * Phones are treated as a focused production surface, not a narrow desktop.
+ * All routes, account/surface/skin controls and capability fields remain
+ * reachable; low-frequency generation settings move behind the existing
+ * `详细设置` disclosure while the collapsed composer stays media-first.
+ */
+
+@media (max-width: 720px) {
+  .app-shell[data-theme] {
+    --studio-mobile-nav-height: 68px;
+    --studio-mobile-edge: var(--space-3, 12px);
+    --studio-home-composer-clearance: 196px;
+    --shell-topbar-size: 60px;
+    --shell-page-gutter: var(--studio-mobile-edge);
+    --shell-page-start: var(--space-4, 16px);
+    --shell-page-end: var(--space-8, 32px);
+    --shell-section-gap: var(--space-5, 20px);
+    grid-template-rows: var(--shell-topbar-size) minmax(0, 1fr);
+    padding-block-end: calc(
+      var(--studio-mobile-nav-height) + env(safe-area-inset-bottom, 0px)
+    );
+  }
+
+  /* One quiet command line: identity, workspace and skin stay reachable. */
+  .app-shell[data-theme] > .topbar {
+    height: var(--shell-topbar-size);
+    min-height: var(--shell-topbar-size);
+    gap: 4px;
+    padding-inline: 10px;
+    border-block-end-color: var(--line);
+    overflow: hidden;
+    background: var(--surface-elevated);
+  }
+
+  .app-shell[data-theme] > .topbar .brand {
+    width: 38px;
+    min-width: 38px;
+    flex: 0 0 38px;
+    padding: 0;
+    margin: 0 4px 0 0;
+    border: 0;
+  }
+
+  .app-shell[data-theme] > .topbar .brand > strong,
+  .app-shell[data-theme] > .topbar
+    :is(.brand-context, .mode-badge, .project-select, .personal-balance, .notification-anchor, .topbar-spacer) {
+    display: none;
+  }
+
+  .app-shell[data-theme] > .topbar .brand-mark {
+    width: 38px;
+    height: 38px;
+    border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+    border-radius: 10px;
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .app-shell[data-theme] > .topbar .demo-account-switcher {
+    width: 98px;
+    min-width: 82px;
+    max-width: 98px;
+    height: 44px;
+    flex: 0 1 98px;
+    gap: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .app-shell[data-theme] > .topbar .demo-account-switcher > :is(svg, span) {
+    display: none;
+  }
+
+  .app-shell[data-theme] > .topbar .demo-account-switcher select {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    min-height: 44px;
+    padding-inline: 6px;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    color: var(--secondary-ink);
+    background: transparent;
+    font-size: var(--text-caption, 12px);
+    font-weight: var(--weight-medium, 500);
+    text-overflow: ellipsis;
+  }
+
+  .app-shell[data-theme] > .topbar .surface-switch {
+    width: auto;
+    min-width: 48px;
+    max-width: 116px;
+    height: 44px;
+    min-height: 44px;
+    flex: 1 1 auto;
+    gap: 0;
+    padding: 0 0 0 5px;
+    overflow-x: auto;
+    border: 0;
+    border-inline-start: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+    overscroll-behavior-inline: contain;
+    scroll-snap-type: inline proximity;
+    scrollbar-width: none;
+  }
+
+  .app-shell[data-theme] > .topbar .surface-switch::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-shell[data-theme] > .topbar .surface-switch button {
+    position: relative;
+    width: auto;
+    min-width: 48px;
+    min-height: 44px;
+    flex: 0 0 auto;
+    padding-inline: 8px;
+    border: 0;
+    border-radius: 0;
+    color: var(--quiet);
+    background: transparent;
+    scroll-snap-align: start;
+  }
+
+  .app-shell[data-theme] > .topbar .surface-switch button.is-active {
+    color: var(--accent);
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .app-shell[data-theme] > .topbar .surface-switch button.is-active::after {
+    content: "";
+    position: absolute;
+    inset: auto 8px 3px;
+    height: 2px;
+    background: var(--accent);
+  }
+
+  .app-shell[data-theme] > .topbar .surface-switch .surface-label-long {
+    display: none;
+  }
+
+  .app-shell[data-theme] > .topbar .surface-switch .surface-label-short {
+    display: inline;
+  }
+
+  .app-shell[data-theme] > .topbar .skin-switcher {
+    width: 56px;
+    min-width: 56px;
+    height: 44px;
+    min-height: 44px;
+    flex: 0 0 56px;
+    gap: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .app-shell[data-theme] > .topbar .skin-switcher svg {
+    display: none;
+  }
+
+  .app-shell[data-theme] > .topbar .skin-switcher select {
+    width: 56px;
+    min-width: 56px;
+    max-width: 56px;
+    min-height: 44px;
+    padding-inline: 4px;
+    border: 0;
+    color: var(--secondary-ink);
+    background: transparent;
+    font-size: var(--text-caption, 12px);
+    font-weight: var(--weight-medium, 500);
+  }
+
+  .app-shell[data-theme] > .topbar .user-anchor {
+    flex: 0 0 auto;
+  }
+
+  .app-shell[data-theme] > .topbar .user-button {
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .app-shell[data-theme] > .topbar .user-button :is(span, svg:last-child) {
+    display: none;
+  }
+
+  .app-shell[data-theme] > .topbar .user-button svg:first-child {
+    display: block;
+  }
+
+  /* Route navigation remains complete; 320px scrolls instead of shrinking. */
+  .app-shell[data-theme] > .side-nav {
+    height: calc(
+      var(--studio-mobile-nav-height) + env(safe-area-inset-bottom, 0px)
+    );
+    min-height: calc(
+      var(--studio-mobile-nav-height) + env(safe-area-inset-bottom, 0px)
+    );
+    align-items: stretch;
+    justify-content: space-between;
+    flex-direction: row;
+    gap: 2px;
+    padding: 2px 6px env(safe-area-inset-bottom, 0px);
+    border-block-start: 1px solid var(--line);
+    background: var(--surface-elevated);
+  }
+
+  .app-shell[data-theme] > .side-nav > div {
+    display: flex;
+    height: 65px;
+    min-height: 65px;
+    min-width: 0;
+    flex: 1 1 auto;
+    align-self: stretch;
+    flex-direction: row;
+    gap: 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .app-shell[data-theme] > .side-nav > div::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-shell[data-theme] > .side-nav button,
+  .app-shell[data-theme] > .side-nav > button {
+    width: 52px;
+    min-width: 52px;
+    height: 64px;
+    min-height: 64px;
+    flex: 0 0 52px;
+    gap: 1px;
+    padding: 7px 2px 5px;
+    border-radius: 0;
+    color: var(--quiet);
+    background: transparent;
+  }
+
+  .app-shell[data-theme] > .side-nav > button {
+    width: 54px;
+    min-width: 54px;
+    flex: 0 0 54px;
+    flex-basis: 54px;
+  }
+
+  .app-shell[data-theme] > .side-nav button svg,
+  .app-shell[data-theme] > .side-nav > button svg {
+    width: 21px;
+    height: 21px;
+  }
+
+  .app-shell[data-theme] > .side-nav button span,
+  .app-shell[data-theme] > .side-nav > button span {
+    font-size: var(--text-caption, 12px);
+    line-height: 1.25;
+  }
+
+  .app-shell[data-theme] > .side-nav button:is(:hover, .is-active),
+  .app-shell[data-theme] > .side-nav > button:is(:hover, .is-active) {
+    color: var(--accent);
+    background: transparent;
+  }
+
+  .app-shell[data-theme] > .side-nav button.is-active::before,
+  .app-shell[data-theme] > .side-nav > button.is-active::before {
+    top: 0;
+    right: auto;
+    bottom: auto;
+    left: 50%;
+    width: 18px;
+    height: 2px;
+    border-radius: 0 0 2px 2px;
+    background: var(--accent);
+    transform: translateX(-50%);
+  }
+
+  /* Home: compact editorial heading, one scrollable filter rail, real media. */
+  .app-shell[data-theme].is-community-home:not(.is-creation-hub)
+    .community-home {
+    padding: var(--space-4, 16px) var(--studio-mobile-edge)
+      var(--space-8, 32px);
+  }
+
+  .app-shell[data-theme].is-community-home .community-heading {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: var(--space-3, 12px);
+    padding-block-end: var(--space-3, 12px);
+  }
+
+  .app-shell[data-theme].is-community-home .community-page-intro {
+    min-width: 0;
+  }
+
+  .app-shell[data-theme].is-community-home .community-kicker {
+    margin-block-end: 3px;
+  }
+
+  .app-shell[data-theme].is-community-home .community-page-intro h1 {
+    font-size: 1.75rem;
+    letter-spacing: -0.035em;
+  }
+
+  .app-shell[data-theme].is-community-home .community-page-intro p {
+    display: -webkit-box;
+    max-width: 34ch;
+    margin-block-start: 5px;
+    overflow: hidden;
+    font-size: var(--text-body-sm, 13px);
+    line-height: 1.55;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .app-shell[data-theme].is-community-home .community-heading-copy {
+    display: grid;
+    align-self: end;
+    justify-items: end;
+    padding-block-end: 2px;
+  }
+
+  .app-shell[data-theme].is-community-home .community-heading-copy > span {
+    font-size: var(--text-caption, 12px);
+    white-space: nowrap;
+  }
+
+  .app-shell[data-theme].is-community-home .community-heading-copy small {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-community-home .community-toolbar {
+    display: flex;
+    min-height: 56px;
+    align-items: center;
+    gap: var(--space-2, 8px);
+    padding: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-block-end: 1px solid var(--line);
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .app-shell[data-theme].is-community-home .community-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-community-home
+    :is(.community-primary-tabs, .community-category-tabs) {
+    width: max-content;
+    min-width: max-content;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 2px;
+    padding: 0;
+    border: 0;
+  }
+
+  .app-shell[data-theme].is-community-home .community-toolbar-divider {
+    display: block;
+    width: 1px;
+    height: 20px;
+    flex: 0 0 1px;
+    background: var(--line-strong);
+  }
+
+  .app-shell[data-theme].is-community-home
+    :is(.community-primary-tabs button, .community-category-tabs button) {
+    min-height: 44px;
+    padding-inline: 10px;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .app-shell[data-theme].is-community-home
+    .community-category-tabs
+    button.is-active {
+    border-color: transparent;
+    color: var(--accent);
+    background: transparent;
+  }
+
+  .app-shell[data-theme].is-community-home .community-gallery {
+    margin-block-start: var(--space-3, 12px);
+  }
+
+  .app-shell[data-theme].is-community-home .community-hero {
+    height: clamp(310px, 86vw, 360px);
+    border-radius: 10px;
+  }
+
+  .app-shell[data-theme].is-community-home .community-hero-copy {
+    inset: auto 18px 18px;
+    width: auto;
+  }
+
+  .app-shell[data-theme].is-community-home .community-hero-copy h2 {
+    max-width: 9ch;
+    font-size: clamp(1.75rem, 8vw, 2.25rem);
+  }
+
+  .app-shell[data-theme].is-community-home .community-hero-copy p {
+    display: -webkit-box;
+    max-width: 31ch;
+    margin-block: 8px 12px;
+    overflow: hidden;
+    font-size: var(--text-body-sm, 13px);
+    line-height: 1.55;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .app-shell[data-theme].is-community-home .community-hero-copy button {
+    min-height: 44px;
+  }
+
+  .app-shell[data-theme].is-community-home .community-feed-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-6, 24px) 10px;
+    margin-block-start: var(--space-5, 20px);
+  }
+
+  .app-shell[data-theme].is-community-home
+    .community-card.is-landscape {
+    grid-column: 1 / -1;
+  }
+
+  .app-shell[data-theme].is-community-home
+    :is(.community-card.is-square, .community-card.is-portrait, .community-card.is-tall) {
+    grid-column: span 1;
+  }
+
+  .app-shell[data-theme].is-community-home
+    :is(.community-card.is-portrait, .community-card.is-tall)
+    .community-card-media {
+    aspect-ratio: 4 / 5;
+  }
+
+  .app-shell[data-theme].is-community-home .community-card-caption {
+    gap: 5px;
+    padding-block-start: 8px;
+  }
+
+  .app-shell[data-theme].is-community-home .community-card-caption button {
+    min-width: 44px;
+    min-height: 44px;
+    padding-inline: 6px;
+  }
+
+  /* Creation: records own the viewport; filters form one swipeable rail. */
+  .app-shell[data-theme].is-community-home {
+    --studio-home-composer-clearance: 0px;
+    grid-template-rows: var(--shell-topbar-size) minmax(0, 1fr) auto auto;
+  }
+
+  .app-shell[data-theme].is-creation-hub {
+    --studio-home-composer-clearance: 0px;
+    grid-template-rows: var(--shell-topbar-size) minmax(0, 1fr) auto auto;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-hub {
+    padding: var(--space-4, 16px) var(--studio-mobile-edge)
+      var(--space-5, 20px);
+    scroll-padding-block-end: var(--space-5, 20px);
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-hub-titlebar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: var(--space-3, 12px);
+    min-height: 0;
+    padding-block-end: var(--space-3, 12px);
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-hub-heading h1 {
+    font-size: 1.75rem;
+    letter-spacing: -0.035em;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-hub-heading p {
+    display: -webkit-box;
+    margin-block-start: 4px;
+    overflow: hidden;
+    line-height: 1.5;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-search {
+    width: 44px;
+    align-self: end;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-title-tools {
+    width: auto;
+    min-width: 0;
+    align-self: end;
+    gap: var(--space-2, 8px);
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-title-meta {
+    min-width: max-content;
+    padding-inline-end: 0;
+    border-inline-end: 0;
+    white-space: nowrap;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-search.is-open {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-search input {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-hub-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 48px;
+    align-items: stretch;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-media-tabs {
+    gap: var(--space-5, 20px);
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-media-tabs button {
+    min-height: 48px;
+    font-size: var(--text-body-sm, 13px);
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-capability-note {
+    width: 100%;
+    max-width: none;
+    padding-block: 7px;
+    border-block-start: 1px solid var(--line);
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-toolbar {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: var(--space-2, 8px);
+    padding-block: 8px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-creation-hub
+    :is(.creation-toolbar-left, .creation-toolbar-right) {
+    display: flex;
+    width: max-content;
+    min-width: max-content;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--space-2, 8px);
+  }
+
+  .app-shell[data-theme].is-creation-hub
+    :is(.creation-toolbar-left, .creation-toolbar-right)
+    > * {
+    width: auto;
+    min-width: max-content;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-select {
+    min-width: 124px;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-filter-button {
+    min-width: 98px;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-group-select {
+    min-width: 148px;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-layout-switch {
+    min-width: 144px;
+    flex: 0 0 144px;
+    height: 44px;
+    padding: 0;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-layout-switch button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-task-grid {
+    padding-block: var(--space-4, 16px) var(--space-5, 20px);
+  }
+
+  .app-shell[data-theme].is-creation-hub
+    .creation-task-grid:is(.is-grid, .is-compact) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-6, 24px) 10px;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-task-copy {
+    padding-block-start: 8px;
+  }
+
+  /* The collapsed command sheet exposes frequent actions only. Model and
+   * generation-mode selects remain one tap away in the existing disclosure. */
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded) {
+    grid-template-rows: 46px 64px 58px;
+    height: 168px;
+    max-height: 168px;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    .inspector-scroll {
+    display: block;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    .model-section,
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    .composer-mode-rail {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-community-home > .community-composer {
+    overflow: hidden;
+    border: 1px solid var(--line-strong);
+    border-radius: 16px;
+    background: var(--surface-elevated);
+    box-shadow: 0 14px 34px color-mix(in srgb, var(--ink) 13%, transparent);
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .community-composer-header {
+    min-height: 46px;
+    padding-inline: 10px 8px;
+    border-block-end: 1px solid var(--line);
+    background: var(--surface-elevated);
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .composer-media-tabs {
+    gap: 10px;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .composer-media-tabs button {
+    min-height: 44px;
+    gap: 4px;
+    font-size: var(--text-caption, 12px);
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .composer-current-mode {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    padding-inline-start: 9px;
+    margin-inline-start: 9px;
+    overflow: hidden;
+    border-inline-start: 1px solid var(--line);
+    color: var(--quiet);
+    font-size: var(--text-caption, 12px);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .composer-settings-button {
+    min-width: max-content;
+    min-height: 44px;
+    gap: 4px;
+    padding-inline: 7px;
+    margin-inline-start: auto;
+    border-radius: var(--radius-control, 6px);
+    font-size: var(--text-caption, 12px);
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    .composer-prompt-section {
+    height: 64px;
+    min-height: 64px;
+    padding: 8px 10px;
+    overflow: hidden;
+    border: 0;
+    background: var(--surface-elevated);
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    .field-heading {
+    inset: auto 17px 11px auto;
+    z-index: 2;
+    pointer-events: none;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    .field-heading label {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    .field-heading span {
+    color: var(--quiet);
+    font-size: var(--text-caption, 12px);
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    .composer-prompt-row {
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 7px;
+    margin: 0;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    .composer-add-media {
+    width: 48px;
+    height: 48px;
+    min-height: 48px;
+    border-color: var(--line);
+    border-radius: 9px;
+    color: var(--quiet);
+    background: var(--surface-soft);
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    textarea {
+    height: 48px;
+    min-height: 48px;
+    padding: 8px 62px 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    color: var(--ink);
+    background: var(--surface-elevated);
+    font-size: var(--text-body-sm, 13px);
+    line-height: 1.45;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    textarea::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .inspector-actions {
+    display: grid;
+    min-height: 58px;
+    grid-template-columns: minmax(0, 1fr) 132px;
+    align-items: center;
+    gap: var(--space-2, 8px);
+    padding: 7px 9px 7px 12px;
+    border-block-start: 1px solid var(--line);
+    background: var(--surface-elevated);
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .cost-row {
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .generate-button {
+    min-height: 44px;
+    border-radius: 9px;
+    font-size: var(--text-body-sm, 13px);
+  }
+
+  .app-shell[data-theme].is-community-home:not(.is-creation-hub)
+    > .community-composer,
+  .app-shell[data-theme].is-community-home:not(.is-creation-hub)
+    > .community-composer.is-expanded {
+    position: relative;
+    inset: auto;
+    grid-column: 1;
+    grid-row: 3;
+    width: calc(100% - var(--studio-mobile-edge) - var(--studio-mobile-edge));
+    justify-self: start;
+    margin: 8px var(--studio-mobile-edge) 0;
+    transform: none;
+  }
+
+  .app-shell[data-theme].is-creation-hub
+    > .community-composer,
+  .app-shell[data-theme].is-creation-hub
+    > .community-composer.is-expanded {
+    position: relative;
+    inset: auto;
+    grid-column: 1;
+    grid-row: 3;
+    width: calc(100% - var(--studio-mobile-edge) - var(--studio-mobile-edge));
+    justify-self: start;
+    margin: 8px var(--studio-mobile-edge) 0;
+    transform: none;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer.is-expanded {
+    height: min(54dvh, 480px);
+    max-height: min(54dvh, 480px);
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer.is-expanded
+    .inspector-scroll {
+    overflow-y: auto;
+    overscroll-behavior-block: contain;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer.is-expanded
+    .media-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer.is-expanded
+    :is(.compact-fields, .historical-parameters dl) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .app-shell[data-theme].is-community-home > .taskbar {
+    position: relative;
+    inset: auto;
+    z-index: 4;
+    grid-column: 1;
+    grid-row: 4;
+    width: calc(100% - var(--studio-mobile-edge) - var(--studio-mobile-edge));
+    min-height: 60px;
+    align-self: start;
+    justify-self: start;
+    margin: 8px var(--studio-mobile-edge) 8px;
+    padding: 8px;
+    border-radius: var(--radius-md, 10px);
+    box-shadow: none;
+  }
+
+  .app-shell[data-theme].is-community-home > .taskbar .task-status-icon {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+  }
+
+  .app-shell[data-theme].is-community-home > .taskbar .task-progress-area,
+  .app-shell[data-theme].is-community-home > .taskbar .task-eta {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-community-home > .taskbar .task-action {
+    min-height: 44px;
+  }
+
+  .app-shell[data-theme].is-secondary-page > .taskbar {
+    position: fixed;
+    inset: auto var(--studio-mobile-edge)
+      calc(
+        var(--studio-mobile-nav-height) + env(safe-area-inset-bottom, 0px) +
+          var(--space-2, 8px)
+      );
+    z-index: 52;
+    width: auto;
+    min-height: 60px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 8px;
+    border-radius: var(--radius-md, 10px);
+    box-shadow: 0 10px 28px var(--panel-shadow);
+  }
+
+  .app-shell[data-theme].is-secondary-page > .taskbar .task-progress-area,
+  .app-shell[data-theme].is-secondary-page > .taskbar .task-eta {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-secondary-page > .taskbar .task-action {
+    min-height: 44px;
+  }
+
+  /* The remaining Studio routes use concise headings and swipeable filters. */
+  .app-shell[data-theme].is-secondary-page .secondary-view,
+  .app-shell[data-theme].is-secondary-page .publication-center {
+    padding-inline: var(--studio-mobile-edge);
+    padding-block-start: var(--space-4, 16px);
+  }
+
+  .app-shell[data-theme].is-secondary-page
+    :is(.secondary-heading, .publication-heading) {
+    gap: var(--space-3, 12px);
+    padding-block-end: var(--space-3, 12px);
+  }
+
+  .app-shell[data-theme].is-secondary-page
+    :is(.secondary-heading, .publication-heading)
+    h1 {
+    font-size: 1.75rem;
+    letter-spacing: -0.035em;
+  }
+
+  .app-shell[data-theme].is-secondary-page
+    :is(.secondary-heading, .publication-heading)
+    p:not(.permission-note) {
+    margin-block-start: 5px;
+    line-height: 1.5;
+  }
+
+  .app-shell[data-theme].is-secondary-page .history-toolbar {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: var(--space-2, 8px);
+    padding-block-end: 4px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .app-shell[data-theme].is-secondary-page .history-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-secondary-page .history-toolbar > * {
+    width: auto;
+    min-width: 136px;
+    flex: 0 0 auto;
+  }
+
+  .app-shell[data-theme].is-secondary-page .history-toolbar select {
+    width: auto;
+    min-width: 136px;
+  }
+}
+
+@media (max-width: 620px) {
+  .app-shell[data-theme].is-creation-hub
+    .creation-task-grid:is(.is-grid, .is-compact) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-task-card.is-list {
+    grid-template-columns: 104px minmax(0, 1fr);
+  }
+
+  .app-shell[data-theme].is-secondary-page
+    .media-view
+    .asset-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-6, 24px) 10px;
+  }
+
+  .app-shell[data-theme].is-secondary-page .artwork-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-8, 32px);
+  }
+}
+
+@media (max-width: 360px) {
+  .app-shell[data-theme] {
+    --studio-mobile-edge: 10px;
+  }
+
+  .app-shell[data-theme] > .topbar {
+    padding-inline: 8px;
+  }
+
+  .app-shell[data-theme] > .topbar .demo-account-switcher {
+    width: 82px;
+    max-width: 82px;
+    flex-basis: 82px;
+  }
+
+  .app-shell[data-theme] > .topbar .surface-switch {
+    max-width: 98px;
+  }
+
+  .app-shell[data-theme] > .side-nav {
+    gap: 0;
+  }
+
+  .app-shell[data-theme] > .side-nav > div {
+    flex: 0 0 auto;
+    gap: 0;
+  }
+
+  .app-shell[data-theme] > .side-nav > div > button,
+  .app-shell[data-theme] > .side-nav > button {
+    width: 44px;
+    min-width: 44px;
+    flex: 0 0 44px;
+  }
+
+  .app-shell[data-theme].is-community-home .community-heading {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell[data-theme].is-community-home .community-heading-copy {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .composer-media-tabs {
+    gap: 7px;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .composer-media-tabs button {
+    gap: 3px;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .composer-current-mode {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .composer-settings-button {
+    padding-inline: 5px;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer
+    .inspector-actions {
+    grid-template-columns: minmax(0, 1fr) 122px;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer.is-expanded
+    :is(.compact-fields, .historical-parameters dl) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* On genuinely short phones the compact command sheet becomes a launcher.
+ * Its existing disclosure opens the complete capability form; nothing is
+ * removed, while the home media and creation records retain a useful stage. */
+@media (max-width: 360px) and (max-height: 640px) {
+  .app-shell[data-theme] {
+    --studio-home-composer-clearance: 66px;
+  }
+
+  .app-shell[data-theme].is-community-home:not(.is-creation-hub)
+    .community-home,
+  .app-shell[data-theme].is-creation-hub .creation-hub {
+    padding-block-start: 8px;
+  }
+
+  .app-shell[data-theme].is-community-home .community-heading {
+    gap: 0;
+    padding-block-end: 8px;
+  }
+
+  .app-shell[data-theme].is-community-home .community-kicker {
+    margin-block-end: 0;
+  }
+
+  .app-shell[data-theme].is-community-home .community-page-intro h1,
+  .app-shell[data-theme].is-creation-hub .creation-hub-heading h1 {
+    font-size: 1.625rem;
+  }
+
+  .app-shell[data-theme].is-community-home .community-page-intro p {
+    margin-block-start: 2px;
+    -webkit-line-clamp: 1;
+  }
+
+  .app-shell[data-theme].is-community-home .community-toolbar {
+    min-height: 52px;
+  }
+
+  .app-shell[data-theme].is-community-home .community-hero {
+    height: clamp(228px, 72vw, 260px);
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-hub-titlebar {
+    min-height: 52px;
+    padding-block-end: 8px;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-hub-heading .view-kicker,
+  .app-shell[data-theme].is-creation-hub .creation-hub-heading p {
+    display: none;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-hub-header,
+  .app-shell[data-theme].is-creation-hub .creation-media-tabs button {
+    min-height: 44px;
+  }
+
+  .app-shell[data-theme].is-creation-hub .creation-toolbar {
+    min-height: 56px;
+    padding-block: 6px;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded) {
+    grid-template-rows: 46px;
+    height: 46px;
+    max-height: 46px;
+  }
+
+  .app-shell[data-theme].is-community-home
+    > .community-composer:not(.is-expanded)
+    :is(.inspector-scroll, .inspector-actions) {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-theme]
+    :is(.surface-switch, .community-toolbar, .creation-toolbar, .history-toolbar) {
+    scroll-behavior: auto;
+  }
+}

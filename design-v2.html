@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lumina · 创作工作台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  /* ===================================================================
+     Design tokens — near-black, restrained grayscale, single warm accent
+     No gradients on large surfaces. Borders over shadows.
+     =================================================================== */
+  :root{
+    --bg:           #0a0a0b;
+    --bg-elev:      #101012;
+    --panel:        #121214;
+    --panel-2:      #16161a;
+    --panel-3:      #1c1c20;
+    --line:         rgba(255,255,255,.07);
+    --line-2:       rgba(255,255,255,.12);
+    --line-strong:  rgba(255,255,255,.20);
+    --txt:          #ECECEE;
+    --txt-2:        #9A9AA2;
+    --txt-3:        #62626B;
+    --txt-4:        #42424A;
+    --accent:       #C9A26B;   /* warm amber — active / focus only */
+    --accent-soft:  rgba(201,162,107,.14);
+    --primary:      #F3F1EC;   /* off-white CTA */
+    --primary-ink:  #0a0a0b;
+    --danger:       #E0625C;
+    --radius:       10px;
+    --radius-sm:    7px;
+    --r-pill:       999px;
+    --ease:         cubic-bezier(.22,.61,.36,1);
+    --shadow:       0 1px 2px rgba(0,0,0,.4), 0 8px 30px rgba(0,0,0,.35);
+    --font:         'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --mono:         'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; }
+  body{
+    font-family:var(--font);
+    background:var(--bg);
+    color:var(--txt);
+    font-size:13.5px;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow:hidden;
+  }
+  ::selection{ background:var(--accent-soft); color:var(--txt); }
+  button{ font-family:inherit; cursor:pointer; border:none; background:none; color:inherit; }
+  input,textarea,select{ font-family:inherit; color:inherit; }
+  ::-webkit-scrollbar{ width:9px; height:9px; }
+  ::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.10); border-radius:999px; border:2px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover{ background:rgba(255,255,255,.18); background-clip:padding-box; }
+  ::-webkit-scrollbar-track{ background:transparent; }
+
+  /* ============================ Layout ============================ */
+  .app{ display:flex; flex-direction:column; height:100vh; }
+
+  /* ---------- Top bar ---------- */
+  .topbar{
+    height:50px; flex:0 0 50px;
+    display:flex; align-items:center; gap:14px;
+    padding:0 16px;
+    border-bottom:1px solid var(--line);
+    background:var(--bg-elev);
+    z-index:40;
+  }
+  .brand{ display:flex; align-items:center; gap:9px; }
+  .logo{
+    width:24px; height:24px; border-radius:7px;
+    background:var(--txt); color:#0a0a0b;
+    display:grid; place-items:center; font-weight:700; font-size:13px;
+    letter-spacing:-.5px;
+  }
+  .brand b{ font-weight:600; font-size:14px; letter-spacing:-.2px; }
+  .brand .sub{ color:var(--txt-3); font-weight:400; font-size:12.5px; }
+  .divider{ width:1px; height:20px; background:var(--line-2); }
+  .crumb{
+    display:flex; align-items:center; gap:7px;
+    color:var(--txt-2); font-size:12.5px;
+  }
+  .crumb .proj{ color:var(--txt); font-weight:500; }
+  .crumb svg{ width:13px; height:13px; opacity:.5; }
+
+  .topbar .spacer{ flex:1; }
+  .search{
+    display:flex; align-items:center; gap:8px;
+    width:220px; height:32px; padding:0 11px;
+    background:var(--panel); border:1px solid var(--line);
+    border-radius:var(--radius-sm); color:var(--txt-3);
+    font-size:12.5px; transition:border-color .15s var(--ease), background .15s var(--ease);
+  }
+  .search:focus-within{ border-color:var(--line-strong); background:var(--panel-2); }
+  .search svg{ width:14px; height:14px; }
+  .search input{ flex:1; background:none; border:none; outline:none; color:var(--txt); }
+  .search kbd{
+    font-family:var(--mono); font-size:10.5px; color:var(--txt-3);
+    border:1px solid var(--line-2); border-radius:4px; padding:1px 5px;
+  }
+
+  .credits{
+    display:flex; align-items:center; gap:7px;
+    height:32px; padding:0 12px;
+    border:1px solid var(--line); border-radius:var(--r-pill);
+    background:var(--panel); font-size:12.5px; color:var(--txt-2);
+    transition:border-color .15s var(--ease);
+  }
+  .credits:hover{ border-color:var(--line-2); }
+  .credits b{ color:var(--txt); font-weight:600; font-variant-numeric:tabular-nums; }
+  .credits .dot{ width:6px; height:6px; border-radius:50%; background:var(--accent); }
+
+  .icon-btn{
+    width:32px; height:32px; border-radius:var(--radius-sm);
+    display:grid; place-items:center; color:var(--txt-2);
+    transition:background .15s var(--ease), color .15s var(--ease);
+    position:relative;
+  }
+  .icon-btn:hover{ background:var(--panel-2); color:var(--txt); }
+  .icon-btn svg{ width:17px; height:17px; }
+  .icon-btn .badge{
+    position:absolute; top:6px; right:6px; width:6px; height:6px;
+    background:var(--danger); border-radius:50%; border:1.5px solid var(--bg-elev);
+  }
+  .avatar{
+    width:30px; height:30px; border-radius:50%;
+    background:linear-gradient(180deg,#2a2a30,#161619);
+    border:1px solid var(--line-2);
+    display:grid; place-items:center; font-size:11px; font-weight:600; color:var(--txt-2);
+  }
+
+  /* ---------- Body: rail + main ---------- */
+  .body{ flex:1; display:flex; min-height:0; }
+
+  .rail{
+    width:68px; flex:0 0 68px;
+    border-right:1px solid var(--line);
+    background:var(--bg-elev);
+    display:flex; flex-direction:column; align-items:center;
+    padding:10px 0; gap:3px;
+  }
+  .rail-item{
+    width:54px; height:50px; border-radius:var(--radius-sm);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+    color:var(--txt-3); font-size:10px; font-weight:500; letter-spacing:.2px;
+    position:relative; transition:color .15s var(--ease), background .15s var(--ease);
+  }
+  .rail-item svg{ width:19px; height:19px; }
+  .rail-item:hover{ color:var(--txt); background:var(--panel); }
+  .rail-item.active{ color:var(--txt); }
+  .rail-item.active::before{
+    content:""; position:absolute; left:-10px; top:11px; bottom:11px;
+    width:2.5px; border-radius:2px; background:var(--accent);
+  }
+  .rail-spacer{ flex:1; }
+
+  .main{ flex:1; min-width:0; position:relative; overflow:hidden; }
+  .view{ position:absolute; inset:0; display:none; }
+  .view.active{ display:flex; }
+
+  /* ==================== CREATE VIEW ==================== */
+  .create{ display:flex; width:100%; height:100%; }
+
+  /* left: assets + history */
+  .col-left{
+    width:288px; flex:0 0 288px; border-right:1px solid var(--line);
+    display:flex; flex-direction:column; min-height:0;
+  }
+  .panel-head{
+    display:flex; align-items:center; justify-content:space-between;
+    height:46px; padding:0 16px; border-bottom:1px solid var(--line);
+    flex:0 0 46px;
+  }
+  .panel-head h3{ font-size:12px; font-weight:600; letter-spacing:.3px; color:var(--txt); }
+  .panel-head .meta{ font-size:11px; color:var(--txt-3); }
+  .panel-body{ flex:1; overflow-y:auto; padding:14px 14px; }
+
+  .section-label{
+    font-size:10.5px; font-weight:600; letter-spacing:.7px; text-transform:uppercase;
+    color:var(--txt-3); margin:0 2px 10px;
+  }
+
+  .asset-grid{ display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-bottom:22px; }
+  .asset{
+    aspect-ratio:1; border-radius:var(--radius-sm); overflow:hidden;
+    border:1px solid var(--line); position:relative; cursor:pointer;
+    background:var(--panel-2); transition:border-color .15s var(--ease);
+  }
+  .asset:hover{ border-color:var(--line-strong); }
+  .asset .thumb{ width:100%; height:100%; }
+  .asset.add{
+    display:grid; place-items:center; color:var(--txt-3);
+    border:1px dashed var(--line-2); background:transparent;
+  }
+  .asset.add:hover{ color:var(--txt); border-color:var(--txt-3); }
+  .asset.add svg{ width:20px; height:20px; }
+
+  .task-list{ display:flex; flex-direction:column; gap:6px; }
+  .task{
+    display:flex; gap:10px; padding:7px; border-radius:var(--radius-sm);
+    cursor:pointer; transition:background .15s var(--ease); align-items:center;
+  }
+  .task:hover{ background:var(--panel); }
+  .task .pic{
+    width:46px; height:30px; border-radius:5px; flex:0 0 46px; overflow:hidden;
+    background:var(--panel-2); border:1px solid var(--line);
+  }
+  .task .info{ min-width:0; flex:1; }
+  .task .name{ font-size:12px; color:var(--txt); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .task .status{ font-size:10.5px; color:var(--txt-3); display:flex; align-items:center; gap:5px; }
+  .task .status .s-dot{ width:6px; height:6px; border-radius:50%; background:var(--accent); }
+  .task .status .s-dot.done{ background:#5BBF8A; }
+  .task .status .s-dot.run{ background:var(--accent); animation:pulse 1.4s infinite; }
+  @keyframes pulse{ 0%,100%{opacity:1} 50%{opacity:.35} }
+
+  /* center: prompt + canvas */
+  .col-center{ flex:1; min-width:0; display:flex; flex-direction:column; }
+  .center-scroll{ flex:1; overflow-y:auto; padding:22px 26px 26px; display:flex; flex-direction:column; gap:20px; }
+
+  .prompt-card{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:16px 16px 14px;
+  }
+  .prompt-card .lbl{
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:10px;
+  }
+  .prompt-card .lbl span{ font-size:11px; font-weight:600; letter-spacing:.5px; color:var(--txt-2); }
+  .prompt-card .lbl .count{ font-size:11px; color:var(--txt-3); font-variant-numeric:tabular-nums; }
+  .prompt-card textarea{
+    width:100%; min-height:74px; resize:none; background:none; border:none; outline:none;
+    color:var(--txt); font-size:14px; line-height:1.55; letter-spacing:-.1px;
+  }
+  .prompt-card textarea::placeholder{ color:var(--txt-4); }
+  .ref-row{ display:flex; align-items:center; gap:8px; margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+  .chip{
+    display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 11px;
+    border:1px solid var(--line); border-radius:var(--r-pill); background:var(--panel-2);
+    font-size:12px; color:var(--txt-2); transition:border-color .15s var(--ease), color .15s var(--ease);
+  }
+  .chip:hover{ border-color:var(--line-2); color:var(--txt); }
+  .chip svg{ width:14px; height:14px; }
+  .ref-row .spacer{ flex:1; }
+  .ref-row .hint{ font-size:11px; color:var(--txt-4); }
+
+  /* canvas */
+  .canvas-wrap{ display:flex; flex-direction:column; gap:11px; }
+  .canvas-toolbar{ display:flex; align-items:center; gap:8px; }
+  .canvas-toolbar .title{ font-size:12.5px; font-weight:500; color:var(--txt); }
+  .canvas-toolbar .spacer{ flex:1; }
+  .tool{
+    width:30px; height:30px; border-radius:var(--radius-sm); display:grid; place-items:center;
+    color:var(--txt-3); border:1px solid var(--line); background:var(--panel);
+    transition:color .15s var(--ease), border-color .15s var(--ease);
+  }
+  .tool:hover{ color:var(--txt); border-color:var(--line-2); }
+  .tool svg{ width:15px; height:15px; }
+
+  .canvas{
+    position:relative; aspect-ratio:16/9; width:100%;
+    background:#000; border:1px solid var(--line-2); border-radius:var(--radius);
+    overflow:hidden; display:grid; place-items:center;
+  }
+  .canvas .frame{
+    position:absolute; inset:0;
+    background:
+      radial-gradient(120% 120% at 30% 20%, #20232b 0%, #0c0d10 60%, #060607 100%);
+  }
+  .canvas .frame::after{
+    content:""; position:absolute; inset:0;
+    background-image:
+      linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+    background-size:46px 46px; opacity:.5;
+  }
+  .canvas .center-play{
+    position:relative; z-index:2; width:62px; height:62px; border-radius:50%;
+    background:rgba(255,255,255,.08); backdrop-filter:blur(6px);
+    border:1px solid rgba(255,255,255,.18);
+    display:grid; place-items:center; cursor:pointer;
+    transition:background .15s var(--ease), transform .15s var(--ease);
+  }
+  .canvas .center-play:hover{ background:rgba(255,255,255,.16); transform:scale(1.04); }
+  .canvas .center-play svg{ width:24px; height:24px; color:#fff; margin-left:3px; }
+  .canvas .badge{
+    position:absolute; top:12px; left:12px; z-index:2;
+    font-size:10.5px; font-family:var(--mono); color:var(--txt-2);
+    background:rgba(0,0,0,.5); border:1px solid var(--line-2); border-radius:5px; padding:3px 7px;
+  }
+  .canvas .watermark{
+    position:absolute; bottom:12px; right:14px; z-index:2;
+    font-size:10.5px; color:var(--txt-3); letter-spacing:.5px;
+  }
+
+  /* transport / timeline */
+  .transport{
+    display:flex; align-items:center; gap:14px;
+    padding:11px 14px; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+  }
+  .transport .play{
+    width:34px; height:34px; border-radius:50%; flex:0 0 34px;
+    background:var(--primary); color:var(--primary-ink);
+    display:grid; place-items:center; transition:transform .12s var(--ease), opacity .15s;
+  }
+  .transport .play:hover{ opacity:.9; }
+  .transport .play:active{ transform:scale(.94); }
+  .transport .play svg{ width:15px; height:15px; margin-left:1px; }
+  .transport .time{ font-family:var(--mono); font-size:11.5px; color:var(--txt-2); font-variant-numeric:tabular-nums; }
+  .transport .track{ flex:1; height:4px; border-radius:999px; background:var(--panel-3); position:relative; cursor:pointer; }
+  .transport .track .fill{ position:absolute; left:0; top:0; bottom:0; width:34%; border-radius:999px; background:var(--accent); }
+  .transport .track .knob{ position:absolute; left:34%; top:50%; transform:translate(-50%,-50%); width:11px; height:11px; border-radius:50%; background:#fff; box-shadow:0 0 0 3px rgba(201,162,107,.25); }
+  .transport .spacer{ flex:1; }
+  .transport .mini{ color:var(--txt-3); display:grid; place-items:center; }
+  .transport .mini svg{ width:15px; height:15px; }
+
+  /* right: params */
+  .col-right{
+    width:330px; flex:0 0 330px; border-left:1px solid var(--line);
+    display:flex; flex-direction:column; min-height:0; background:var(--bg-elev);
+  }
+  .params{ flex:1; overflow-y:auto; padding:18px 18px 18px; }
+  .field{ margin-bottom:20px; }
+  .field > label{
+    display:block; font-size:11px; font-weight:600; letter-spacing:.4px;
+    color:var(--txt-2); margin-bottom:9px;
+  }
+  .field .row{ display:flex; align-items:center; justify-content:space-between; }
+  .field .val{ font-size:11px; color:var(--txt-3); font-family:var(--mono); }
+
+  /* segmented */
+  .seg{ display:flex; gap:4px; background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius-sm); padding:3px; }
+  .seg button{
+    flex:1; height:30px; border-radius:5px; font-size:12px; color:var(--txt-2); font-weight:500;
+    transition:background .14s var(--ease), color .14s var(--ease);
+  }
+  .seg button:hover{ color:var(--txt); }
+  .seg button.on{ background:var(--panel-3); color:var(--txt); box-shadow:0 1px 1px rgba(0,0,0,.3); }
+
+  /* select */
+  .select{
+    display:flex; align-items:center; justify-content:space-between;
+    height:38px; padding:0 12px; background:var(--panel-2); border:1px solid var(--line);
+    border-radius:var(--radius-sm); font-size:13px; color:var(--txt); cursor:pointer;
+    transition:border-color .15s var(--ease);
+  }
+  .select:hover{ border-color:var(--line-2); }
+  .select .arr{ color:var(--txt-3); display:flex; }
+  .select .arr svg{ width:14px; height:14px; }
+
+  /* chips (motion) */
+  .chips{ display:flex; flex-wrap:wrap; gap:7px; }
+  .chips .c{
+    height:30px; padding:0 12px; border-radius:var(--r-pill);
+    border:1px solid var(--line); background:var(--panel-2); color:var(--txt-2);
+    font-size:12px; transition:border-color .14s var(--ease), color .14s var(--ease), background .14s;
+  }
+  .chips .c:hover{ border-color:var(--line-2); color:var(--txt); }
+  .chips .c.on{ border-color:var(--accent); color:var(--txt); background:var(--accent-soft); }
+
+  /* slider */
+  .slider{ -webkit-appearance:none; appearance:none; width:100%; height:4px; border-radius:999px; background:var(--panel-3); outline:none; }
+  .slider::-webkit-slider-thumb{ -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; cursor:pointer; box-shadow:0 0 0 3px rgba(201,162,107,.22); }
+  .slider::-moz-range-thumb{ width:14px; height:14px; border:none; border-radius:50%; background:#fff; cursor:pointer; }
+
+  .neg{
+    width:100%; min-height:54px; resize:vertical; background:var(--panel-2);
+    border:1px solid var(--line); border-radius:var(--radius-sm); padding:9px 11px;
+    font-size:12.5px; color:var(--txt-2); outline:none; transition:border-color .15s var(--ease);
+  }
+  .neg:focus{ border-color:var(--line-2); color:var(--txt); }
+  .neg::placeholder{ color:var(--txt-4); }
+
+  /* generate CTA */
+  .cta-wrap{ flex:0 0 auto; padding:14px 18px 16px; border-top:1px solid var(--line); background:var(--bg-elev); }
+  .cta-cost{ display:flex; align-items:center; justify-content:space-between; margin-bottom:11px; font-size:11.5px; color:var(--txt-3); }
+  .cta-cost b{ color:var(--txt); font-weight:600; font-variant-numeric:tabular-nums; }
+  .cta{
+    width:100%; height:44px; border-radius:var(--radius); background:var(--primary); color:var(--primary-ink);
+    font-size:14px; font-weight:600; letter-spacing:.2px; display:flex; align-items:center; justify-content:center; gap:8px;
+    transition:transform .12s var(--ease), opacity .15s; box-shadow:0 1px 0 rgba(255,255,255,.15) inset;
+  }
+  .cta:hover{ opacity:.93; }
+  .cta:active{ transform:scale(.985); }
+  .cta svg{ width:17px; height:17px; }
+
+  /* ==================== HOME / COMMUNITY VIEW ==================== */
+  .home{ display:flex; flex-direction:column; width:100%; height:100%; }
+  .home-head{
+    flex:0 0 auto; border-bottom:1px solid var(--line); background:var(--bg-elev);
+    padding:14px 26px 0;
+  }
+  .home-tabs{ display:flex; align-items:center; gap:4px; }
+  .home-tab{
+    position:relative; padding:10px 13px 13px; font-size:13px; color:var(--txt-3); font-weight:500;
+    transition:color .15s var(--ease);
+  }
+  .home-tab:hover{ color:var(--txt-2); }
+  .home-tab.on{ color:var(--txt); }
+  .home-tab.on::after{
+    content:""; position:absolute; left:13px; right:13px; bottom:-1px; height:2px; border-radius:2px; background:var(--accent);
+  }
+  .home-tab .n{ font-size:10.5px; color:var(--txt-4); margin-left:5px; }
+
+  .home-body{ flex:1; overflow-y:auto; padding:22px 26px 120px; }
+  .masonry{ columns:5; column-gap:16px; }
+  @media(max-width:1400px){ .masonry{ columns:4; } }
+  @media(max-width:1100px){ .masonry{ columns:3; } }
+  .card{
+    break-inside:avoid; margin-bottom:16px; border-radius:var(--radius);
+    overflow:hidden; position:relative; cursor:pointer; border:1px solid var(--line);
+    background:var(--panel); transition:border-color .18s var(--ease), transform .18s var(--ease);
+  }
+  .card:hover{ border-color:var(--line-2); transform:translateY(-2px); }
+  .card .still{ width:100%; display:block; position:relative; }
+  .card .still .g{
+    position:absolute; inset:0;
+  }
+  .card .play{
+    position:absolute; inset:0; display:grid; place-items:center; opacity:0;
+    transition:opacity .18s var(--ease); background:rgba(0,0,0,.18);
+  }
+  .card:hover .play{ opacity:1; }
+  .card .play svg{ width:34px; height:34px; color:#fff; filter:drop-shadow(0 2px 8px rgba(0,0,0,.5)); }
+  .card .dur{
+    position:absolute; right:9px; bottom:9px; z-index:2;
+    font-family:var(--mono); font-size:10px; color:#fff;
+    background:rgba(0,0,0,.6); padding:2px 6px; border-radius:4px;
+  }
+  .card .ov{
+    position:absolute; left:0; right:0; bottom:0; z-index:3; padding:30px 12px 11px 12px;
+    background:linear-gradient(to top, rgba(0,0,0,.85), transparent);
+    opacity:0; transition:opacity .18s var(--ease);
+  }
+  .card:hover .ov{ opacity:1; }
+  .card .ov .t{ font-size:12.5px; font-weight:600; color:#fff; line-height:1.35; margin-bottom:6px; }
+  .card .ov .m{ display:flex; align-items:center; gap:7px; font-size:11px; color:rgba(255,255,255,.7); }
+  .card .ov .m .av{ width:18px; height:18px; border-radius:50%; background:rgba(255,255,255,.2); display:grid; place-items:center; font-size:9px; font-weight:600; }
+  .card .ov .m .lk{ margin-left:auto; display:flex; align-items:center; gap:4px; }
+  .card .ov .m .lk svg{ width:12px; height:12px; }
+
+  /* floating composer (home) — a single refined bar, not a junk box */
+  .composer{
+    position:absolute; left:50%; transform:translateX(-50%); bottom:22px; z-index:20;
+    width:min(720px, calc(100% - 120px));
+    background:rgba(18,18,20,.86); backdrop-filter:blur(16px);
+    border:1px solid var(--line-2); border-radius:16px;
+    box-shadow:var(--shadow); padding:8px 8px 8px 18px;
+    display:flex; align-items:center; gap:10px;
+  }
+  .composer input{
+    flex:1; background:none; border:none; outline:none; color:var(--txt); font-size:14px;
+  }
+  .composer input::placeholder{ color:var(--txt-3); }
+  .composer .att{ display:flex; gap:4px; }
+  .composer .att .a{
+    width:34px; height:34px; border-radius:9px; display:grid; place-items:center; color:var(--txt-2);
+    transition:background .15s var(--ease), color .15s;
+  }
+  .composer .att .a:hover{ background:var(--panel-3); color:var(--txt); }
+  .composer .att .a svg{ width:17px; height:17px; }
+  .composer .go{
+    height:38px; padding:0 18px; border-radius:11px; background:var(--primary); color:var(--primary-ink);
+    font-size:13px; font-weight:600; display:flex; align-items:center; gap:7px;
+    transition:transform .12s var(--ease), opacity .15s;
+  }
+  .composer .go:hover{ opacity:.92; }
+  .composer .go:active{ transform:scale(.97); }
+  .composer .go svg{ width:16px; height:16px; }
+
+  .hidden{ display:none !important; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ===================== TOP BAR ===================== -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">L</div>
+      <b>Lumina</b><span class="sub">Studio</span>
+    </div>
+    <div class="divider"></div>
+    <div class="crumb">
+      <span>工作区</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+      <span class="proj">未命名项目</span>
+    </div>
+
+    <div class="spacer"></div>
+
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+      <input placeholder="搜索作品、模型、提示词…" />
+      <kbd>⌘K</kbd>
+    </label>
+
+    <div class="credits" title="剩余积分">
+      <span class="dot"></span>
+      <span>积分</span><b>1,240</b>
+    </div>
+    <button class="icon-btn" title="通知">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      <span class="badge"></span>
+    </button>
+    <div class="avatar">林</div>
+  </header>
+
+  <div class="body">
+    <!-- ===================== LEFT RAIL ===================== -->
+    <nav class="rail">
+      <button class="rail-item" data-view="home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+        首页
+      </button>
+      <button class="rail-item active" data-view="create">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v18M3 12h18"/></svg>
+        创作
+      </button>
+      <button class="rail-item" data-view="create">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg>
+        素材
+      </button>
+      <button class="rail-item" data-view="create">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>
+        作品
+      </button>
+      <button class="rail-item" data-view="create">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M12 3v13M8 7l4-4 4 4"/></svg>
+        发布
+      </button>
+      <button class="rail-item" data-view="create">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        历史
+      </button>
+      <div class="rail-spacer"></div>
+      <button class="rail-item" data-view="create">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2-1.2L16 3h-4l-.5 2.5a7 7 0 0 0-2 1.2l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2 1.2L12 21h4l.5-2.5a7 7 0 0 0 2-1.2l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2Z"/></svg>
+        设置
+      </button>
+    </nav>
+
+    <!-- ===================== MAIN ===================== -->
+    <main class="main">
+
+      <!-- ---------- CREATE VIEW ---------- -->
+      <section class="view active" id="view-create">
+        <div class="create">
+
+          <!-- LEFT: assets + history -->
+          <aside class="col-left">
+            <div class="panel-head"><h3>参考素材</h3><span class="meta">2 项</span></div>
+            <div class="panel-body">
+              <div class="asset-grid">
+                <div class="asset"><div class="thumb" style="background:radial-gradient(120% 120% at 30% 20%,#2b2f3a,#0c0d10)"></div></div>
+                <div class="asset"><div class="thumb" style="background:radial-gradient(120% 120% at 70% 30%,#3a2f2b,#0c0d10)"></div></div>
+                <div class="asset add" title="添加参考"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg></div>
+              </div>
+
+              <div class="section-label">最近渲染</div>
+              <div class="task-list">
+                <div class="task">
+                  <div class="pic" style="background:radial-gradient(120% 120% at 30% 20%,#2b2f3a,#0c0d10)"></div>
+                  <div class="info"><div class="name">赛博城市雨夜</div><div class="status"><span class="s-dot done"></span>已完成 · 1080p</div></div>
+                </div>
+                <div class="task">
+                  <div class="pic" style="background:radial-gradient(120% 120% at 70% 30%,#3a2f2b,#0c0d10)"></div>
+                  <div class="info"><div class="name">香水广告_02</div><div class="status"><span class="s-dot run"></span>渲染中 · 63%</div></div>
+                </div>
+                <div class="task">
+                  <div class="pic" style="background:radial-gradient(120% 120% at 40% 60%,#2c3530,#0c0d10)"></div>
+                  <div class="info"><div class="name">水墨山水</div><div class="status"><span class="s-dot done"></span>已完成 · 720p</div></div>
+                </div>
+              </div>
+            </div>
+          </aside>
+
+          <!-- CENTER: prompt + canvas -->
+          <div class="col-center">
+            <div class="center-scroll">
+
+              <!-- prompt -->
+              <div class="prompt-card">
+                <div class="lbl"><span>提示词</span><span class="count">48 / 1000</span></div>
+                <textarea placeholder="描述你想要的画面、运镜与氛围…&#10;例如：雨夜的霓虹街道，镜头缓慢推进，湿润路面反射彩色光斑，电影感光影。">雨夜的霓虹街道，镜头缓慢推进，湿润路面反射彩色光斑，电影感光影。</textarea>
+                <div class="ref-row">
+                  <button class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg>图片 · 2</button>
+                  <button class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>视频</button>
+                  <button class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>音频</button>
+                  <span class="spacer"></span>
+                  <span class="hint">支持参考图 · 最长 1000 字</span>
+                </div>
+              </div>
+
+              <!-- canvas -->
+              <div class="canvas-wrap">
+                <div class="canvas-toolbar">
+                  <span class="title">预览</span>
+                  <span class="spacer"></span>
+                  <button class="tool" title="对比"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg></button>
+                  <button class="tool" title="适配"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg></button>
+                  <button class="tool" title="全屏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+                </div>
+
+                <div class="canvas">
+                  <div class="frame"></div>
+                  <span class="badge">CinemoX Pro 2.1 · 1080p</span>
+                  <div class="center-play"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div>
+                  <span class="watermark">Lumina Studio</span>
+                </div>
+
+                <!-- transport -->
+                <div class="transport">
+                  <button class="play"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+                  <span class="time">00:03</span>
+                  <div class="track"><div class="fill"></div><div class="knob"></div></div>
+                  <span class="time">00:10</span>
+                  <span class="spacer"></span>
+                  <button class="mini" title="循环"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
+                  <button class="mini" title="下载"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- RIGHT: params -->
+          <aside class="col-right">
+            <div class="params">
+              <div class="field">
+                <label>生成模式</label>
+                <div class="seg" data-seg="mode">
+                  <button>文生视频</button>
+                  <button class="on">图生视频</button>
+                  <button>视频生视频</button>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>模型</label>
+                <div class="select">
+                  <span>CinemoX Pro 2.1</span>
+                  <span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>时长</label>
+                <div class="seg" data-seg="dur">
+                  <button>10s</button><button class="on">15s</button><button>20s</button>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>画面比例</label>
+                <div class="seg" data-seg="ratio">
+                  <button class="on">16:9</button><button>9:16</button><button>1:1</button>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>分辨率</label>
+                <div class="seg" data-seg="res">
+                  <button>720p</button><button class="on">1080p</button>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>镜头运动</label>
+                <div class="chips" data-chips="motion">
+                  <button class="c on">静止</button>
+                  <button class="c">推近</button>
+                  <button class="c">拉远</button>
+                  <button class="c">平移</button>
+                  <button class="c">环绕</button>
+                  <button class="c">跟随</button>
+                </div>
+              </div>
+
+              <div class="field">
+                <div class="row"><label style="margin:0">运动强度</label><span class="val">62</span></div>
+                <input class="slider" type="range" min="0" max="100" value="62" style="margin-top:11px" />
+              </div>
+
+              <div class="field">
+                <label>风格预设</label>
+                <div class="select">
+                  <span>电影感 · 写实</span>
+                  <span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>负面提示词 <span style="color:var(--txt-4);font-weight:400">（可选）</span></label>
+                <textarea class="neg" placeholder="不希望出现的元素，例如：文字、畸变、低画质…"></textarea>
+              </div>
+            </div>
+
+            <div class="cta-wrap">
+              <div class="cta-cost"><span>本次预估消耗</span><b>45 积分</b></div>
+              <button class="cta">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-14 9V3z" fill="currentColor" stroke="none"/></svg>
+                生成视频
+              </button>
+            </div>
+          </aside>
+
+        </div>
+      </section>
+
+      <!-- ---------- HOME / COMMUNITY VIEW ---------- -->
+      <section class="view" id="view-home">
+        <div class="home">
+          <div class="home-head">
+            <div class="home-tabs">
+              <button class="home-tab on">推荐</button>
+              <button class="home-tab">热门<span class="n">2.3k</span></button>
+              <button class="home-tab">最新</button>
+              <button class="home-tab">科幻</button>
+              <button class="home-tab">写实</button>
+              <button class="home-tab">动画</button>
+              <button class="home-tab">广告</button>
+              <button class="home-tab">人像</button>
+            </div>
+          </div>
+          <div class="home-body">
+            <div class="masonry" id="masonry"></div>
+          </div>
+
+          <!-- floating composer -->
+          <div class="composer">
+            <input placeholder="描述你想生成的画面，回车开始创作…" />
+            <div class="att">
+              <button class="a" title="参考图"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg></button>
+              <button class="a" title="参考视频"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg></button>
+            </div>
+            <button class="go">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-14 9V3z" fill="currentColor" stroke="none"/></svg>
+              生成
+            </button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<script>
+  /* rail → view switching (home vs create) */
+  const railItems = document.querySelectorAll('.rail-item');
+  const views = { home: document.getElementById('view-home'), create: document.getElementById('view-create') };
+  railItems.forEach(b=>{
+    b.addEventListener('click', ()=>{
+      const v = b.dataset.view;
+      railItems.forEach(x=>x.classList.remove('active'));
+      // keep active only on the clicked one for create; for home highlight home
+      document.querySelectorAll('.rail-item[data-view="'+v+'"]').forEach(x=>x.classList.add('active'));
+      Object.values(views).forEach(s=>s.classList.remove('active'));
+      views[v].classList.add('active');
+    });
+  });
+
+  /* segmented controls */
+  document.querySelectorAll('.seg').forEach(seg=>{
+    seg.querySelectorAll('button').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        seg.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+        btn.classList.add('on');
+      });
+    });
+  });
+
+  /* motion chips (multi-select-ish, single here) */
+  document.querySelectorAll('[data-chips]').forEach(box=>{
+    box.querySelectorAll('.c').forEach(c=>{
+      c.addEventListener('click', ()=>{
+        box.querySelectorAll('.c').forEach(x=>x.classList.remove('on'));
+        c.classList.add('on');
+      });
+    });
+  });
+
+  /* home tabs */
+  document.querySelectorAll('.home-tab').forEach(t=>{
+    t.addEventListener('click', ()=>{
+      document.querySelectorAll('.home-tab').forEach(x=>x.classList.remove('on'));
+      t.classList.add('on');
+    });
+  });
+
+  /* build masonry cards with varied heights */
+  const data = [
+    {t:"赛博城市雨夜", a:"导演阿哲", l:1284, d:"0:15", h:240, c:["#2b2f3a","#0c0d10"], r:"30% 20%"},
+    {t:"香水广告 · 慢镜头特写", a:"Studio K", l:842, d:"0:10", h:180, c:["#3a2f2b","#0c0d10"], r:"70% 30%"},
+    {t:"水墨山水 · 留白", a:"青澜", l:2310, d:"0:20", h:300, c:["#2c3530","#0c0d10"], r:"40% 60%"},
+    {t:"复古胶片人像", a:"Mira", l:560, d:"0:10", h:210, c:["#33303a","#0c0d10"], r:"60% 40%"},
+    {t:"产品发布会开场", a:"北辰", l:974, d:"0:15", h:160, c:["#2a2f38","#0c0d10"], r:"20% 70%"},
+    {t:"宠物拟人动画", a:"小野", l:1532, d:"0:10", h:260, c:["#3a3330","#0c0d10"], r:"50% 30%"},
+    {t:"电影感航拍海岸线", a:"Aero", l:1840, d:"0:20", h:190, c:["#233038","#0c0d10"], r:"35% 55%"},
+    {t:"霓虹街头舞蹈", a:"K-Studio", l:710, d:"0:15", h:230, c:["#392b3a","#0c0d10"], r:"65% 25%"},
+    {t:"极简 Logo 演绎", a:"形", l:420, d:"0:10", h:170, c:["#2e3036","#0c0d10"], r:"25% 45%"},
+    {t:"森林晨雾", a:"青澜", l:1290, d:"0:15", h:280, c:["#26332c","#0c0d10"], r:"45% 65%"},
+    {t:"美食特写 · 蒸汽", a:"味觉", l:663, d:"0:10", h:200, c:["#3a3128","#0c0d10"], r:"55% 35%"},
+    {t:"科幻飞船内部", a:"导演阿哲", l:2010, d:"0:20", h:240, c:["#272a3a","#0c0d10"], r:"30% 50%"},
+    {t:"婚礼跟拍片段", a:"Mira", l:338, d:"0:15", h:175, c:["#332f33","#0c0d10"], r:"60% 60%"},
+    {t:"抽象粒子流动", a:"形", l:1180, d:"0:10", h:220, c:["#2b3038","#0c0d10"], r:"40% 30%"},
+    {t:"城市延时夜景", a:"北辰", l:1456, d:"0:20", h:190, c:["#2a2733","#0c0d10"], r:"50% 55%"},
+  ];
+  const m = document.getElementById('masonry');
+  const heart = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s-7-4.5-9.5-9A5 5 0 0 1 12 6a5 5 0 0 1 9.5 6C19 16.5 12 21 12 21z"/></svg>';
+  const play = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  data.forEach(d=>{
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `
+      <div class="still" style="height:${d.h}px">
+        <div class="g" style="background:radial-gradient(120% 120% at ${d.r}, ${d.c[0]}, ${d.c[1]})"></div>
+        <div class="dur">${d.d}</div>
+        <div class="play">${play}</div>
+        <div class="ov">
+          <div class="t">${d.t}</div>
+          <div class="m"><span class="av">${d.a[0]}</span>${d.a}<span class="lk">${heart}${d.l}</span></div>
+        </div>
+      </div>`;
+    m.appendChild(el);
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,228 @@
+/*
+ * Daylight Conform Desk — shared semantic tokens.
+ * Paper is the visual authority. Mist and warm change colour only.
+ */
+
+:root {
+  color-scheme: light;
+
+  --font-sans:
+    "Manrope Variable",
+    "Noto Sans SC Variable",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    system-ui,
+    sans-serif;
+  --font-display: var(--font-sans);
+  --font-mono:
+    "SFMono-Regular",
+    "Cascadia Code",
+    "Roboto Mono",
+    Consolas,
+    "Liberation Mono",
+    monospace;
+
+  --text-caption: 0.75rem;
+  --text-body-sm: 0.8125rem;
+  --text-control: 0.875rem;
+  --text-body: 0.875rem;
+  --text-body-lg: 1rem;
+  --text-heading-sm: 1.125rem;
+  --text-heading-md: 1.375rem;
+  --text-heading-lg: 1.75rem;
+  --text-display: 2.25rem;
+
+  --leading-caption: 1.45;
+  --leading-control: 1.25;
+  --leading-body: 1.55;
+  --leading-heading: 1.2;
+  --leading-tight: 1.1;
+  --tracking-caption: 0.005em;
+  --tracking-heading: -0.025em;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  --control-sm: 2rem;
+  --control-md: 2.5rem;
+  --control-lg: 2.75rem;
+
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-pill: 999px;
+  --radius-control: var(--radius-sm);
+
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 220ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --bg: #ffffff;
+  --canvas: #ffffff;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-soft: #f6f8f7;
+  --surface-hover: #f1f5f3;
+  --stage-surface: #edf1ef;
+  --line: #e1e6e3;
+  --line-strong: #cbd4cf;
+  --line-emphasis: #aebcb5;
+
+  --text: #111713;
+  --ink: #111713;
+  --strong-ink: #202923;
+  --text-soft: #48534c;
+  --secondary-ink: #48534c;
+  --control-ink: #2d3731;
+  --table-ink: #354139;
+  --text-muted: #657169;
+  --muted: #657169;
+  --quiet: #657169;
+
+  --accent: #16754c;
+  --accent-strong: #0f603d;
+  --accent-hover: #0f603d;
+  --accent-ink: #ffffff;
+  --accent-soft: #eaf4ee;
+  --accent-loading: #557d66;
+  --accent-success: #236d43;
+  --success: #197a4b;
+  --success-soft: #ebf6ef;
+  --info: #2c6eaa;
+  --info-soft: #eef5fb;
+  --warning: #98600d;
+  --warning-soft: #fff6e6;
+  --danger: #bc3f39;
+  --danger-soft: #fff1f0;
+
+  --focus-ring: #176f4b;
+  --selection-bg: #d9eee2;
+  --selection-ink: #0d3e29;
+  --progress-track: #e3e8e5;
+  --avatar-surface: #dceee3;
+  --topbar-surface: #ffffff;
+  --toast-surface: #202a24;
+  --toast-ink: #ffffff;
+  --menu-shadow: rgba(24, 38, 30, 0.13);
+  --panel-shadow: rgba(24, 38, 30, 0.09);
+  --shadow-soft: rgba(24, 38, 30, 0.1);
+  --drawer-scrim: rgba(18, 28, 22, 0.22);
+  --shadow-menu: 0 14px 36px var(--menu-shadow);
+  --shadow-overlay: 0 28px 72px rgba(20, 31, 25, 0.17);
+}
+
+:where([data-theme="paper"], [data-skin="paper"]) {
+  --bg: #ffffff;
+  --canvas: #ffffff;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-soft: #f6f8f7;
+  --surface-hover: #f1f5f3;
+  --stage-surface: #edf1ef;
+  --line: #e1e6e3;
+  --line-strong: #cbd4cf;
+  --line-emphasis: #aebcb5;
+  --text: #111713;
+  --ink: #111713;
+  --text-soft: #48534c;
+  --secondary-ink: #48534c;
+  --text-muted: #657169;
+  --quiet: #657169;
+  --accent: #16754c;
+  --accent-strong: #0f603d;
+  --accent-soft: #eaf4ee;
+}
+
+:where([data-theme="mist"], [data-skin="mist"]) {
+  --bg: #f2f5f3;
+  --canvas: #f2f5f3;
+  --surface: #fafcfa;
+  --surface-raised: #fafcfa;
+  --surface-elevated: #fafcfa;
+  --surface-soft: #e9eeeb;
+  --surface-hover: #e3eae6;
+  --stage-surface: #e2e9e5;
+  --line: #d5ded9;
+  --line-strong: #becbc4;
+  --line-emphasis: #a2b2a9;
+  --text: #142019;
+  --ink: #142019;
+  --text-soft: #445149;
+  --secondary-ink: #445149;
+  --text-muted: #627068;
+  --quiet: #627068;
+  --accent: #236f4c;
+  --accent-strong: #185b3d;
+  --accent-soft: #e1eee6;
+  --menu-shadow: rgba(25, 45, 34, 0.14);
+  --panel-shadow: rgba(25, 45, 34, 0.09);
+}
+
+:where([data-theme="warm"], [data-skin="warm"]) {
+  --bg: #faf7f1;
+  --canvas: #faf7f1;
+  --surface: #fffdf9;
+  --surface-raised: #fffdf9;
+  --surface-elevated: #fffdf9;
+  --surface-soft: #f3eee5;
+  --surface-hover: #eee8de;
+  --stage-surface: #ebe4d9;
+  --line: #e2dbcf;
+  --line-strong: #cec3b4;
+  --line-emphasis: #b4a694;
+  --text: #231f1a;
+  --ink: #231f1a;
+  --text-soft: #585149;
+  --secondary-ink: #585149;
+  --text-muted: #6f675d;
+  --quiet: #6f675d;
+  --accent: #587343;
+  --accent-strong: #465e35;
+  --accent-soft: #ebf0e5;
+  --menu-shadow: rgba(61, 50, 35, 0.14);
+  --panel-shadow: rgba(61, 50, 35, 0.09);
+  --drawer-scrim: rgba(48, 40, 30, 0.22);
+}
+
+/* Operations keeps its domain aliases while sharing the same skins. */
+.ops-console {
+  --ops-bg: var(--bg);
+  --ops-surface: var(--surface);
+  --ops-surface-soft: var(--surface-soft);
+  --ops-ink: var(--text);
+  --ops-ink-soft: var(--text-soft);
+  --ops-muted: var(--text-muted);
+  --ops-line: var(--line);
+  --ops-line-strong: var(--line-strong);
+  --ops-accent: #087766;
+  --ops-accent-dark: #066456;
+  --ops-accent-soft: #e7f4f1;
+  --ops-blue: var(--info);
+  --ops-blue-soft: var(--info-soft);
+  --ops-red: var(--danger);
+  --ops-red-soft: var(--danger-soft);
+  --ops-orange: var(--warning);
+  --ops-orange-soft: var(--warning-soft);
+  --ops-yellow: #aa7e08;
+  --ops-yellow-soft: #fff8da;
+  --ops-focus-ring: var(--focus-ring);
+  --ops-radius: var(--radius-sm);
+}

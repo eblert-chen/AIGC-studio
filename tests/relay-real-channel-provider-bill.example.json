@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "provider_name": "kling",
+  "platform_task_id": "55555555-5555-4555-8555-555555555555",
+  "relay_job_id": "66666666-6666-4666-8666-666666666666",
+  "provider_task_reference": "replace-with-provider-task-from-create-checkpoint",
+  "provider_bill_reference": "replace-with-provider-invoice-or-export-row-reference",
+  "channel_id": 17,
+  "occurred_at_utc": "2026-08-07T00:00:00Z",
+  "amount_cents": 125,
+  "contract_currency": "CNY",
+  "billed_quantity": "5",
+  "billed_unit": "video_second",
+  "contract_rate_source": "provider invoice INV-2026-08 line 42",
+  "contract_rate_effective_at_utc": "2026-08-01T00:00:00Z",
+  "evidence_source": "provider_invoice",
+  "source_document_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "account_console_verified_at_utc": "2026-08-07T01:00:00Z",
+  "official_document_url": "https://kling.ai/document-api/apiReference/model/textToVideo",
+  "cost_disposition": "billed"
+}

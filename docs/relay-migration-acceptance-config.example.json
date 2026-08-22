@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 2,
+  "environment": "relay-staging-2026-08",
+  "environmentClass": "staging",
+  "oracle": {
+    "baseUrl": "https://python-relay-oracle.isolated.example.com",
+    "mode": "isolated_offline_oracle",
+    "productionAdmissionAllowed": false
+  },
+  "candidate": {
+    "baseUrl": "https://new-api-relay.staging.example.com",
+    "upstreamGitRevision": "0ab02020603d22e5613bc4cf46bfab06f8567769",
+    "gitRevision": "replace-with-40-character-extension-fork-commit",
+    "imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "instanceId": "replace-with-exact-staging-container-or-pod-id"
+  },
+  "tenants": [
+    {
+      "label": "customer-platform-acceptance",
+      "clientId": "customer-platform-acceptance",
+      "apiKeyEnv": "RELAY_ACCEPTANCE_TENANT_A_API_KEY"
+    },
+    {
+      "label": "internal-tiktok-acceptance",
+      "clientId": "internal-tiktok-acceptance",
+      "apiKeyEnv": "RELAY_ACCEPTANCE_TENANT_B_API_KEY"
+    }
+  ],
+  "testCase": {
+    "model": "replace-with-staging-model",
+    "mode": "text_to_video",
+    "generationRequest": {
+      "inputs": {
+        "prompt": "relay migration acceptance probe"
+      },
+      "output": {
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "count": 1,
+        "face_enabled": false
+      },
+      "metadata": {
+        "acceptance_run": "replace-with-change-ticket"
+      }
+    }
+  },
+  "publicModes": [
+    "text_to_video"
+  ],
+  "contract": {
+    "pollIntervalMs": 500,
+    "pollTimeoutMs": 30000
+  },
+  "faultInjection": {
+    "controlBaseUrl": "https://relay-fault-control.staging.example.com",
+    "tokenEnv": "RELAY_ACCEPTANCE_FAULT_CONTROL_TOKEN",
+    "confirmIsolatedEnvironment": true,
+    "pollIntervalMs": 500,
+    "timeoutMs": 120000,
+    "requestTimeoutMs": 15000
+  },
+  "realChannelAcceptance": [
+    {
+      "mode": "text_to_video",
+      "realProvider": true,
+      "executedAtUtc": "2026-08-06T08:00:00.000Z",
+      "route": {
+        "routeId": "replace-with-route-id",
+        "providerName": "replace-with-provider-name",
+        "channelId": "replace-with-channel-id",
+        "channelClass": "official",
+        "accountId": "replace-with-secret-free-account-id",
+        "keyFingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "provider": {
+        "taskReference": "replace-with-provider-task-reference",
+        "billReference": "replace-with-provider-bill-reference"
+      },
+      "obs": {
+        "bucket": "replace-with-private-bucket",
+        "objectKey": "replace-with-object-key",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "head": {
+          "verified": true,
+          "etag": "replace-with-head-etag",
+          "sizeBytes": 1,
+          "contentType": "video/mp4",
+          "checkedAtUtc": "2026-08-06T08:01:00.000Z"
+        }
+      },
+      "callback": {
+        "eventId": "replace-with-callback-event-id",
+        "signatureVerified": true,
+        "deliveredAtUtc": "2026-08-06T08:01:10.000Z"
+      },
+      "platformWallet": {
+        "taskId": "replace-with-platform-task-id",
+        "reservationReference": "replace-with-reservation-ledger-reference",
+        "settlementReference": "replace-with-settlement-ledger-reference",
+        "action": "settle",
+        "amountMinor": 1,
+        "reconciled": true
+      },
+      "providerCost": {
+        "ledgerId": "replace-with-provider-cost-ledger-id",
+        "idempotencyKey": "replace-with-provider-cost-idempotency-key",
+        "externalReference": "replace-with-provider-bill-reference",
+        "occurredAtUtc": "2026-08-06T08:01:00.000Z",
+        "amountMinor": 0,
+        "channelId": "replace-with-channel-id",
+        "channelClass": "official",
+        "appendOnlyVerified": true,
+        "singleEventVerified": true,
+        "idempotentReplayVerified": true,
+        "idempotencyConflictRejectedVerified": true
+      },
+      "evidenceFiles": [
+        {
+          "label": "provider_task",
+          "path": "evidence/text_to_video/provider-task.json",
+          "expectedSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "label": "provider_bill",
+          "path": "evidence/text_to_video/provider-bill.json",
+          "expectedSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "label": "obs_head",
+          "path": "evidence/text_to_video/obs-head.json",
+          "expectedSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "label": "callback_delivery",
+          "path": "evidence/text_to_video/callback-delivery.json",
+          "expectedSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "label": "wallet_settlement",
+          "path": "evidence/text_to_video/wallet-settlement.json",
+          "expectedSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "label": "provider_cost_ledger",
+          "path": "evidence/text_to_video/provider-cost-ledger.json",
+          "expectedSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    }
+  ]
+}

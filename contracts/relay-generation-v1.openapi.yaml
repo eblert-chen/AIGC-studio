@@ -1,0 +1,1334 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AI Video Relay Generation API",
+    "version": "1.0.0",
+    "description": "Provider-neutral asynchronous generation contract shared by the customer platform and the internal TikTok system. This is the normative v1 machine contract."
+  },
+  "servers": [
+    {
+      "url": "https://relay.example.com",
+      "description": "Replace with the environment-specific Relay origin"
+    }
+  ],
+  "security": [
+    {
+      "ClientId": [],
+      "ApiKey": []
+    }
+  ],
+  "x-contract-id": "relay-generation-v1",
+  "x-operations-scope": "The reconciliation and delivery operations endpoints are not part of this caller contract. Submission reconciliation is tenant-scoped and requires the operations:submission-reconciliation credential scope; ordinary customer-platform and internal-tiktok credentials must not receive that scope.",
+  "x-reservation-action-by-status": {
+    "queued": "hold",
+    "submitting": "hold",
+    "reconciliation_required": "hold",
+    "processing": "hold",
+    "transferring": "hold",
+    "succeeded": "settle",
+    "failed": "release",
+    "cancelled": "release"
+  },
+  "paths": {
+    "/v1/models": {
+      "get": {
+        "operationId": "listModels",
+        "summary": "Read the failover-safe model capability catalog",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^\"sha256:[0-9a-f]{64}\"$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current catalog",
+            "headers": {
+              "ETag": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"sha256:[0-9a-f]{64}\"$"
+                }
+              },
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelList"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Catalog has not changed",
+            "headers": {
+              "ETag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/models/{model_id}": {
+      "get": {
+        "operationId": "getModel",
+        "summary": "Read one model and its per-mode capability",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ModelId"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Model resource",
+            "headers": {
+              "ETag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelResource"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Model capability has not changed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/generations": {
+      "post": {
+        "operationId": "createGeneration",
+        "summary": "Persist one asynchronous generation request",
+        "description": "A 202 response means Relay durably accepted the logical request. A timeout or transport failure is an unknown HTTP outcome: retry only the identical request with the same Idempotency-Key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Generation accepted or idempotently replayed",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationAccepted"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/generations/{job_id}": {
+      "get": {
+        "operationId": "getGeneration",
+        "summary": "Read the authoritative state of one generation",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/JobId"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generation resource",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationJob"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/generations/{job_id}/artifacts/{asset_id}/download": {
+      "get": {
+        "operationId": "createArtifactDownload",
+        "summary": "Issue a short-lived download URL for a durable artifact",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/JobId"
+          },
+          {
+            "$ref": "#/components/parameters/AssetId"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Short-lived download authorization",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedDownload"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ClientId": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Client-ID",
+        "description": "Use internal-tiktok for the internal TikTok integration. It must have its own tenant and key."
+      },
+      "ApiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    },
+    "parameters": {
+      "RequestId": {
+        "name": "X-Request-ID",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "Stable for one logical submission. Reuse only with an identical body.",
+        "schema": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128
+        }
+      },
+      "JobId": {
+        "name": "job_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "AssetId": {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "ModelId": {
+        "name": "model_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/ModelId"
+        }
+      }
+    },
+    "headers": {
+      "RequestId": {
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Normalized Relay error",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ApiVersion": {
+        "type": "string",
+        "const": "v1"
+      },
+      "Revision": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "ModelId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+      },
+      "GenerationMode": {
+        "type": "string",
+        "enum": [
+          "text_to_image",
+          "text_to_video",
+          "image_to_video",
+          "video_to_video"
+        ]
+      },
+      "JobStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "submitting",
+          "reconciliation_required",
+          "processing",
+          "transferring",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "ReservationAction": {
+        "type": "string",
+        "enum": [
+          "hold",
+          "settle",
+          "release"
+        ]
+      },
+      "PublicAsyncErrorCode": {
+        "type": "string",
+        "enum": [
+          "MODEL_CAPABILITY_UNAVAILABLE",
+          "CAPABILITY_REVISION_MISMATCH",
+          "REQUEST_NOT_SUPPORTED_BY_MODEL",
+          "MODE_NOT_SUPPORTED_BY_MODEL",
+          "NO_PROVIDER_AVAILABLE",
+          "PROVIDER_ACCOUNT_POOL_BUSY",
+          "PROVIDER_ACCOUNT_POOL_RATE_LIMITED",
+          "PROVIDER_TASK_NOT_ASSIGNED",
+          "PROVIDER_NOT_FOUND",
+          "PROVIDER_CIRCUIT_OPEN",
+          "PROVIDER_POLL_FAILED",
+          "PROVIDER_TASK_MISMATCH",
+          "PROVIDER_TASK_ID_INVALID",
+          "UPSTREAM_FAILED",
+          "CONTENT_POLICY_REJECTED",
+          "INPUT_ASSET_UNAVAILABLE",
+          "GENERATION_FAILED",
+          "GENERATION_TASK_NOT_FOUND_UPSTREAM",
+          "GENERATION_CHANNEL_RESPONSE_INVALID",
+          "GENERATION_CHANNEL_UNAVAILABLE",
+          "ARTIFACT_TRANSFER_RETRYING",
+          "ARTIFACT_TRANSFER_FAILED",
+          "SUBMISSION_RECONCILIATION_REQUIRED",
+          "SUBMISSION_CONFIRMED_NOT_CREATED",
+          "PROVIDER_RETRIES_EXHAUSTED",
+          "WORKER_ATTEMPTS_EXHAUSTED",
+          "PROVIDER_POLL_RECONCILIATION_REQUIRED"
+        ]
+      },
+      "AssetInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "media_type"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "media_type": {
+            "type": "string",
+            "enum": [
+              "image",
+              "video",
+              "audio"
+            ]
+          }
+        }
+      },
+      "GenerationInputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "prompt",
+          "assets"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "assets": {
+            "type": "array",
+            "maxItems": 15,
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AssetInput"
+            }
+          }
+        }
+      },
+      "GenerationInputsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "prompt"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "assets": {
+            "type": "array",
+            "maxItems": 15,
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AssetInput"
+            }
+          }
+        }
+      },
+      "OutputOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "duration_seconds",
+          "aspect_ratio",
+          "resolution",
+          "count",
+          "face_enabled"
+        ],
+        "properties": {
+          "duration_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600,
+            "default": 5
+          },
+          "aspect_ratio": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,3}:[1-9][0-9]{0,3}$",
+            "default": "16:9"
+          },
+          "resolution": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$",
+            "default": "720p"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16,
+            "default": 1
+          },
+          "face_enabled": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "OutputOptionsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "duration_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600,
+            "default": 5
+          },
+          "aspect_ratio": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,3}:[1-9][0-9]{0,3}$",
+            "default": "16:9"
+          },
+          "resolution": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$",
+            "default": "720p"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16,
+            "default": 1
+          },
+          "face_enabled": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "CallbackRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          }
+        }
+      },
+      "GenerationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model",
+          "expected_capability_revision",
+          "mode",
+          "inputs"
+        ],
+        "properties": {
+          "client_reference_id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelId"
+          },
+          "expected_capability_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/GenerationMode"
+          },
+          "inputs": {
+            "$ref": "#/components/schemas/GenerationInputsRequest"
+          },
+          "output": {
+            "$ref": "#/components/schemas/OutputOptionsRequest",
+            "default": {}
+          },
+          "metadata": {
+            "type": "object",
+            "default": {},
+            "additionalProperties": true
+          },
+          "callback": {
+            "$ref": "#/components/schemas/CallbackRequest"
+          }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message",
+          "retryable",
+          "details"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/PublicAsyncErrorCode"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "GeneratedAsset": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "asset_id",
+          "object_key",
+          "media_type",
+          "content_type",
+          "size_bytes",
+          "sha256"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "object_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "description": "Opaque durable object identity. It is not a public URL."
+          },
+          "media_type": {
+            "type": "string",
+            "enum": [
+              "image",
+              "video"
+            ]
+          },
+          "content_type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "GenerationAccepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "schema_version",
+          "object",
+          "id",
+          "job_id",
+          "status",
+          "idempotent_replay",
+          "expected_capability_revision",
+          "capability_revision",
+          "reservation_action",
+          "created_at"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "object": {
+            "type": "string",
+            "const": "generation"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "idempotent_replay": {
+            "type": "boolean"
+          },
+          "expected_capability_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "capability_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "reservation_action": {
+            "$ref": "#/components/schemas/ReservationAction"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ReservationInvariant"
+          }
+        ]
+      },
+      "GenerationJob": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "schema_version",
+          "object",
+          "id",
+          "model",
+          "mode",
+          "inputs",
+          "output",
+          "metadata",
+          "status",
+          "progress",
+          "outputs",
+          "error",
+          "expected_capability_revision",
+          "capability_revision",
+          "reservation_action",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "object": {
+            "type": "string",
+            "const": "generation"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_reference_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 128
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelId"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/GenerationMode"
+          },
+          "inputs": {
+            "$ref": "#/components/schemas/GenerationInputs"
+          },
+          "output": {
+            "$ref": "#/components/schemas/OutputOptions"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "progress": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GeneratedAsset"
+            }
+          },
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErrorDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_capability_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "capability_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "reservation_action": {
+            "$ref": "#/components/schemas/ReservationAction"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ReservationInvariant"
+          },
+          {
+            "$ref": "#/components/schemas/GenerationTerminalInvariant"
+          }
+        ]
+      },
+      "ReservationInvariant": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "succeeded"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "reservation_action": {
+                  "const": "settle"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "failed",
+                    "cancelled"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "reservation_action": {
+                  "const": "release"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "queued",
+                    "submitting",
+                    "reconciliation_required",
+                    "processing",
+                    "transferring"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "reservation_action": {
+                  "const": "hold"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "GenerationTerminalInvariant": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "succeeded"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "progress": {
+                  "const": 100
+                },
+                "outputs": {
+                  "minItems": 1,
+                  "maxItems": 16
+                },
+                "error": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "failed"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "outputs": {
+                  "maxItems": 0
+                },
+                "error": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "cancelled",
+                    "queued",
+                    "submitting",
+                    "reconciliation_required",
+                    "processing",
+                    "transferring"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "outputs": {
+                  "maxItems": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "CapabilityLimits": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "max_prompt_length",
+          "max_images",
+          "max_videos",
+          "max_audio",
+          "duration_seconds",
+          "aspect_ratios",
+          "resolutions",
+          "output_counts"
+        ],
+        "properties": {
+          "max_prompt_length": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "max_images": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
+          "max_videos": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
+          "max_audio": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
+          "duration_seconds": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600
+            }
+          },
+          "aspect_ratios": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "resolutions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "output_counts": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            }
+          }
+        }
+      },
+      "ModeCapability": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "input_media_types",
+          "supports_face",
+          "required_resource_keys",
+          "limits"
+        ],
+        "properties": {
+          "input_media_types": {
+            "type": "array",
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "image",
+                "video",
+                "audio"
+              ]
+            }
+          },
+          "supports_face": {
+            "type": "boolean"
+          },
+          "required_resource_keys": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "limits": {
+            "$ref": "#/components/schemas/CapabilityLimits"
+          }
+        }
+      },
+      "CapabilityDocument": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "modes"
+        ],
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "modes": {
+            "type": "object",
+            "minProperties": 1,
+            "propertyNames": {
+              "$ref": "#/components/schemas/GenerationMode"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ModeCapability"
+            }
+          }
+        }
+      },
+      "ModelResource": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "schema_version",
+          "id",
+          "object",
+          "capability_revision",
+          "capabilities"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "id": {
+            "$ref": "#/components/schemas/ModelId"
+          },
+          "object": {
+            "type": "string",
+            "const": "model"
+          },
+          "capability_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/CapabilityDocument"
+          }
+        }
+      },
+      "ModelList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "schema_version",
+          "object",
+          "catalog_revision",
+          "data"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "object": {
+            "type": "string",
+            "const": "list"
+          },
+          "catalog_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelResource"
+            }
+          }
+        }
+      },
+      "SignedDownload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "schema_version",
+          "url",
+          "expires_seconds"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "expires_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message",
+          "retryable",
+          "request_id",
+          "details"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "schema_version",
+          "error"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        }
+      }
+    }
+  }
+}

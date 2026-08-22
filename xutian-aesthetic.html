@@ -1,0 +1,1367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>旭天 — AI视频创作平台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<style>
+/* ========================================
+   旭天 Design System — Premium Light
+   ======================================== */
+
+/* --- Design Tokens --- */
+:root {
+  /* Background */
+  --bg: #F7F8FA;
+  --bg-glow: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(255,107,53,0.04), transparent 70%);
+  --surface: #FFFFFF;
+  --surface-2: #F3F4F8;
+  --surface-3: #E9EBF0;
+
+  /* Text */
+  --text: #0F172A;
+  --text-2: #475569;
+  --text-3: #94A3B8;
+  --text-4: #CBD5E1;
+
+  /* Border */
+  --border: #E2E8F0;
+  --border-2: #EEF0F4;
+  --border-strong: #CBD5E1;
+
+  /* Accent — 旭日橙 */
+  --accent: #FF6B35;
+  --accent-hover: #F4531A;
+  --accent-light: #FFF5F0;
+  --accent-border: #FFD4BF;
+  --accent-glow: rgba(255,107,53,0.12);
+  --accent-shadow: rgba(255,107,53,0.25);
+
+  /* Semantic */
+  --blue: #3B82F6;
+  --green: #10B981;
+  --amber: #F59E0B;
+
+  /* Shadows — layered & subtle */
+  --shadow-xs: 0 1px 2px rgba(15,23,42,0.04);
+  --shadow-sm: 0 1px 3px rgba(15,23,42,0.05), 0 1px 2px rgba(15,23,42,0.03);
+  --shadow-md: 0 4px 6px rgba(15,23,42,0.04), 0 2px 4px rgba(15,23,42,0.03);
+  --shadow-lg: 0 10px 15px rgba(15,23,42,0.05), 0 4px 6px rgba(15,23,42,0.03);
+  --shadow-xl: 0 20px 25px rgba(15,23,42,0.06), 0 8px 10px rgba(15,23,42,0.03);
+  --shadow-2xl: 0 25px 50px rgba(15,23,42,0.09);
+  --shadow-accent: 0 8px 24px var(--accent-shadow);
+
+  /* Radius */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-2xl: 20px;
+  --r-full: 9999px;
+
+  /* Typography */
+  --font: 'Plus Jakarta Sans', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  --font-display: 'Plus Jakarta Sans', 'Noto Sans SC', system-ui, sans-serif;
+
+  /* Layout */
+  --sidebar-w: 68px;
+  --topbar-h: 56px;
+
+  /* Transitions */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* --- Reset --- */
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  background-image: var(--bg-glow);
+  overflow: hidden;
+}
+
+::selection {
+  background: var(--accent-glow);
+  color: var(--text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* --- Scrollbar --- */
+.scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.scroll-area::-webkit-scrollbar { width: 6px; height: 6px; }
+.scroll-area::-webkit-scrollbar-track { background: transparent; }
+.scroll-area::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+.scroll-area::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* ========================================
+   App Shell
+   ======================================== */
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-rows: var(--topbar-h) 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ========================================
+   Topbar
+   ======================================== */
+.topbar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px 0 16px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid var(--border);
+  z-index: 100;
+}
+
+/* Brand */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-md);
+  background: linear-gradient(135deg, #FF6B35 0%, #FF9558 60%, #FFB800 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 800;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(255,107,53,0.3), inset 0 1px 0 rgba(255,255,255,0.3);
+  position: relative;
+}
+.brand-mark::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255,255,255,0.15), transparent 50%);
+  pointer-events: none;
+}
+
+.brand-text {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.brand-text strong {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+.brand-text span {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* Search */
+.search {
+  flex: 1;
+  max-width: 360px;
+  position: relative;
+}
+.search input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px 0 38px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  transition: all 0.2s var(--ease);
+}
+.search input::placeholder { color: var(--text-3); }
+.search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.search svg {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+/* Topbar Actions */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s var(--ease);
+  position: relative;
+}
+.icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.icon-btn svg { width: 20px; height: 20px; }
+.icon-btn .dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+}
+
+/* User Chip */
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px 3px 3px;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.user-chip:hover {
+  background: var(--surface);
+  border-color: var(--border-strong);
+}
+.user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366F1, #818CF8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+.user-info {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.user-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.user-role {
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+/* ========================================
+   Sidebar
+   ======================================== */
+.sidebar {
+  grid-column: 1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.nav-item {
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s var(--ease);
+  position: relative;
+}
+.nav-item svg { width: 22px; height: 22px; transition: transform 0.2s var(--ease-spring); }
+.nav-item:hover {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.nav-item:hover svg { transform: scale(1.08); }
+.nav-item.active {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+
+/* Nav tooltip */
+.nav-item::after {
+  content: attr(data-label);
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%) translateX(-4px);
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  background: var(--text);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.15s var(--ease);
+  z-index: 200;
+}
+.nav-item:hover::after {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+.sidebar-spacer { flex: 1; }
+
+/* ========================================
+   Main Content
+   ======================================== */
+.main {
+  grid-column: 2;
+  grid-row: 2;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+.main::-webkit-scrollbar { width: 6px; }
+.main::-webkit-scrollbar-track { background: transparent; }
+.main::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+/* --- Category Bar --- */
+.category-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 24px 10px;
+  position: sticky;
+  top: 0;
+  background: linear-gradient(180deg, var(--bg) 85%, transparent);
+  z-index: 50;
+}
+
+.cat-group {
+  display: flex;
+  gap: 2px;
+}
+
+.cat-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+.cat-tab {
+  padding: 6px 14px;
+  border: none;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+  white-space: nowrap;
+}
+.cat-tab:hover {
+  color: var(--text-2);
+  background: var(--surface-2);
+}
+
+/* Primary tabs (content type) */
+.cat-tab.primary {
+  font-size: 14px;
+  font-weight: 700;
+  padding: 6px 16px;
+}
+.cat-tab.primary.active {
+  color: var(--accent);
+  background: var(--accent-light);
+}
+
+/* Filter tabs (category) */
+.cat-tab.filter.active {
+  color: #fff;
+  background: var(--text);
+}
+
+/* --- Hero Banner --- */
+.hero {
+  margin: 0 24px 20px;
+  border-radius: var(--r-xl);
+  overflow: hidden;
+  position: relative;
+  height: 180px;
+  display: flex;
+  align-items: center;
+}
+
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  background: url('https://picsum.photos/seed/sunrise-aurora-creative/1400/400') center/cover;
+}
+
+.hero-overlay {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(15,23,42,0.82) 0%, rgba(15,23,42,0.35) 55%, transparent 100%),
+    radial-gradient(circle at 85% 50%, rgba(255,107,53,0.25), transparent 60%);
+}
+
+.hero-content {
+  position: relative;
+  z-index: 2;
+  padding: 0 32px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+}
+
+.hero-text { flex: 1; max-width: 480px; }
+
+.hero-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--r-full);
+  background: rgba(255,107,53,0.2);
+  border: 1px solid rgba(255,107,53,0.3);
+  font-size: 11px;
+  font-weight: 600;
+  color: #FFB800;
+  letter-spacing: 0.03em;
+  margin-bottom: 8px;
+}
+.hero-tag::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #FFB800;
+  box-shadow: 0 0 6px #FFB800;
+}
+
+.hero-title {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.035em;
+  color: #fff;
+  margin-bottom: 4px;
+}
+.hero-title em {
+  color: #FFB800;
+  font-style: normal;
+}
+
+.hero-desc {
+  font-size: 12px;
+  color: rgba(255,255,255,0.72);
+  line-height: 1.5;
+  max-width: 380px;
+}
+
+.btn-hero {
+  padding: 10px 20px;
+  border: none;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-accent);
+  transition: all 0.2s var(--ease);
+}
+.btn-hero:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 28px var(--accent-shadow);
+}
+.btn-hero svg { width: 14px; height: 14px; }
+
+/* --- Section Header --- */
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 24px 14px;
+}
+.section-header h3 {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.section-header .line {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.section-header .count {
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 2px 10px;
+  border-radius: var(--r-full);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-weight: 500;
+}
+
+/* ========================================
+   Feed — Masonry
+   ======================================== */
+.feed {
+  padding: 0 24px 180px;
+  columns: 4;
+  column-gap: 16px;
+}
+
+@media (max-width: 1600px) { .feed { columns: 3; } }
+@media (max-width: 1200px) { .feed { columns: 2; } }
+@media (max-width: 768px) { .feed { columns: 1; } }
+
+.card {
+  break-inside: avoid;
+  margin-bottom: 16px;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.3s var(--ease);
+  position: relative;
+  box-shadow: var(--shadow-xs);
+  animation: fadeInUp 0.5s var(--ease-out) both;
+}
+.card:nth-child(1) { animation-delay: 0.02s; }
+.card:nth-child(2) { animation-delay: 0.06s; }
+.card:nth-child(3) { animation-delay: 0.10s; }
+.card:nth-child(4) { animation-delay: 0.14s; }
+.card:nth-child(5) { animation-delay: 0.18s; }
+.card:nth-child(6) { animation-delay: 0.22s; }
+.card:nth-child(7) { animation-delay: 0.26s; }
+.card:nth-child(8) { animation-delay: 0.30s; }
+.card:nth-child(n+9) { animation-delay: 0.34s; }
+
+.card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lg);
+}
+
+.card-img {
+  position: relative;
+  overflow: hidden;
+}
+.card-img img {
+  width: 100%;
+  display: block;
+  transition: transform 0.5s var(--ease);
+}
+.card:hover .card-img img { transform: scale(1.04); }
+
+.card-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--r-full);
+  background: rgba(15,23,42,0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+}
+.card-badge svg { width: 9px; height: 9px; }
+
+.card-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 50%, rgba(0,0,0,0.6));
+  opacity: 0;
+  transition: opacity 0.25s var(--ease);
+  display: flex;
+  align-items: flex-end;
+  padding: 12px;
+}
+.card:hover .card-overlay { opacity: 1; }
+
+.card-action {
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transform: translateY(6px);
+  transition: transform 0.25s var(--ease-spring);
+}
+.card:hover .card-action { transform: translateY(0); }
+.card-action svg { width: 12px; height: 12px; }
+
+.card-body {
+  padding: 10px 12px 12px;
+}
+.card-cat {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.card-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.card-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.card-meta-item svg { width: 12px; height: 12px; }
+
+/* ========================================
+   Floating Composer
+   ======================================== */
+.composer {
+  position: fixed;
+  bottom: 16px;
+  left: calc(var(--sidebar-w) + 50%);
+  transform: translateX(-50%);
+  width: min(640px, calc(100vw - var(--sidebar-w) - 40px));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-2xl);
+  z-index: 200;
+  transition: all 0.3s var(--ease);
+  overflow: hidden;
+}
+.composer:hover {
+  border-color: var(--border-strong);
+}
+
+.composer-top {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 14px 0;
+}
+
+.composer-tab {
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.composer-tab svg { width: 14px; height: 14px; }
+.composer-tab:hover { color: var(--text-2); }
+.composer-tab.active {
+  color: var(--accent);
+  background: var(--accent-light);
+}
+
+.composer-mode {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+}
+.composer-mode button {
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.composer-mode button:hover { color: var(--text-2); }
+.composer-mode button.active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+}
+
+.composer-body {
+  padding: 10px 14px;
+  display: flex;
+  gap: 10px;
+}
+
+.composer-attach {
+  width: 42px;
+  height: 42px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  flex-shrink: 0;
+}
+.composer-attach:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-light);
+}
+.composer-attach svg { width: 18px; height: 18px; }
+
+.composer-input { flex: 1; }
+.composer-textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+  min-height: 42px;
+  max-height: 100px;
+}
+.composer-textarea::placeholder { color: var(--text-3); }
+
+.composer-bottom {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 10px;
+}
+
+.composer-model {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.composer-model:hover {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+.composer-model svg { width: 13px; height: 13px; color: var(--blue); }
+
+.composer-cost {
+  font-size: 12px;
+  color: var(--text-3);
+  font-weight: 500;
+}
+.composer-cost strong {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.composer-submit {
+  margin-left: auto;
+  padding: 8px 20px;
+  border: none;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: var(--shadow-accent);
+  transition: all 0.2s var(--ease);
+}
+.composer-submit:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 28px var(--accent-shadow);
+}
+.composer-submit:active { transform: scale(0.97); }
+.composer-submit svg { width: 14px; height: 14px; }
+
+/* ========================================
+   Animations
+   ======================================== */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.hero, .category-bar, .section-header {
+  animation: fadeIn 0.4s var(--ease-out) both;
+}
+
+/* ========================================
+   Responsive
+   ======================================== */
+@media (max-width: 768px) {
+  :root { --sidebar-w: 56px; }
+  .search { display: none; }
+  .user-info { display: none; }
+  .feed { padding: 0 16px 160px; }
+  .hero { margin: 0 16px 16px; height: 140px; }
+  .hero-content { padding: 0 20px; }
+  .hero-title { font-size: 20px; }
+  .composer {
+    left: calc(var(--sidebar-w) + 20px);
+    transform: none;
+    width: calc(100vw - var(--sidebar-w) - 32px);
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ===== Topbar ===== -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">旭</div>
+      <div class="brand-text">
+        <strong>旭天</strong>
+        <span>Xutian</span>
+      </div>
+    </div>
+
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input type="text" placeholder="搜索灵感、模板、创作者…">
+    </div>
+
+    <div class="topbar-actions">
+      <button class="icon-btn" title="通知">
+        <span class="dot"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+      </button>
+      <div class="user-chip">
+        <div class="user-avatar">陈</div>
+        <div class="user-info">
+          <span class="user-name">陈默</span>
+          <span class="user-role">运营</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== Sidebar ===== -->
+  <nav class="sidebar">
+    <button class="nav-item active" data-label="首页">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
+    </button>
+    <button class="nav-item" data-label="创作">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+    </button>
+    <button class="nav-item" data-label="素材">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+    </button>
+    <button class="nav-item" data-label="作品">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-9M14 17H5M17 17a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM7 7a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></svg>
+    </button>
+    <button class="nav-item" data-label="发布">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+    </button>
+    <button class="nav-item" data-label="历史">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+    </button>
+    <div class="sidebar-spacer"></div>
+    <button class="nav-item" data-label="设置">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </nav>
+
+  <!-- ===== Main ===== -->
+  <main class="main scroll-area">
+    <!-- Category Bar -->
+    <div class="category-bar">
+      <div class="cat-group">
+        <button class="cat-tab primary active">视频</button>
+        <button class="cat-tab primary">模板</button>
+        <button class="cat-tab primary">挑战</button>
+      </div>
+      <div class="cat-divider"></div>
+      <div class="cat-group">
+        <button class="cat-tab filter active">全部</button>
+        <button class="cat-tab filter">广告魔法</button>
+        <button class="cat-tab filter">电影叙事</button>
+        <button class="cat-tab filter">风格艺术</button>
+        <button class="cat-tab filter">动漫剧场</button>
+        <button class="cat-tab filter">数字人</button>
+        <button class="cat-tab filter">商品展示</button>
+      </div>
+    </div>
+
+    <!-- Hero -->
+    <div class="hero">
+      <div class="hero-bg"></div>
+      <div class="hero-overlay"></div>
+      <div class="hero-content">
+        <div class="hero-text">
+          <div class="hero-tag">本周精选</div>
+          <h1 class="hero-title">让创意<em>如旭日</em>升空</h1>
+          <p class="hero-desc">用 AI 将灵感转化为电影级视觉叙事。从文字到画面，从想象到现实，旭天陪你点亮每一个创意瞬间。</p>
+        </div>
+        <button class="btn-hero">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 3l14 9-14 9V3z"/></svg>
+          开始创作
+        </button>
+      </div>
+    </div>
+
+    <!-- Section Header -->
+    <div class="section-header">
+      <h3>社区灵感</h3>
+      <div class="line"></div>
+      <span class="count">128 作品</span>
+    </div>
+
+    <!-- Feed -->
+    <div class="feed">
+      <!-- Card 1 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/fashion-cyber-glows/400/600" alt="冷光未来时装" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">风格艺术</div>
+          <div class="card-title">冷光未来时装</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>2.3k</span>
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>89</span>
+            <span class="card-meta-item">5s · 9:16</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/rain-neon-street/400/400" alt="雨夜街头双人秀" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">电影叙事</div>
+          <div class="card-title">雨夜街头双人秀</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>1.8k</span>
+            <span class="card-meta-item">12s · 1:1</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/water-splash-product/400/500" alt="水幕中的产品力量" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">广告魔法</div>
+          <div class="card-title">水幕中的产品力量</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>3.1k</span>
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>156</span>
+            <span class="card-meta-item">8s · 16:9</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/interior-warm-quiet/400/320" alt="室内静谧叙事" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">电影叙事</div>
+          <div class="card-title">室内静谧叙事</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>956</span>
+            <span class="card-meta-item">10s · 16:9</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 5 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/outdoor-waterproof-action/400/560" alt="一镜到底防水演示" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">广告魔法</div>
+          <div class="card-title">一镜到底防水演示</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>4.2k</span>
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>203</span>
+            <span class="card-meta-item">6s · 9:16</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 6 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/city-life-rhythm-beat/400/420" alt="城市生活节奏" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">风格艺术</div>
+          <div class="card-title">城市生活节奏</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>1.5k</span>
+            <span class="card-meta-item">7s · 1:1</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 7 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/glacier-scale-vast/400/260" alt="冰原尺度感" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">风格艺术</div>
+          <div class="card-title">冰原尺度感</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>2.8k</span>
+            <span class="card-meta-item">8s · 21:9</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 8 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/miniature-fashion-set/400/540" alt="微缩时装片场" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">风格艺术</div>
+          <div class="card-title">微缩时装片场</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>1.2k</span>
+            <span class="card-meta-item">6s · 9:16</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 9 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/blue-silver-portrait-makeup/400/480" alt="蓝银妆容特写" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">风格艺术</div>
+          <div class="card-title">蓝银妆容特写</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>3.5k</span>
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>78</span>
+            <span class="card-meta-item">4s · 4:5</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 10 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/golden-hour-desert-dune/400/340" alt="金色时刻沙漠" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">风格艺术</div>
+          <div class="card-title">金色时刻沙漠</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>2.1k</span>
+            <span class="card-meta-item">10s · 16:9</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 11 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/neon-portrait-glow-night/400/600" alt="霓虹人像" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">风格艺术</div>
+          <div class="card-title">霓虹人像</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>5.6k</span>
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>312</span>
+            <span class="card-meta-item">5s · 9:16</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 12 -->
+      <div class="card">
+        <div class="card-img">
+          <img src="https://picsum.photos/seed/liquid-abstract-flow-art/400/400" alt="液态抽象" loading="lazy">
+          <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+          <div class="card-overlay"><div class="card-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>做同款</div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-cat">风格艺术</div>
+          <div class="card-title">液态抽象</div>
+          <div class="card-meta">
+            <span class="card-meta-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>987</span>
+            <span class="card-meta-item">8s · 1:1</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ===== Floating Composer ===== -->
+  <div class="composer">
+    <div class="composer-top">
+      <button class="composer-tab active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7z"/><rect x="2" y="3" width="20" height="18" rx="2"/></svg>
+        视频
+      </button>
+      <button class="composer-tab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+        图片
+      </button>
+      <button class="composer-tab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+        文生视频
+      </button>
+      <button class="composer-tab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18M3 12h18M3 19h18"/></svg>
+        图生视频
+      </button>
+      <button class="composer-tab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
+        视频重绘
+      </button>
+      <div class="composer-mode">
+        <button class="active">快速</button>
+        <button>精细</button>
+      </div>
+    </div>
+    <div class="composer-body">
+      <div class="composer-attach">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+      </div>
+      <div class="composer-input">
+        <textarea class="composer-textarea" placeholder="描述你想要的画面… 例如：突出产品防水便携的特点，户外场景，自然光线，节奏明快" rows="2"></textarea>
+      </div>
+    </div>
+    <div class="composer-bottom">
+      <div class="composer-model">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4-6.2-4.5-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>
+        CinemoX Pro 2.1
+      </div>
+      <div class="composer-cost">预计消耗 <strong>45</strong> 积分</div>
+      <button class="composer-submit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        开始生成
+      </button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// Tab switching — primary (content type)
+document.querySelectorAll('.cat-group').forEach((group, gi) => {
+  group.querySelectorAll('.cat-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      group.querySelectorAll('.cat-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+    });
+  });
+});
+
+// Composer media tabs
+document.querySelectorAll('.composer-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.composer-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+  });
+});
+
+// Composer mode toggle
+document.querySelectorAll('.composer-mode button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// Sidebar navigation
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    item.classList.add('active');
+  });
+});
+</script>
+
+</body>
+</html>

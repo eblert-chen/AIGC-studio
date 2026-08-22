@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>旭天 — AI 视频创作平台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ===== Design Tokens ===== */
+:root {
+  --bg: #FAFAF8;
+  --surface: #FFFFFF;
+  --text: #1A1A1A;
+  --text-2: #6B6B6B;
+  --text-3: #999;
+  --accent: #E85D2C;
+  --accent-d: #D14D1F;
+  --line: #E8E6E1;
+  --line-soft: #F0EFEB;
+  --r-img: 4px;
+  --r-btn: 6px;
+  --font: 'Inter', 'Noto Sans SC', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'SF Mono', monospace;
+  --max-w: 1120px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: rgba(232,93,44,0.15); }
+
+a { color: inherit; text-decoration: none; }
+
+/* ===== Topbar ===== */
+.topbar {
+  position: sticky;
+  top: 0;
+  height: 56px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  z-index: 100;
+}
+
+.topbar-inner {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 32px;
+  gap: 40px;
+}
+
+.brand {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.brand-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-bottom: 3px;
+}
+
+.nav {
+  display: flex;
+  gap: 28px;
+  align-items: center;
+}
+
+.nav-item {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-3);
+  position: relative;
+  padding: 18px 0;
+  transition: color 0.15s;
+  cursor: pointer;
+}
+
+.nav-item:hover { color: var(--text); }
+
+.nav-item.is-active { color: var(--text); }
+
+.nav-item.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+}
+
+.topbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-btn);
+  width: 200px;
+  transition: border-color 0.15s;
+}
+
+.search-box:focus-within { border-color: var(--text-3); }
+
+.search-box svg { width: 14px; height: 14px; color: var(--text-3); flex-shrink: 0; }
+
+.search-box input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text);
+  width: 100%;
+}
+
+.search-box input::placeholder { color: var(--text-3); }
+
+.cta-create {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-btn);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.cta-create:hover { background: var(--accent-d); }
+
+.cta-create svg { width: 13px; height: 13px; }
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 4px 8px 4px 4px;
+  border-radius: var(--r-btn);
+  transition: background 0.15s;
+}
+
+.account:hover { background: var(--line-soft); }
+
+.account-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #D4D2CC;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.account-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+/* ===== Main ===== */
+.main {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 48px 32px 80px;
+}
+
+/* ===== Section Header ===== */
+.section {
+  margin-bottom: 72px;
+}
+
+.section-header {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 28px;
+}
+
+.section-num {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-3);
+  letter-spacing: 0.03em;
+}
+
+.section-label {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.section-link {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--text-3);
+  transition: color 0.15s;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.section-link:hover { color: var(--accent); }
+
+.section-divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 0 0 72px 0;
+}
+
+/* ===== Featured Piece (Section 01) ===== */
+.featured-piece {
+  cursor: pointer;
+}
+
+.featured-img-wrap {
+  width: 100%;
+  height: 440px;
+  overflow: hidden;
+  border-radius: var(--r-img);
+  background: #E8E6E1;
+}
+
+.featured-img-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: filter 0.15s;
+}
+
+.featured-piece:hover .featured-img-wrap img {
+  filter: brightness(0.97);
+}
+
+.featured-meta {
+  margin-top: 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+}
+
+.featured-meta-left {
+  flex: 1;
+}
+
+.featured-title {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+  transition: color 0.15s;
+}
+
+.featured-piece:hover .featured-title { color: var(--accent); }
+
+.featured-desc {
+  font-size: 14px;
+  color: var(--text-2);
+  margin-bottom: 6px;
+  max-width: 560px;
+}
+
+.featured-specs {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-3);
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.featured-specs span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.featured-arrow {
+  font-size: 20px;
+  color: var(--text-3);
+  transition: color 0.15s, transform 0.15s;
+  margin-top: 4px;
+}
+
+.featured-piece:hover .featured-arrow {
+  color: var(--accent);
+  transform: translateX(4px);
+}
+
+/* ===== Asymmetric Grid (Section 02) ===== */
+.asym-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 24px;
+}
+
+.asym-large {
+  cursor: pointer;
+}
+
+.asym-large-img {
+  width: 100%;
+  height: 480px;
+  object-fit: cover;
+  border-radius: var(--r-img);
+  background: #E8E6E1;
+  transition: filter 0.15s;
+}
+
+.asym-large:hover .asym-large-img { filter: brightness(0.97); }
+
+.asym-large-meta {
+  margin-top: 16px;
+}
+
+.asym-small-col {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.asym-small {
+  cursor: pointer;
+}
+
+.asym-small-img {
+  width: 100%;
+  height: 228px;
+  object-fit: cover;
+  border-radius: var(--r-img);
+  background: #E8E6E1;
+  transition: filter 0.15s;
+}
+
+.asym-small:hover .asym-small-img { filter: brightness(0.97); }
+
+.asym-small-meta {
+  margin-top: 12px;
+}
+
+.piece-title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: 4px;
+  transition: color 0.15s;
+}
+
+.piece:hover .piece-title { color: var(--accent); }
+
+.piece-meta {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.piece-creator {
+  font-size: 13px;
+  color: var(--text-2);
+  margin-bottom: 2px;
+}
+
+/* ===== Varied Row (Section 03) ===== */
+.varied-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 24px;
+}
+
+.varied-piece {
+  cursor: pointer;
+}
+
+.varied-piece:nth-child(1) .varied-img { height: 340px; }
+.varied-piece:nth-child(2) .varied-img { height: 280px; }
+.varied-piece:nth-child(3) .varied-img { height: 310px; }
+
+.varied-img {
+  width: 100%;
+  object-fit: cover;
+  border-radius: var(--r-img);
+  background: #E8E6E1;
+  transition: filter 0.15s;
+}
+
+.varied-piece:hover .varied-img { filter: brightness(0.97); }
+
+.varied-meta {
+  margin-top: 14px;
+}
+
+/* ===== Prompt List (Section 04) ===== */
+.prompt-list {
+  list-style: none;
+}
+
+.prompt-item {
+  display: flex;
+  align-items: baseline;
+  gap: 20px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: padding-left 0.15s;
+}
+
+.prompt-item:last-child { border-bottom: none; }
+
+.prompt-item:hover { padding-left: 8px; }
+
+.prompt-num {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-3);
+  width: 28px;
+  flex-shrink: 0;
+}
+
+.prompt-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.prompt-text {
+  font-size: 16px;
+  color: var(--text);
+  margin-bottom: 4px;
+  transition: color 0.15s;
+}
+
+.prompt-item:hover .prompt-text { color: var(--accent); }
+
+.prompt-info {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-3);
+  display: flex;
+  gap: 16px;
+}
+
+.prompt-uses {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text-2);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.prompt-arrow {
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity 0.15s;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.prompt-item:hover .prompt-arrow { opacity: 1; }
+
+/* ===== Footer ===== */
+.footer {
+  border-top: 1px solid var(--line);
+  padding: 32px 0;
+}
+
+.footer-inner {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 0 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.footer-brand {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.footer-copy {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.footer-tagline {
+  font-size: 13px;
+  color: var(--text-3);
+  font-style: italic;
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 900px) {
+  .topbar-inner { padding: 0 20px; gap: 20px; }
+  .nav { gap: 18px; }
+  .nav-item { font-size: 13px; }
+  .search-box { width: 140px; }
+  .account-name { display: none; }
+  .main { padding: 32px 20px 56px; }
+  .asym-grid { grid-template-columns: 1fr; }
+  .asym-large-img { height: 320px; }
+  .varied-row { grid-template-columns: 1fr 1fr; }
+  .varied-piece:nth-child(3) { display: none; }
+  .featured-img-wrap { height: 300px; }
+  .featured-title { font-size: 22px; }
+  .section { margin-bottom: 56px; }
+}
+
+@media (max-width: 600px) {
+  .nav { display: none; }
+  .search-box { display: none; }
+  .varied-row { grid-template-columns: 1fr; }
+  .varied-piece:nth-child(2) { display: none; }
+  .featured-meta { flex-direction: column; gap: 12px; }
+  .prompt-item { flex-wrap: wrap; gap: 8px; }
+  .prompt-uses { width: 100%; padding-left: 48px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ===== Topbar ===== -->
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#">
+      旭天<span class="brand-dot"></span>
+    </a>
+    <nav class="nav">
+      <a class="nav-item is-active">首页</a>
+      <a class="nav-item">创作</a>
+      <a class="nav-item">素材</a>
+      <a class="nav-item">作品</a>
+      <a class="nav-item">发布</a>
+      <a class="nav-item">历史</a>
+    </nav>
+    <div class="topbar-actions">
+      <div class="search-box">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="7" cy="7" r="5"/>
+          <path d="m11 11 3 3"/>
+        </svg>
+        <input type="text" placeholder="搜索作品、提示词…">
+      </div>
+      <button class="cta-create">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M8 3v10M3 8h10"/>
+        </svg>
+        新建
+      </button>
+      <div class="account">
+        <div class="account-avatar">陈</div>
+        <span class="account-name">陈默</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ===== Main ===== -->
+<main class="main">
+
+  <!-- 01 本周精选 -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-num">01</span>
+      <span class="section-label">本周精选</span>
+      <a class="section-link">查看全部 →</a>
+    </div>
+    <article class="featured-piece piece">
+      <div class="featured-img-wrap">
+        <img src="https://picsum.photos/seed/xt-neon-tokyo-rain/1120/440" alt="霓虹东京雨夜">
+      </div>
+      <div class="featured-meta">
+        <div class="featured-meta-left">
+          <h2 class="featured-title">霓虹东京 · 雨夜漫游</h2>
+          <p class="featured-desc">涩谷十字路口的霓虹灯在雨幕中晕开，行人撑伞穿行，镜头从低角度缓缓升起——一场赛博朋克式的城市独白。</p>
+          <div class="featured-specs">
+            <span>by 林默</span>
+            <span>·</span>
+            <span>CinemoX Pro 2.1</span>
+            <span>·</span>
+            <span>8s</span>
+            <span>·</span>
+            <span>1920×1080</span>
+            <span>·</span>
+            <span>24fps</span>
+          </div>
+        </div>
+        <span class="featured-arrow">→</span>
+      </div>
+    </article>
+  </section>
+
+  <hr class="section-divider">
+
+  <!-- 02 社区新作 -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-num">02</span>
+      <span class="section-label">社区新作</span>
+      <a class="section-link">查看全部 →</a>
+    </div>
+    <div class="asym-grid">
+      <article class="asym-large piece">
+        <img class="asym-large-img" src="https://picsum.photos/seed/xt-ink-mountains/680/480" alt="水墨千里江山">
+        <div class="asym-large-meta">
+          <p class="piece-creator">陈逸</p>
+          <h3 class="piece-title">水墨 · 千里江山</h3>
+          <p class="piece-meta">AquaMotion v1 · 6s · 1920×1080</p>
+        </div>
+      </article>
+      <div class="asym-small-col">
+        <article class="asym-small piece">
+          <img class="asym-small-img" src="https://picsum.photos/seed/xt-abandoned-factory/420/228" alt="废弃工厂">
+          <div class="asym-small-meta">
+            <p class="piece-creator">张维</p>
+            <h3 class="piece-title">废弃工厂</h3>
+            <p class="piece-meta">CinemoX Pro 2.1 · 4s</p>
+          </div>
+        </article>
+        <article class="asym-small piece">
+          <img class="asym-small-img" src="https://picsum.photos/seed/xt-macro-flower/420/228" alt="花蕊微距">
+          <div class="asym-small-meta">
+            <p class="piece-creator">李棠</p>
+            <h3 class="piece-title">花蕊微距</h3>
+            <p class="piece-meta">MicroLens · 10s</p>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <hr class="section-divider">
+
+  <!-- 03 创意精选 -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-num">03</span>
+      <span class="section-label">创意精选</span>
+      <a class="section-link">查看全部 →</a>
+    </div>
+    <div class="varied-row">
+      <article class="varied-piece piece">
+        <img class="varied-img" src="https://picsum.photos/seed/xt-iceland-aurora/360/340" alt="冰岛极光">
+        <div class="varied-meta">
+          <p class="piece-creator">王珂</p>
+          <h3 class="piece-title">冰岛极光</h3>
+          <p class="piece-meta">CinemoX Pro · 12s</p>
+        </div>
+      </article>
+      <article class="varied-piece piece">
+        <img class="varied-img" src="https://picsum.photos/seed/xt-old-alley/360/280" alt="老城弄堂">
+        <div class="varied-meta">
+          <p class="piece-creator">周婧</p>
+          <h3 class="piece-title">老城弄堂</h3>
+          <p class="piece-meta">AquaMotion v1 · 6s</p>
+        </div>
+      </article>
+      <article class="varied-piece piece">
+        <img class="varied-img" src="https://picsum.photos/seed/xt-nebula-drift/360/310" alt="星云漫游">
+        <div class="varied-meta">
+          <p class="piece-creator">赵明</p>
+          <h3 class="piece-title">星云漫游</h3>
+          <p class="piece-meta">CinemoX Pro · 15s</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <hr class="section-divider">
+
+  <!-- 04 热门提示词 -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-num">04</span>
+      <span class="section-label">热门提示词</span>
+      <a class="section-link">查看全部 →</a>
+    </div>
+    <ol class="prompt-list">
+      <li class="prompt-item">
+        <span class="prompt-num">01</span>
+        <div class="prompt-content">
+          <p class="prompt-text">"赛博朋克 Tokyo, 霓虹雨夜, 电影质感, 浅景深"</p>
+          <div class="prompt-info">
+            <span>CinemoX Pro</span>
+            <span>·</span>
+            <span>2,341 次使用</span>
+          </div>
+        </div>
+        <span class="prompt-arrow">→</span>
+      </li>
+      <li class="prompt-item">
+        <span class="prompt-num">02</span>
+        <div class="prompt-content">
+          <p class="prompt-text">"水墨江南, 烟雨朦胧, 传统美学, 留白意境"</p>
+          <div class="prompt-info">
+            <span>AquaMotion</span>
+            <span>·</span>
+            <span>1,876 次使用</span>
+          </div>
+        </div>
+        <span class="prompt-arrow">→</span>
+      </li>
+      <li class="prompt-item">
+        <span class="prompt-num">03</span>
+        <div class="prompt-content">
+          <p class="prompt-text">"微观世界, 昆虫视角, 景深压缩, 自然光"</p>
+          <div class="prompt-info">
+            <span>MicroLens</span>
+            <span>·</span>
+            <span>1,543 次使用</span>
+          </div>
+        </div>
+        <span class="prompt-arrow">→</span>
+      </li>
+      <li class="prompt-item">
+        <span class="prompt-num">04</span>
+        <div class="prompt-content">
+          <p class="prompt-text">"极光冰岛, 广角全景, 长曝光, 星空"</p>
+          <div class="prompt-info">
+            <span>CinemoX Pro</span>
+            <span>·</span>
+            <span>1,289 次使用</span>
+          </div>
+        </div>
+        <span class="prompt-arrow">→</span>
+      </li>
+      <li class="prompt-item">
+        <span class="prompt-num">05</span>
+        <div class="prompt-content">
+          <p class="prompt-text">"复古胶片, 8mm 质感, 暖色调, 家庭录像"</p>
+          <div class="prompt-info">
+            <span>RetroFilm</span>
+            <span>·</span>
+            <span>1,012 次使用</span>
+          </div>
+        </div>
+        <span class="prompt-arrow">→</span>
+      </li>
+    </ol>
+  </section>
+
+</main>
+
+<!-- ===== Footer ===== -->
+<footer class="footer">
+  <div class="footer-inner">
+    <span class="footer-brand">旭天</span>
+    <span class="footer-tagline">让创意如旭日升空</span>
+    <span class="footer-copy">© 2026 旭天科技</span>
+  </div>
+</footer>
+
+<script>
+// Nav active state
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', (e) => {
+    e.preventDefault();
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('is-active'));
+    item.classList.add('is-active');
+  });
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="旭天 Logo A 旭日地平线">
+  <defs>
+    <clipPath id="sunClip"><rect x="34" y="16" width="132" height="88"/></clipPath>
+  </defs>
+  <circle cx="100" cy="112" r="42" fill="#F2C94C" clip-path="url(#sunClip)"/>
+  <line x1="38" y1="106" x2="162" y2="106" stroke="#EDEFF2" stroke-width="6" stroke-linecap="round"/>
+  <line x1="60" y1="122" x2="140" y2="122" stroke="#EDEFF2" stroke-width="6" stroke-linecap="round" opacity="0.4"/>
+</svg>

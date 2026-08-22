@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Video Studio — Design Proposal</title>
+<style>
+  /* ===== Reset & Foundations ===== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  
+  :root {
+    --bg-root: #080808;
+    --bg-panel: #0d0d0d;
+    --bg-raised: #141414;
+    --bg-hover: #1a1a1a;
+    --bg-input: #111111;
+    --border-subtle: #1f1f1f;
+    --border-default: #282828;
+    --border-strong: #333333;
+    --text-primary: #ebebeb;
+    --text-secondary: #999999;
+    --text-tertiary: #666666;
+    --text-disabled: #444444;
+    --accent: #d4a853;
+    --accent-strong: #e8c16e;
+    --accent-muted: #3d3420;
+    --danger: #d95555;
+    --success: #5bb98c;
+    --warning: #d4a853;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-mono: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.5);
+    --shadow-lg: 0 12px 40px rgba(0,0,0,0.6);
+  }
+  
+  html, body {
+    height: 100%; overflow: hidden;
+    background: var(--bg-root); color: var(--text-primary);
+    font-family: var(--font-sans); font-size: 13px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  
+  button { font-family: inherit; cursor: pointer; }
+  input, textarea, select { font-family: inherit; color: inherit; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+  
+  /* ===== App Shell ===== */
+  .app {
+    display: grid;
+    grid-template-columns: 220px 1fr 320px;
+    grid-template-rows: 48px 1fr 56px;
+    height: 100vh; width: 100vw;
+  }
+  
+  /* ===== Top Bar ===== */
+  .topbar {
+    grid-column: 1 / -1; grid-row: 1;
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 16px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border-subtle);
+    z-index: 10;
+    -webkit-app-region: drag;
+  }
+  
+  .topbar-brand {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--text-primary); font-size: 13px; font-weight: 700;
+    letter-spacing: -0.01em; white-space: nowrap;
+    -webkit-app-region: no-drag;
+  }
+  .topbar-brand svg { width: 20px; height: 20px; color: var(--accent); }
+  
+  .topbar-nav {
+    display: flex; align-items: center; gap: 4px; margin-left: 24px;
+    -webkit-app-region: no-drag;
+  }
+  .topbar-nav button {
+    height: 30px; padding: 0 12px;
+    border: 0; border-radius: var(--radius-sm);
+    background: transparent; color: var(--text-secondary);
+    font-size: 12px; font-weight: 550;
+    transition: all 120ms ease;
+  }
+  .topbar-nav button:hover { color: var(--text-primary); background: var(--bg-hover); }
+  .topbar-nav button.active { color: var(--text-primary); background: var(--bg-raised); }
+  
+  .topbar-spacer { flex: 1; }
+  
+  .topbar-actions {
+    display: flex; align-items: center; gap: 8px;
+    -webkit-app-region: no-drag;
+  }
+  .topbar-actions button {
+    width: 32px; height: 32px; display: grid; place-items: center;
+    border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+    background: var(--bg-raised); color: var(--text-secondary);
+    transition: all 120ms ease;
+  }
+  .topbar-actions button:hover {
+    color: var(--text-primary); border-color: var(--border-strong);
+  }
+  
+  .user-avatar {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--accent-muted); color: var(--accent);
+    display: grid; place-items: center;
+    font-size: 11px; font-weight: 700;
+  }
+  
+  /* ===== Left Sidebar ===== */
+  .sidebar {
+    grid-column: 1; grid-row: 2;
+    display: flex; flex-direction: column;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border-subtle);
+    overflow-y: auto;
+  }
+  
+  .sidebar-section {
+    padding: 16px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .sidebar-section:last-child { border-bottom: 0; }
+  
+  .sidebar-label {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+    color: var(--text-tertiary); font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  
+  .sidebar-tools {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+  }
+  .sidebar-tools button {
+    aspect-ratio: 1; display: grid; place-items: center;
+    border: 1px solid transparent; border-radius: var(--radius-sm);
+    background: transparent; color: var(--text-secondary);
+    transition: all 100ms ease;
+  }
+  .sidebar-tools button:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .sidebar-tools button.active {
+    border-color: var(--border-default); background: var(--bg-raised); color: var(--accent);
+  }
+  
+  .media-list {
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .media-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: var(--radius-sm);
+    color: var(--text-secondary); font-size: 11px;
+    transition: all 100ms ease;
+  }
+  .media-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .media-item.active { background: var(--bg-raised); color: var(--text-primary); }
+  .media-thumb {
+    width: 36px; height: 28px; border-radius: 3px;
+    background: var(--bg-input); border: 1px solid var(--border-subtle);
+    display: grid; place-items: center; flex-shrink: 0;
+    overflow: hidden;
+  }
+  .media-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  
+  .history-list {
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .history-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; border-radius: var(--radius-sm);
+    color: var(--text-tertiary); font-size: 11px;
+  }
+  .history-item:hover { background: var(--bg-hover); color: var(--text-secondary); }
+  .history-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    background: var(--text-disabled);
+  }
+  .history-dot.done { background: var(--success); }
+  .history-dot.running { background: var(--accent); animation: pulse 1.5s ease infinite; }
+  .history-dot.failed { background: var(--danger); }
+  
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  
+  /* ===== Main Canvas ===== */
+  .canvas {
+    grid-column: 2; grid-row: 2;
+    position: relative;
+    background: #000000;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  
+  .canvas-content {
+    position: relative;
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    padding: 40px;
+  }
+  
+  .canvas-viewport {
+    position: relative;
+    width: 100%; max-width: 900px;
+    aspect-ratio: 16 / 9;
+    max-height: calc(100vh - 200px);
+    background: #0a0a0a;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 16px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.03), var(--shadow-lg);
+  }
+  
+  .canvas-viewport .empty-state {
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    color: var(--text-tertiary);
+  }
+  .canvas-viewport .empty-state svg { width: 48px; height: 48px; opacity: 0.3; }
+  .canvas-viewport .empty-state span { font-size: 12px; }
+  
+  .canvas-overlay {
+    position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+    background: rgba(13,13,13,0.92); backdrop-filter: blur(12px);
+  }
+  .canvas-overlay button {
+    width: 36px; height: 32px; display: grid; place-items: center;
+    border: 0; border-radius: var(--radius-sm);
+    background: transparent; color: var(--text-secondary);
+    transition: all 100ms ease;
+  }
+  .canvas-overlay button:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .canvas-overlay .zoom-value {
+    width: 48px; text-align: center;
+    color: var(--text-tertiary); font-size: 10px; font-family: var(--font-mono);
+  }
+  
+  /* ===== Right Panel ===== */
+  .panel {
+    grid-column: 3; grid-row: 2;
+    display: flex; flex-direction: column;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border-subtle);
+    overflow-y: auto;
+  }
+  
+  .panel-section {
+    padding: 16px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .panel-section:last-child { border-bottom: 0; }
+  
+  .panel-section-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .panel-section-header span {
+    color: var(--text-tertiary); font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  
+  .panel-field {
+    display: flex; flex-direction: column; gap: 6px;
+    margin-bottom: 14px;
+  }
+  .panel-field:last-child { margin-bottom: 0; }
+  .panel-field label {
+    color: var(--text-secondary); font-size: 11px; font-weight: 550;
+  }
+  
+  .panel-field input,
+  .panel-field select,
+  .panel-field textarea {
+    width: 100%; padding: 8px 10px;
+    border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+    background: var(--bg-input); color: var(--text-primary);
+    font-size: 12px; outline: none;
+    transition: border-color 120ms ease;
+  }
+  .panel-field input:focus,
+  .panel-field select:focus,
+  .panel-field textarea:focus {
+    border-color: var(--accent);
+  }
+  .panel-field textarea {
+    min-height: 72px; resize: vertical; line-height: 1.5;
+  }
+  .panel-field input::placeholder,
+  .panel-field textarea::placeholder { color: var(--text-disabled); }
+  
+  .panel-field select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23666' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 30px;
+  }
+  
+  .param-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  }
+  .param-row.triple { grid-template-columns: 1fr 1fr 1fr; }
+  
+  .mode-tabs {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px;
+  }
+  .mode-tabs button {
+    padding: 7px 4px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+    background: transparent; color: var(--text-tertiary);
+    font-size: 10px; font-weight: 600; text-align: center;
+    transition: all 100ms ease;
+  }
+  .mode-tabs button:hover { color: var(--text-secondary); border-color: var(--border-default); }
+  .mode-tabs button.active {
+    color: var(--accent); border-color: var(--accent); background: var(--accent-muted);
+  }
+  
+  .model-picker {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .model-option {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+    transition: all 100ms ease;
+  }
+  .model-option:hover { border-color: var(--border-default); }
+  .model-option.active {
+    border-color: var(--accent); background: var(--accent-muted);
+  }
+  .model-option .name { font-size: 12px; font-weight: 550; }
+  .model-option .meta { font-size: 10px; color: var(--text-tertiary); }
+  
+  /* ===== Bottom Bar (Timeline) ===== */
+  .bottombar {
+    grid-column: 1 / -1; grid-row: 3;
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 16px;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border-subtle);
+    z-index: 10;
+  }
+  
+  .timeline-controls {
+    display: flex; align-items: center; gap: 6px;
+  }
+  .timeline-controls button {
+    width: 32px; height: 28px; display: grid; place-items: center;
+    border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+    background: transparent; color: var(--text-secondary);
+    transition: all 100ms ease;
+  }
+  .timeline-controls button:hover { border-color: var(--border-default); color: var(--text-primary); }
+  .timeline-controls button.record {
+    color: var(--danger); border-color: rgba(217,85,85,0.3);
+  }
+  .timeline-controls button.record:hover { background: rgba(217,85,85,0.1); }
+  
+  .timeline-ruler {
+    flex: 1; height: 36px;
+    border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    position: relative; overflow: hidden;
+  }
+  .timeline-playhead {
+    position: absolute; top: 0; left: 18%;
+    width: 2px; height: 100%;
+    background: var(--accent);
+  }
+  .timeline-clip {
+    position: absolute; top: 6px; height: calc(100% - 12px);
+    border-radius: 3px; opacity: 0.8;
+  }
+  .timeline-clip.c1 { left: 4%; width: 12%; background: #3a5080; }
+  .timeline-clip.c2 { left: 17%; width: 8%; background: #50703a; }
+  .timeline-clip.c3 { left: 26%; width: 14%; background: #704a3a; }
+  
+  .timeline-time {
+    font-size: 10px; font-family: var(--font-mono); color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+  
+  /* ===== Generate Button ===== */
+  .btn-generate {
+    display: inline-flex; align-items: center; gap: 8px;
+    height: 40px; padding: 0 24px;
+    border: 0; border-radius: var(--radius-md);
+    background: var(--accent); color: #111111;
+    font-size: 13px; font-weight: 700;
+    letter-spacing: -0.01em;
+    transition: all 120ms ease;
+  }
+  .btn-generate:hover { background: var(--accent-strong); }
+  .btn-generate:active { transform: scale(0.98); }
+  
+  .btn-generate-cost {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px; border-radius: var(--radius-sm);
+    background: rgba(0,0,0,0.2); font-size: 10px; font-family: var(--font-mono);
+    color: rgba(0,0,0,0.6);
+  }
+  
+  /* ===== Gallery View ===== */
+  .gallery {
+    display: flex; flex-direction: column; height: 100%;
+    padding: 0; overflow: hidden;
+  }
+  .gallery-toolbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .gallery-toolbar .search {
+    flex: 1; max-width: 280px; height: 32px; padding: 0 10px;
+    border: 1px solid var(--border-default); border-radius: var(--radius-md);
+    background: var(--bg-input); color: var(--text-primary); font-size: 12px;
+    outline: none;
+  }
+  .gallery-toolbar .search:focus { border-color: var(--accent); }
+  .gallery-toolbar .search::placeholder { color: var(--text-disabled); }
+  
+  .filter-tabs {
+    display: flex; gap: 4px;
+  }
+  .filter-tabs button {
+    height: 28px; padding: 0 12px;
+    border: 0; border-radius: var(--radius-md);
+    background: transparent; color: var(--text-tertiary);
+    font-size: 11px; font-weight: 550;
+    transition: all 100ms ease;
+  }
+  .filter-tabs button:hover { color: var(--text-secondary); background: var(--bg-hover); }
+  .filter-tabs button.active { color: var(--text-primary); background: var(--bg-raised); }
+  
+  .gallery-grid {
+    flex: 1; display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    grid-auto-rows: 160px; gap: 6px;
+    padding: 12px; overflow-y: auto;
+  }
+  
+  .gallery-card {
+    position: relative; overflow: hidden;
+    border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+    background: var(--bg-raised);
+    transition: border-color 150ms ease, transform 150ms ease;
+  }
+  .gallery-card:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-1px);
+  }
+  .gallery-card.tall { grid-row: span 2; }
+  .gallery-card.wide { grid-column: span 2; }
+  
+  .gallery-card .media {
+    width: 100%; height: 100%;
+    object-fit: cover;
+  }
+  .gallery-card .overlay {
+    position: absolute; inset: 0;
+    background: linear-gradient(0deg, rgba(0,0,0,0.85) 0%, transparent 50%);
+    display: flex; align-items: flex-end; padding: 10px;
+    opacity: 0; transition: opacity 150ms ease;
+  }
+  .gallery-card:hover .overlay { opacity: 1; }
+  .gallery-card .overlay .info {
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .gallery-card .overlay .info span {
+    color: var(--text-primary); font-size: 12px; font-weight: 600;
+  }
+  .gallery-card .overlay .info small {
+    color: var(--text-secondary); font-size: 10px;
+  }
+  
+  /* ===== Responsive ===== */
+  @media (max-width: 1280px) {
+    .app { grid-template-columns: 60px 1fr 280px; }
+    .sidebar-section { padding: 12px 8px; }
+    .sidebar-label { display: none; }
+    .sidebar-tools { grid-template-columns: repeat(2, 1fr); }
+    .media-item span:last-child, .history-item span:last-child { display: none; }
+    .media-item { justify-content: center; padding: 6px; }
+    .history-item { justify-content: center; }
+  }
+  
+  @media (max-width: 960px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: 48px 1fr 56px; }
+    .sidebar { display: none; }
+    .panel { display: none; }
+    .canvas { grid-column: 1; }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="topbar-brand">
+      <svg viewBox="0 0 20 20" fill="currentColor"><rect x="2" y="4" width="16" height="12" rx="2" fill="currentColor" opacity="0.15"/><rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="7" cy="10" r="1.5" fill="currentColor"/></svg>
+      <span>Video Studio</span>
+    </div>
+    <nav class="topbar-nav">
+      <button class="active">剪辑</button>
+      <button>调色</button>
+      <button>特效</button>
+      <button>音频</button>
+    </nav>
+    <div class="topbar-spacer"></div>
+    <div class="topbar-actions">
+      <button title="撤销">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6h6a3 3 0 0 1 0 6H7"/><path d="M5 4L3 6l2 2"/></svg>
+      </button>
+      <button title="重做">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M13 6H7a3 3 0 0 0 0 6h2"/><path d="M11 4l2 2-2 2"/></svg>
+      </button>
+      <button title="导出">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 2v9M5 8l3 3 3-3"/><path d="M3 12v1.5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5V12"/></svg>
+      </button>
+      <div class="user-avatar">L</div>
+    </div>
+  </header>
+  
+  <!-- LEFT SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">工具</div>
+      <div class="sidebar-tools">
+        <button class="active" title="选择">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 2l5 14 2-6 6-2-13-6z"/></svg>
+        </button>
+        <button title="裁剪">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 1v3m0 8v3M1 4h3m8 0h3M3 4h10v8H3z"/></svg>
+        </button>
+        <button title="文本">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="4" rx="0.5"/><path d="M8 3v10M4 13h8"/></svg>
+        </button>
+        <button title="画笔">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 14l4-10 6 6-10 4z"/><circle cx="12" cy="4" r="2"/></svg>
+        </button>
+      </div>
+    </div>
+    
+    <div class="sidebar-section">
+      <div class="sidebar-label">素材</div>
+      <div class="media-list">
+        <div class="media-item active">
+          <div class="media-thumb" style="background:#1a2a3a;"></div>
+          <span>主镜头.mp4</span>
+        </div>
+        <div class="media-item">
+          <div class="media-thumb" style="background:#2a1a2a;"></div>
+          <span>B-roll_01.mp4</span>
+        </div>
+        <div class="media-item">
+          <div class="media-thumb" style="background:#1a2a2a;"></div>
+          <span>标题卡片.png</span>
+        </div>
+        <div class="media-item">
+          <div class="media-thumb" style="background:#2a2a1a;"></div>
+          <span>背景音乐.wav</span>
+        </div>
+      </div>
+    </div>
+    
+    <div class="sidebar-section" style="flex:1; overflow-y:auto;">
+      <div class="sidebar-label">历史</div>
+      <div class="history-list">
+        <div class="history-item"><span class="history-dot done"></span><span>日落延时 v3</span></div>
+        <div class="history-item"><span class="history-dot done"></span><span>产品展示 B</span></div>
+        <div class="history-item"><span class="history-dot running"></span><span>城市夜景</span></div>
+        <div class="history-item"><span class="history-dot failed"></span><span>测试渲染</span></div>
+        <div class="history-item"><span class="history-dot done"></span><span>片头动画</span></div>
+      </div>
+    </div>
+  </aside>
+  
+  <!-- MAIN CANVAS -->
+  <main class="canvas">
+    <div class="canvas-content">
+      <div class="canvas-viewport">
+        <div class="empty-state">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3">
+            <rect x="6" y="10" width="36" height="28" rx="4"/>
+            <polygon points="20,16 20,32 34,24"/>
+          </svg>
+          <span>拖入素材或点击底部「生成」开始创作</span>
+        </div>
+      </div>
+      <div class="canvas-overlay">
+        <button><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2H4v12h8V2z"/></svg></button>
+        <span class="zoom-value">Fit</span>
+        <button><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 14L10 10M7 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"/></svg></button>
+      </div>
+    </div>
+  </main>
+  
+  <!-- RIGHT PANEL -->
+  <aside class="panel">
+    <div class="panel-section">
+      <div class="panel-section-header">
+        <span>生成模式</span>
+      </div>
+      <div class="mode-tabs">
+        <button class="active">文生视频</button>
+        <button>图生视频</button>
+        <button>视频编辑</button>
+        <button>音画同步</button>
+      </div>
+    </div>
+    
+    <div class="panel-section">
+      <div class="panel-section-header">
+        <span>模型</span>
+        <span style="font-size:10px;color:var(--text-tertiary);text-transform:none;letter-spacing:0;">3 个可用</span>
+      </div>
+      <div class="model-picker">
+        <div class="model-option active">
+          <span class="name">Kling 3.0</span>
+          <span class="meta">快速</span>
+        </div>
+        <div class="model-option">
+          <span class="name">Wan 2.7</span>
+          <span class="meta">高清</span>
+        </div>
+        <div class="model-option">
+          <span class="name">Ark Pro</span>
+          <span class="meta">专业</span>
+        </div>
+      </div>
+    </div>
+    
+    <div class="panel-section">
+      <div class="panel-section-header">
+        <span>提示词</span>
+      </div>
+      <div class="panel-field">
+        <textarea placeholder="描述你想要的画面...&#10;例如：日落时分城市天际线的航拍镜头，暖金色光线穿过玻璃幕墙，缓慢推镜"></textarea>
+      </div>
+    </div>
+    
+    <div class="panel-section">
+      <div class="panel-section-header">
+        <span>参数</span>
+      </div>
+      <div class="param-row">
+        <div class="panel-field">
+          <label>时长</label>
+          <select>
+            <option>5 秒</option>
+            <option selected>8 秒</option>
+            <option>10 秒</option>
+            <option>15 秒</option>
+          </select>
+        </div>
+        <div class="panel-field">
+          <label>画幅</label>
+          <select>
+            <option selected>16:9</option>
+            <option>9:16</option>
+            <option>1:1</option>
+            <option>4:3</option>
+          </select>
+        </div>
+      </div>
+      <div class="param-row triple">
+        <div class="panel-field">
+          <label>分辨率</label>
+          <select>
+            <option>720p</option>
+            <option selected>1080p</option>
+            <option>2K</option>
+          </select>
+        </div>
+        <div class="panel-field">
+          <label>数量</label>
+          <select>
+            <option selected>1</option>
+            <option>2</option>
+            <option>4</option>
+          </select>
+        </div>
+        <div class="panel-field">
+          <label>帧率</label>
+          <select>
+            <option>24</option>
+            <option selected>30</option>
+            <option>60</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    
+    <div class="panel-section" style="margin-top:auto;">
+      <button class="btn-generate" style="width:100%; justify-content:center;">
+        生成视频
+        <span class="btn-generate-cost">¥12.80</span>
+      </button>
+    </div>
+  </aside>
+  
+  <!-- BOTTOM BAR -->
+  <footer class="bottombar">
+    <div class="timeline-controls">
+      <button><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><polygon points="6,4 6,12 13,8"/></svg></button>
+      <button class="record"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><circle cx="5" cy="5" r="4"/></svg></button>
+      <button><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1"/></svg></button>
+    </div>
+    <div class="timeline-ruler">
+      <div class="timeline-playhead"></div>
+      <div class="timeline-clip c1"></div>
+      <div class="timeline-clip c2"></div>
+      <div class="timeline-clip c3"></div>
+    </div>
+    <div class="timeline-time">00:02:14 / 00:05:30</div>
+  </footer>
+
+</div>
+
+</body>
+</html>

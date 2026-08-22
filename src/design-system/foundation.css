@@ -1,0 +1,261 @@
+@import "@fontsource-variable/manrope/wght.css";
+@import "@fontsource-variable/noto-sans-sc/wght.css";
+
+/* Browser and typography foundation for every product surface. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  font-family: var(--font-sans);
+  font-size: 100%;
+  font-optical-sizing: auto;
+  font-synthesis: none;
+  font-variant-numeric: tabular-nums lining-nums;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root,
+.app-shell,
+.control-shell,
+.ops-console {
+  font-family: var(--font-sans);
+}
+
+html {
+  min-width: 0;
+  min-height: 100%;
+  background: var(--bg);
+  scrollbar-color: var(--line-emphasis) transparent;
+  scrollbar-width: thin;
+}
+
+body {
+  min-width: 0;
+  min-height: 100%;
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  font-weight: var(--weight-regular);
+  line-height: var(--leading-body);
+}
+
+#root {
+  min-width: 0;
+  min-height: 100dvh;
+}
+
+::selection {
+  color: var(--selection-ink);
+  background: var(--selection-bg);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background: var(--line-emphasis);
+  background-clip: padding-box;
+}
+
+button,
+input,
+optgroup,
+select,
+textarea {
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: inherit;
+  letter-spacing: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+  font-size: var(--text-control);
+  line-height: var(--leading-control);
+}
+
+button,
+select,
+summary,
+label[for],
+input[type="checkbox"],
+input[type="radio"] {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+summary,
+input[type="checkbox"],
+input[type="radio"],
+select {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+}
+
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+a {
+  color: inherit;
+  text-underline-offset: 0.18em;
+  text-decoration-thickness: 1px;
+}
+
+img,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+img,
+video {
+  height: auto;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+figure,
+blockquote,
+dl,
+dd {
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: var(--text);
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-heading);
+  letter-spacing: var(--tracking-heading);
+  text-wrap: balance;
+}
+
+table {
+  border-collapse: collapse;
+  color: var(--table-ink);
+  font-size: var(--text-body-sm);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+code,
+kbd,
+samp,
+pre,
+.ds-font-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums slashed-zero;
+}
+
+.sr-only,
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ds-type-caption {
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  letter-spacing: var(--tracking-caption);
+}
+
+.ds-type-body-sm {
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body);
+}
+
+.ds-type-body {
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+
+.ds-type-body-lg {
+  font-size: var(--text-body-lg);
+  line-height: var(--leading-body);
+}
+
+.ds-type-heading-sm {
+  font-size: var(--text-heading-sm);
+}
+
+.ds-type-heading-md {
+  font-size: var(--text-heading-md);
+}
+
+.ds-type-heading-lg {
+  font-size: var(--text-heading-lg);
+}
+
+.ds-type-display {
+  font-size: var(--text-display);
+  line-height: var(--leading-tight);
+}
+
+.ds-skeleton {
+  border-radius: var(--radius-xs);
+  background: var(--surface-soft);
+  animation: ds-skeleton-pulse 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes ds-skeleton-pulse {
+  to { opacity: 0.56; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+  }
+
+  .ds-skeleton {
+    animation: none;
+  }
+}

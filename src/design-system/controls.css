@@ -1,0 +1,824 @@
+/*
+ * Shared control contract
+ *
+ * This compatibility layer maps the three existing product surfaces onto one
+ * control scale. It is deliberately root-scoped so auth, embeds, and future
+ * independent surfaces are not restyled by accident.
+ *
+ * Size contract: compact 32px, default 40px, touch/primary 44px.
+ * Shape contract: controls use 6px corners; pills remain semantic exceptions.
+ */
+
+:is(.app-shell, .control-shell, .ops-console) {
+  --control-size-compact: var(--control-sm, 32px);
+  --control-size-default: var(--control-md, 40px);
+  --control-size-touch: var(--control-lg, 44px);
+  --control-corner: var(--radius-control, 6px);
+  --control-font-size: var(--text-control, 0.875rem);
+  --control-label-size: var(--text-caption, 0.75rem);
+  --control-table-size: var(--text-body-sm, 0.8125rem);
+  --control-font-weight: var(--weight-medium, 500);
+  --control-strong-weight: var(--weight-semibold, 600);
+  --control-border-color: var(--line-strong, #d5dbd7);
+  --control-border-subtle: var(--line, #e3e7e4);
+  --control-surface: var(--surface-elevated, var(--surface, #fff));
+  --control-surface-hover: var(--surface-hover, #f7f9f8);
+  --control-text: var(--control-ink, var(--text, #171a18));
+  --control-text-secondary: var(--text-soft, var(--secondary-ink, #4d5550));
+  --control-text-muted: var(--text-muted, var(--quiet, #68716b));
+  --control-accent: var(--accent, #26784a);
+  --control-accent-hover: var(--accent-strong, #1f693f);
+  --control-accent-ink: var(--accent-ink, #fff);
+  --control-accent-soft: var(--accent-soft, #eaf4ee);
+  --control-danger: var(--danger, #c6423c);
+  --control-danger-soft: var(--danger-soft, #fff3f2);
+  --control-focus-ring: var(--focus-ring, var(--accent, #26784a));
+  --control-disabled-opacity: 0.48;
+}
+
+.ops-console {
+  --control-border-color: var(--ops-line-strong, #ced9d5);
+  --control-border-subtle: var(--ops-line, #dfe7e4);
+  --control-surface: var(--ops-surface, #fff);
+  --control-surface-hover: var(--ops-surface-soft, #f5f8f7);
+  --control-text: var(--ops-ink, #16251f);
+  --control-text-secondary: var(--ops-ink-soft, #364842);
+  --control-text-muted: var(--ops-muted, #5f6d68);
+  --control-accent: var(--ops-accent, #087766);
+  --control-accent-hover: var(--ops-accent-dark, #066858);
+  --control-accent-ink: #fff;
+  --control-accent-soft: var(--ops-accent-soft, #e8f5f2);
+  --control-danger: var(--ops-red, #bd3333);
+  --control-danger-soft: var(--ops-red-soft, #fff2f1);
+  --control-focus-ring: var(--ops-focus-ring, var(--ops-accent, #087766));
+}
+
+.demo-account-switcher .demo-account-origin {
+  display: none;
+  flex: 0 0 auto;
+  min-height: 20px;
+  align-items: center;
+  padding-inline: 6px;
+  border: 1px solid var(--control-border-color);
+  border-radius: var(--radius-pill);
+  color: var(--control-text-secondary);
+  background: var(--control-surface-hover);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+}
+
+/* Native form controls */
+
+:is(.app-shell, .control-shell, .ops-console) .skin-switcher select {
+  min-height: var(--control-size-compact);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(input, select, textarea) {
+  border-radius: var(--control-corner);
+  color: var(--control-text);
+  font-family: inherit;
+  font-size: var(--control-font-size);
+  font-weight: var(--weight-regular, 400);
+  line-height: 1.45;
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .select-wrap select,
+    .project-select select,
+    .demo-account-switcher select,
+    .search-field input,
+    .creation-search input,
+    .creation-select select,
+    .publication-center input,
+    .publication-center select,
+    .control-filterbar input,
+    .control-filterbar select,
+    .control-entitlement-list input,
+    .control-form input,
+    .control-form select,
+    .ops-form-field input,
+    .ops-form-field select,
+    .ops-filterbar input,
+    .ops-filterbar select,
+    .ops-batch-toolbar select,
+    .ops-search input,
+    .ops-select-control select,
+    .ops-admin-tools select
+  ) {
+  min-height: var(--control-size-default);
+  border: 1px solid var(--control-border-color);
+  border-radius: var(--control-corner);
+  color: var(--control-text);
+  background-color: var(--control-surface);
+  font-size: var(--control-font-size);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .control-filterbar input,
+    .control-filterbar select,
+    .control-entitlement-list input,
+    .control-permission-row > select,
+    .demo-account-switcher select,
+    .ops-filterbar input,
+    .ops-filterbar select,
+    .ops-batch-toolbar select,
+    .ops-search input,
+    .ops-select-control select,
+    .ops-admin-tools select
+  ) {
+  min-height: var(--control-size-compact);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .publication-center textarea,
+    .control-form textarea,
+    .ops-form-field textarea
+  ) {
+  min-height: calc(var(--control-size-default) + var(--control-size-default));
+  padding: 10px 12px;
+  border: 1px solid var(--control-border-color);
+  border-radius: var(--control-corner);
+  color: var(--control-text);
+  background-color: var(--control-surface);
+  font-size: var(--control-font-size);
+  line-height: 1.55;
+  resize: vertical;
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(input, textarea)::placeholder {
+  color: var(--control-text-muted);
+  opacity: 1;
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(input, select, textarea):hover:not(:disabled):not([readonly]) {
+  border-color: color-mix(in srgb, var(--control-border-color) 58%, var(--control-text) 42%);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(input, select, textarea):disabled {
+  color: var(--control-text-muted);
+  background-color: var(--control-surface-hover);
+  cursor: not-allowed;
+  opacity: var(--control-disabled-opacity);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(input, textarea)[aria-invalid="true"] {
+  border-color: var(--control-danger);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(.demo-account-switcher, .skin-switcher) {
+  display: inline-flex;
+  min-width: 0;
+  min-height: var(--control-size-default);
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 7px;
+  padding-inline: 9px;
+  border: 1px solid var(--control-border-subtle);
+  border-radius: var(--control-corner);
+  color: var(--control-text-secondary);
+  background: var(--control-surface);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(.demo-account-switcher, .skin-switcher):hover,
+:is(.app-shell, .control-shell, .ops-console)
+  :is(.demo-account-switcher, .skin-switcher):focus-within {
+  border-color: var(--control-border-color);
+  background: var(--control-surface-hover);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(.demo-account-switcher, .skin-switcher) > svg {
+  flex: 0 0 auto;
+  color: var(--control-accent);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(.demo-account-switcher, .skin-switcher) select {
+  width: auto;
+  min-width: 0;
+  max-width: 176px;
+  min-height: calc(var(--control-size-default) - 2px);
+  appearance: none;
+  padding: 0 2px;
+  border: 0;
+  outline: 0;
+  color: var(--control-text);
+  background: transparent;
+  font-size: var(--control-label-size);
+  font-weight: var(--control-strong-weight);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  .demo-account-switcher > span {
+  flex: 0 0 auto;
+  font-size: var(--control-label-size);
+  font-weight: var(--control-strong-weight);
+}
+
+/* Labels stay above fields and never drop below the 12px visible-text floor. */
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .field-heading label,
+    .mode-select-label,
+    .publication-center label > span,
+    .publication-center legend,
+    .control-filterbar label > span,
+    .control-form label > span,
+    .control-form fieldset > legend,
+    .ops-form-field > span,
+    .ops-field-label
+  ) {
+  color: var(--control-text-secondary);
+  font-size: var(--control-label-size);
+  font-weight: var(--control-strong-weight);
+  line-height: 1.45;
+}
+
+/* Buttons */
+
+.control-shell .control-brand {
+  min-height: var(--control-size-compact);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .control-button,
+    .control-filterbar button,
+    .control-resource-edit,
+    .control-table td.is-actions button,
+    .publication-center .publication-primary-button,
+    .publication-center .publication-heading-actions button,
+    .publication-center .publication-jobs button,
+    .publication-center .publication-connections button,
+    .publication-center form > footer button,
+    .creation-toolbar button,
+    .creation-hub-state button,
+    .creation-pagination button,
+    .creation-task-preview-load,
+    .creation-task-open,
+    .composer-settings-button,
+    .task-action,
+    .text-button,
+    .download-button,
+    .folder-button,
+    .ops-primary-button,
+    .ops-secondary-button,
+    .ops-text-button,
+    .ops-table-link,
+    .ops-basic-config-button,
+    .ops-help-button
+  ) {
+  min-height: var(--control-size-default);
+  border-radius: var(--control-corner);
+  font-family: inherit;
+  font-size: var(--control-font-size);
+  font-weight: var(--control-strong-weight);
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease,
+    background-color 120ms ease,
+    transform 80ms ease;
+}
+
+/* This control has two icons and a visible label, so it must never collapse
+ * into the square icon-button contract used by adjacent toolbar actions. */
+
+:is(.app-shell, .control-shell, .ops-console) .composer-settings-button {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: max-content;
+  padding-inline: 10px;
+  white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+  :is(.app-shell, .control-shell, .ops-console)
+    .demo-account-switcher .demo-account-origin {
+    display: inline-flex;
+  }
+  .app-shell .community-composer-header .composer-current-mode {
+    display: none;
+  }
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .surface-switch button,
+    .side-nav button,
+    .control-topbar button,
+    .control-sidebar nav button,
+    .control-section-title > button,
+    .control-role-actions > button,
+    .control-permission-summary > button,
+    .control-entitlement-section > header > button,
+    .control-entitlement-actions > button,
+    .ops-topbar button,
+    .ops-account-menu button,
+    .ops-action-list > button,
+    .ops-worklist button,
+    .ops-ranking-list button,
+    .ops-model-row-link,
+    .ops-entitlement-cell,
+    .ops-exception-center-list > button
+  ) {
+  min-height: var(--control-size-compact);
+  border-radius: var(--control-corner);
+  font-family: inherit;
+  font-size: var(--control-font-size);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .control-filterbar button,
+    .control-table td.is-actions button,
+    .publication-center .publication-jobs button,
+    .publication-center .publication-connections button,
+    .publication-center .publication-pagination button,
+    .publication-center .publication-artwork-preview-button,
+    .creation-pagination button,
+    .ops-text-button,
+    .ops-table-link
+  ) {
+  min-height: var(--control-size-compact);
+  font-size: var(--control-label-size);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .control-entitlement-actions button,
+    .control-entitlement-list.is-resources article > button,
+    .ops-entitlement-cell
+  ) {
+  min-height: var(--control-size-compact);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .generate-button,
+    .publication-center form > footer button.is-primary
+  ) {
+  min-height: var(--control-size-touch);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .control-button.is-primary,
+    .generate-button,
+    .publication-center .publication-primary-button,
+    .publication-center form > footer button.is-primary,
+    .ops-primary-button
+  ) {
+  border-color: var(--control-accent);
+  color: var(--control-accent-ink);
+  background-color: var(--control-accent);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .control-button.is-primary,
+    .generate-button,
+    .publication-center .publication-primary-button,
+    .publication-center form > footer button.is-primary,
+    .ops-primary-button
+  ):hover:not(:disabled) {
+  border-color: var(--control-accent-hover);
+  color: var(--control-accent-ink);
+  background-color: var(--control-accent-hover);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    button.is-danger,
+    .is-danger > button,
+    .publication-job footer button.is-reconcile
+  ):not(:disabled) {
+  border-color: var(--control-danger);
+  color: var(--control-danger);
+  background-color: var(--control-danger-soft);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(button, [role="button"]):active:not(:disabled):not([aria-disabled="true"]) {
+  transform: translateY(1px);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(button, [role="button"]):disabled,
+:is(.app-shell, .control-shell, .ops-console)
+  :is(button, [role="button"])[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: var(--control-disabled-opacity);
+  transform: none;
+}
+
+/* Icon-only controls keep a square hit target and do not inherit text padding. */
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .icon-button,
+    .icon-only,
+    [data-icon-only="true"],
+    .creation-search button,
+    .creation-layout-switch button,
+    .creation-task-check,
+    .ops-icon-button,
+    .ops-drawer-close
+  ) {
+  width: var(--control-size-default);
+  min-width: var(--control-size-default);
+  height: var(--control-size-default);
+  min-height: var(--control-size-default);
+  padding: 0;
+  border-radius: var(--control-corner);
+}
+
+/* Compact icon groups preserve dense table/tool layouts inside the same scale. */
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .creation-layout-switch button,
+    .ops-icon-button
+  ) {
+  width: var(--control-size-compact);
+  min-width: var(--control-size-compact);
+  height: var(--control-size-compact);
+  min-height: var(--control-size-compact);
+}
+
+/* Studio media actions are ordinary controls even when legacy route CSS used
+ * 28px or 34px presentation heights. */
+.app-shell
+  :is(
+    .community-hero-copy button,
+    .community-empty button,
+    .community-card-overlay button
+  ) {
+  min-height: var(--control-size-default);
+}
+
+/* Touch layouts use the 44px contract. These rules intentionally live after
+ * the compact desktop exceptions so the final cascade cannot shrink them. */
+@media (max-width: 900px) {
+  .app-shell[data-theme] > .topbar
+    :is(
+      .demo-account-switcher,
+      .demo-account-switcher select,
+      .surface-switch,
+      .surface-switch button,
+      .skin-switcher,
+      .skin-switcher select,
+      .icon-button,
+      .user-button
+    ) {
+    min-height: var(--control-size-touch);
+  }
+
+  .app-shell[data-theme].is-creation-hub
+    :is(
+      .creation-media-tabs button,
+      .creation-search input,
+      .creation-search button,
+      .creation-toolbar button,
+      .creation-select,
+      .creation-select select,
+      .creation-layout-switch,
+      .creation-layout-switch button,
+      .creation-task-check,
+      .creation-hub-state button,
+      .creation-pagination button,
+      .creation-task-preview-load,
+      .creation-task-open
+    ) {
+    min-height: var(--control-size-touch);
+  }
+
+  .app-shell[data-theme].is-creation-hub
+    :is(
+      .creation-search button,
+      .creation-layout-switch button,
+      .creation-task-check
+    ) {
+    width: var(--control-size-touch);
+    min-width: var(--control-size-touch);
+    height: var(--control-size-touch);
+  }
+
+  .app-shell[data-theme].is-community-home:not(.is-creation-hub)
+    :is(
+      .community-primary-tabs button,
+      .community-category-tabs button,
+      .community-hero-copy button,
+      .community-empty button,
+      .community-card-overlay button,
+      .composer-media-tabs button,
+      .composer-mode-rail button,
+      .composer-settings-button,
+      .composer-add-media,
+      .community-composer .generate-button,
+      .community-composer select
+    ) {
+    min-height: var(--control-size-touch);
+  }
+
+  /* Secondary Studio routes share one mobile hit-target contract. Scoping the
+   * rule to route work surfaces keeps the desktop tables dense and avoids
+   * changing the persistent top bar or side navigation. */
+  .app-shell[data-theme].is-secondary-page
+    :is(.secondary-view, .publication-center, .taskbar)
+    :is(
+      button,
+      select,
+      input:not([type="checkbox"]):not([type="radio"]):not([type="file"])
+    ) {
+    min-height: var(--control-size-touch);
+  }
+}
+
+@media (max-width: 620px) {
+  .app-shell[data-theme] > .topbar {
+    gap: 6px;
+    padding-inline: 8px;
+    overflow: hidden;
+  }
+
+  .app-shell[data-theme] > .topbar
+    :is(.brand-context, .mode-badge, .project-select, .notification-anchor, .topbar-spacer) {
+    display: none;
+  }
+
+  .app-shell[data-theme] > .topbar .brand {
+    width: 30px;
+    min-width: 30px;
+    flex: 0 0 30px;
+    padding: 0;
+    margin: 0;
+  }
+
+  .app-shell[data-theme] > .topbar .brand-mark {
+    width: 30px;
+    height: 30px;
+  }
+
+  .app-shell[data-theme] > .topbar .demo-account-switcher {
+    width: 88px;
+    min-width: 88px;
+    flex: 0 0 88px;
+    gap: 0;
+    padding-inline: 4px;
+    overflow: hidden;
+  }
+
+  .app-shell[data-theme] > .topbar .demo-account-switcher > :is(svg, span) {
+    display: none;
+  }
+
+  .app-shell[data-theme] > .topbar .demo-account-switcher select {
+    width: 78px;
+    min-width: 78px;
+    max-width: 78px;
+    padding-inline: 4px;
+    overflow: hidden;
+    border: 0;
+    text-overflow: ellipsis;
+  }
+
+  .app-shell[data-theme] > .topbar .surface-switch {
+    height: var(--control-size-touch);
+    flex: 0 0 auto;
+    padding: 0 2px;
+  }
+
+  .app-shell[data-theme] > .topbar .surface-switch button {
+    width: var(--control-size-touch);
+    min-width: var(--control-size-touch);
+    padding-inline: 4px;
+  }
+
+  .app-shell[data-theme] > .topbar .skin-switcher {
+    width: 54px;
+    min-width: 54px;
+    height: var(--control-size-touch);
+    flex: 0 0 54px;
+    gap: 0;
+    padding: 0;
+  }
+
+  .app-shell[data-theme] > .topbar .skin-switcher svg {
+    display: none;
+  }
+
+  .app-shell[data-theme] > .topbar .skin-switcher select {
+    width: 52px;
+    min-width: 52px;
+    max-width: 52px;
+    padding-inline: 2px;
+  }
+}
+
+/* The operations entitlement matrix remains dense on desktop, but its actual
+ * buttons must expose a full touch target on phones. The repeated route/cell
+ * classes deliberately outrank the earlier grouped compact selector without
+ * resorting to !important.
+ * This final rule intentionally follows the shared compact exceptions above. */
+@media (max-width: 620px) {
+  .ops-console.ops-console
+    .ops-entitlement-cell.ops-entitlement-cell {
+    height: var(--control-size-touch);
+    min-height: var(--control-size-touch);
+  }
+}
+
+/* Large media/card buttons are button-like surfaces, not control-sized icons. */
+
+:is(.app-shell, .control-shell, .ops-console)
+  .creation-task-preview[aria-label] {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: 0;
+  padding: 0;
+}
+
+/* Tabs and segmented controls */
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    [role="tablist"] > [role="tab"],
+    .surface-switch button,
+    .community-primary-tabs button,
+    .community-category-tabs button,
+    .composer-media-tabs button,
+    .composer-mode-rail button,
+    .creation-media-tabs button,
+    .scope-control button,
+    .control-company-panel-tabs button,
+    .ops-segmented-tabs button,
+    .ops-state-options label
+  ) {
+  min-height: var(--control-size-default);
+  border-radius: var(--control-corner);
+  font-family: inherit;
+  font-size: var(--control-font-size);
+  font-weight: var(--control-font-weight);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .demo-account-switcher > span,
+    .demo-account-switcher select,
+    .surface-switch button,
+    .side-nav button,
+    .control-sidebar nav button,
+    .control-section-title > button,
+    .control-topbar button,
+    .ops-topbar button,
+    .ops-account-menu button
+  ) {
+  font-size: var(--control-label-size);
+}
+
+.control-shell .control-section-title > button {
+  min-height: var(--control-size-compact);
+  padding-inline: 10px;
+}
+
+.ops-console .ops-table-actions button {
+  min-height: var(--control-size-compact);
+  padding-inline: 4px;
+  font-size: var(--control-label-size);
+}
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    [role="tab"][aria-selected="true"],
+    [role="tab"][aria-pressed="true"],
+    .surface-switch button.is-active,
+    .community-primary-tabs button.is-active,
+    .community-category-tabs button.is-active,
+    .composer-media-tabs button.is-active,
+    .composer-mode-rail button.is-active,
+    .creation-media-tabs button.is-active,
+    .scope-control button.is-active,
+    .control-company-panel-tabs button.is-active,
+    .ops-segmented-tabs button.is-active,
+    .ops-state-options label.is-active
+  ) {
+  color: var(--control-accent);
+  font-weight: var(--control-strong-weight);
+}
+
+/* Tables use a 13px minimum and share the same density across Company and Ops. */
+
+:is(.control-shell, .ops-console) :is(.control-table, .ops-table) {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--control-text-secondary);
+  font-family: inherit;
+  font-size: var(--control-table-size);
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+:is(.control-shell, .ops-console)
+  :is(.control-table, .ops-table) th {
+  height: var(--control-size-default);
+  padding: 0 14px;
+  color: var(--control-text-muted);
+  font-size: var(--control-table-size);
+  font-weight: var(--control-strong-weight);
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+:is(.control-shell, .ops-console)
+  :is(.control-table, .ops-table) td {
+  height: 52px;
+  padding: 8px 14px;
+  color: var(--control-text-secondary);
+  font-size: var(--control-table-size);
+  line-height: 1.45;
+  vertical-align: middle;
+}
+
+:is(.control-shell, .ops-console)
+  :is(.control-table, .ops-table) td > strong {
+  color: var(--control-text);
+  font-size: inherit;
+  font-weight: var(--control-strong-weight);
+}
+
+:is(.control-shell, .ops-console)
+  :is(.control-table, .ops-table) td > small {
+  color: var(--control-text-muted);
+  font-size: var(--control-label-size);
+  line-height: 1.45;
+}
+
+:is(.control-shell, .ops-console)
+  :is(.control-table, .ops-table).is-dense td {
+  height: var(--control-size-touch);
+  padding-block: 6px;
+}
+
+/* Pills are reserved for actual state, identity, and grouped-state semantics. */
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    .mode-badge,
+    .control-status,
+    .publication-status,
+    .creation-task-status,
+    .ops-status-pill,
+    .ops-priority,
+    .ops-exception-state,
+    .ops-owner-mark
+  ) {
+  border-radius: var(--radius-pill, 999px);
+  font-size: var(--control-label-size);
+  font-weight: var(--control-strong-weight);
+  line-height: 1.35;
+}
+
+/* One accessible focus contract, including programmatic button-like elements. */
+
+:is(.app-shell, .control-shell, .ops-console)
+  :is(
+    button,
+    input,
+    select,
+    textarea,
+    [role="button"],
+    [role="tab"],
+    [tabindex]:not([tabindex="-1"])
+  ):focus-visible {
+  outline: 2px solid var(--control-focus-ring);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.app-shell, .control-shell, .ops-console)
+    :is(button, input, select, textarea, [role="button"], [role="tab"]) {
+    scroll-behavior: auto;
+    transition: none;
+  }
+}

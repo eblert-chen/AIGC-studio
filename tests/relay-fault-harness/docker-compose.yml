@@ -1,0 +1,159 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relay_fault
+      POSTGRES_PASSWORD: relay-fault-postgres-password
+      POSTGRES_DB: relay_fault
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay_fault -d relay_fault"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
+    networks: [fault-data]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
+    networks: [fault-data]
+    volumes:
+      - redis-data:/data
+
+  candidate:
+    image: ${RELAY_FAULT_CANDIDATE_IMAGE:?candidate image is required}
+    command: ["--log-dir", "/tmp/new-api-logs"]
+    environment:
+      TZ: UTC
+      PORT: "3000"
+      SQL_DSN: postgresql://relay_fault:relay-fault-postgres-password@postgres:5432/relay_fault?sslmode=disable
+      REDIS_CONN_STRING: redis://redis:6379/0
+      SESSION_SECRET: relay-fault-session-secret-32-bytes-minimum
+      CRYPTO_SECRET: relay-fault-crypto-secret-32-bytes-minimum
+      NODE_TYPE: master
+      NODE_NAME: ${RELAY_FAULT_CANDIDATE_INSTANCE_ID:?candidate instance id is required}
+      ERROR_LOG_ENABLED: "false"
+      BATCH_UPDATE_ENABLED: "false"
+      UPDATE_TASK: "false"
+      RELAY_COMPAT_ENABLED: ${RELAY_FAULT_COMPAT_ENABLED:-true}
+      RELAY_COMPAT_ENVIRONMENT: development
+      RELAY_COMPAT_WORKER_ENABLED: ${RELAY_FAULT_WORKER_ENABLED:-false}
+      RELAY_COMPAT_SOURCE_REVISION: ${RELAY_FAULT_CANDIDATE_SOURCE_REVISION:?candidate source revision is required}
+      RELAY_COMPAT_IMAGE_DIGEST: ${RELAY_FAULT_CANDIDATE_IMAGE_DIGEST:?candidate digest is required}
+      RELAY_COMPAT_CLIENT_CREDENTIALS_JSON: '{"fault-platform":{"tenant_id":"00000000-0000-4000-8000-000000000001","api_key":"fault-platform-api-key","upstream_token":"fault-native-token"}}'
+      RELAY_COMPAT_MODEL_CAPABILITIES_JSON: '${RELAY_FAULT_MODEL_CAPABILITIES_JSON-{}}'
+      RELAY_COMPAT_MODEL_ROUTES_JSON: '${RELAY_FAULT_MODEL_ROUTES_JSON-}'
+      RELAY_COMPAT_INTERNAL_ADMISSION_TOKEN: ${RELAY_FAULT_INTERNAL_ADMISSION_TOKEN:-relay-live-internal-admission-token}
+      RELAY_COMPAT_INTERNAL_BASE_URL: ${RELAY_FAULT_INTERNAL_BASE_URL:-}
+      RELAY_COMPAT_DELAY_QUEUE_NAMESPACE: ${RELAY_FAULT_DELAY_QUEUE_NAMESPACE:-relay-fault-package}
+      RELAY_ARTIFACT_STORE: filesystem
+      RELAY_ARTIFACT_FILESYSTEM_ROOT: /artifacts
+      RELAY_ARTIFACT_PUBLIC_BASE_URL: http://candidate:3000
+      RELAY_ARTIFACT_SIGNING_SECRET: relay-live-artifact-signing-secret-32-bytes
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/health/live | grep -q '\"healthy\"'"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+      start_period: 10s
+    networks: [fault-data]
+    volumes:
+      - candidate-data:/data
+
+  candidate-bootstrap:
+    profiles: ["live"]
+    image: ${RELAY_FAULT_CANDIDATE_IMAGE:?candidate image is required}
+    command: ["--log-dir", "/tmp/new-api-bootstrap-logs"]
+    environment:
+      TZ: UTC
+      PORT: "3000"
+      SQL_DSN: postgresql://relay_fault:relay-fault-postgres-password@postgres:5432/relay_fault?sslmode=disable
+      REDIS_CONN_STRING: redis://redis:6379/0
+      SESSION_SECRET: relay-fault-session-secret-32-bytes-minimum
+      CRYPTO_SECRET: relay-fault-crypto-secret-32-bytes-minimum
+      NODE_TYPE: master
+      NODE_NAME: relay-fault-bootstrap
+      ERROR_LOG_ENABLED: "false"
+      BATCH_UPDATE_ENABLED: "false"
+      UPDATE_TASK: "false"
+      RELAY_COMPAT_ENABLED: "false"
+      RELAY_COMPAT_ENVIRONMENT: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/health/live | grep -q '\"healthy\"'"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+      start_period: 10s
+    networks: [fault-data]
+    volumes:
+      - candidate-data:/data
+
+  control:
+    image: ${RELAY_FAULT_CONTROL_IMAGE:-ai-video/relay-fault-control:local}
+    build:
+      context: ../../backend/new-api-relay
+      dockerfile: ../../tests/relay-fault-harness/Dockerfile
+      additional_contexts:
+        harness: .
+    environment:
+      TZ: UTC
+      PORT: "8080"
+      DATABASE_URL: postgresql://relay_fault:relay-fault-postgres-password@postgres:5432/relay_fault?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      CONTROL_TOKEN: ${RELAY_FAULT_CONTROL_TOKEN:?control token is required}
+      CANDIDATE_BASE_URL: http://candidate:3000
+      CANDIDATE_IMAGE_DIGEST: ${RELAY_FAULT_CANDIDATE_IMAGE_DIGEST:?candidate digest is required}
+      CANDIDATE_SOURCE_REVISION: ${RELAY_FAULT_CANDIDATE_SOURCE_REVISION:?candidate source revision is required}
+      CANDIDATE_UPSTREAM_REVISION: ${RELAY_FAULT_CANDIDATE_UPSTREAM_REVISION:?candidate upstream revision is required}
+      RELAY_COMPAT_ENVIRONMENT: development
+      LIVE_PROVIDER_KEY: ${RELAY_FAULT_PROVIDER_KEY:-relay-live-provider-key}
+      LIVE_NATIVE_TOKEN: fault-native-token
+      LIVE_INTERNAL_ADMISSION_TOKEN: ${RELAY_FAULT_INTERNAL_ADMISSION_TOKEN:-relay-live-internal-admission-token}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/relay-fault-harness", "--healthcheck"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    ports:
+      - "127.0.0.1:${RELAY_FAULT_CONTROL_PORT:?control port is required}:8080"
+    networks:
+      fault-data:
+        aliases: [artifact-origin]
+      fault-edge:
+
+networks:
+  fault-data:
+    internal: true
+    # Test-only, non-egress bridge. A synthetically public-looking subnet lets
+    # the production downloader exercise streaming/integrity paths while the
+    # SSRF case still proves that loopback is rejected before dialing.
+    ipam:
+      config:
+        - subnet: 11.254.97.0/24
+  fault-edge:
+
+volumes:
+  postgres-data:
+  redis-data:
+  candidate-data:

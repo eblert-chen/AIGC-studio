@@ -1,0 +1,16 @@
+{
+  "Version": "1.1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "obs:object:GetObject",
+        "obs:object:PutObject"
+      ],
+      "Resource": [
+        "obs:*:*:object:chen-aivideo/inputs/*",
+        "obs:*:*:object:chen-aivideo/showcase/media/*"
+      ]
+    }
+  ]
+}

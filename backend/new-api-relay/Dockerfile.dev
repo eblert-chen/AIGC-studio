@@ -1,0 +1,46 @@
+# Backend-only build for frontend development
+# Skips frontend build and uses a placeholder for //go:embed web/dist
+
+FROM golang:1.26.1-alpine AS builder
+
+ENV GO111MODULE=on CGO_ENABLED=0
+ARG TARGETOS
+ARG TARGETARCH
+ARG RELAY_BUILD_UPSTREAM_REVISION=unknown
+ARG RELAY_BUILD_SOURCE_REVISION=unknown
+ARG RELAY_BUILD_SOURCE_SNAPSHOT_SHA256=unknown
+ARG RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT=unknown
+ARG RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256=unknown
+ENV GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64}
+ENV GOEXPERIMENT=greenteagc
+
+WORKDIR /build
+
+ADD go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN version="$(cat VERSION)" \
+    && test "$(wc -l < VERSION)" -eq 1 \
+    && test -n "$version" \
+    && test "${#version}" -le 50 \
+    && printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([+.-][0-9A-Za-z.+-]+)?$'
+
+RUN mkdir -p web/dist && \
+    echo '<!doctype html><html><head><title>dev</title></head><body>use frontend dev server</body></html>' > web/dist/index.html
+
+RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledUpstreamRevision=${RELAY_BUILD_UPSTREAM_REVISION}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSourceRevision=${RELAY_BUILD_SOURCE_REVISION}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotSHA256=${RELAY_BUILD_SOURCE_SNAPSHOT_SHA256}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotFileCount=${RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledRouteAcceptanceKeysSHA256=${RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256}'" -o new-api
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
+
+COPY --from=builder /build/new-api /
+COPY LICENSE NOTICE THIRD-PARTY-LICENSES.md /licenses/
+EXPOSE 3000
+WORKDIR /data
+ENTRYPOINT ["/new-api"]

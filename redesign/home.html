@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>首页 · 视频工作台</title>
+<link rel="stylesheet" href="./tokens.css" />
+<style>
+  /* ===== 首页专属 ===== */
+  .feed-wrap { padding: 0 32px 140px; max-width: 1560px; margin: 0 auto; width: 100%; }
+
+  /* Hero：编辑感排印 */
+  .hero { padding: 52px 0 34px; max-width: 720px; }
+  .hero .t-eyebrow { margin-bottom: 16px; display: block; }
+  .hero h1 { margin-bottom: 18px; }
+  .hero h1 em { font-style: normal; color: var(--accent); }
+  .hero .t-lead { color: var(--ink-soft); max-width: 560px; }
+  .hero-meta {
+    margin-top: 26px;
+    display: flex;
+    gap: 28px;
+    font-size: var(--fs-small);
+    color: var(--ink-muted);
+  }
+  .hero-meta strong { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* 分类条 */
+  .feed-bar {
+    position: sticky;
+    top: var(--topbar-h);
+    z-index: 30;
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    backdrop-filter: blur(12px);
+    padding: 6px 0 0;
+    margin-bottom: 22px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .feed-tools { display: flex; gap: 8px; padding-bottom: 8px; }
+  .feed-tools .btn svg { width: 14px; height: 14px; }
+
+  /* 瀑布流 */
+  .masonry { columns: 4 260px; column-gap: 18px; }
+  .work-card {
+    break-inside: avoid;
+    margin-bottom: 18px;
+    border-radius: var(--r-md);
+    overflow: hidden;
+    position: relative;
+    background: var(--surface-soft);
+    cursor: pointer;
+    border: 1px solid var(--line);
+  }
+  .work-card img { width: 100%; transition: transform 0.5s cubic-bezier(0.2, 0.6, 0.2, 1); }
+  .work-card:hover img { transform: scale(1.03); }
+  .work-veil {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 16px;
+    background: linear-gradient(to top, rgba(15, 13, 10, 0.78), rgba(15, 13, 10, 0.0) 55%);
+    opacity: 0;
+    transition: opacity 0.18s;
+  }
+  .work-card:hover .work-veil { opacity: 1; }
+  .work-title { color: #fdfbf7; font-size: 14px; font-weight: 600; line-height: 1.4; }
+  .work-author { color: rgba(253, 251, 247, 0.72); font-size: 12px; margin-top: 3px; }
+  .work-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .work-actions .btn { backdrop-filter: blur(8px); }
+  .btn-frost {
+    background: rgba(253, 251, 247, 0.16);
+    color: #fdfbf7;
+    border: 1px solid rgba(253, 251, 247, 0.3);
+    padding: 7px 13px;
+    font-size: 12.5px;
+  }
+  .btn-frost:hover { background: rgba(253, 251, 247, 0.28); }
+  .btn-frost.primary { background: var(--accent); border-color: transparent; }
+  .btn-frost.primary:hover { background: var(--accent-strong); }
+  .work-tag {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    padding: 3px 9px;
+    border-radius: var(--r-pill);
+    background: rgba(15, 13, 10, 0.55);
+    backdrop-filter: blur(6px);
+    color: #fdfbf7;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  /* 悬浮创作胶囊 */
+  .composer-pill {
+    position: fixed;
+    bottom: 26px;
+    left: 50%;
+    transform: translateX(calc(-50% + var(--nav-w) / 2));
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: min(640px, calc(100vw - var(--nav-w) - 64px));
+    padding: 10px 10px 10px 22px;
+    border-radius: var(--r-pill);
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    box-shadow: var(--shadow-float);
+  }
+  .composer-pill .cue { color: var(--accent); display: grid; place-items: center; }
+  .composer-pill .cue svg { width: 17px; height: 17px; }
+  .composer-pill input {
+    flex: 1;
+    border: none;
+    outline: none;
+    background: none;
+    font-size: 14.5px;
+    min-width: 0;
+  }
+  .composer-pill input::placeholder { color: var(--ink-muted); }
+  .composer-model {
+    font-size: 12.5px;
+    color: var(--ink-muted);
+    padding: 5px 11px;
+    border-radius: var(--r-pill);
+    background: var(--surface-soft);
+    white-space: nowrap;
+  }
+  .composer-pill .btn-primary { border-radius: var(--r-pill); padding: 9px 20px; }
+
+  @media (max-width: 1100px) {
+    .composer-pill { transform: translateX(-50%); width: min(640px, calc(100vw - 48px)); }
+    .feed-wrap { padding: 0 20px 140px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ===== 左侧导航 ===== -->
+  <nav class="side-nav">
+    <a class="brand" href="./home.html">
+      <span class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round">
+          <path d="M4 17h16"/><path d="M7 17a5 5 0 0 1 10 0"/><path d="M12 6v3"/><path d="M6.5 8.5l1.8 1.8"/><path d="M17.5 8.5l-1.8 1.8"/>
+        </svg>
+      </span>
+      <span>
+        <span class="brand-name">旭天</span><br />
+        <span class="brand-sub">视频工作台</span>
+      </span>
+    </a>
+    <div class="nav-group">
+      <div class="nav-label">创作</div>
+      <a class="nav-item active" href="./home.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+        <span>首页</span>
+      </a>
+      <a class="nav-item" href="./create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 12h18"/></svg>
+        <span>创作</span>
+      </a>
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg>
+        <span>素材</span>
+      </a>
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
+        <span>作品</span>
+      </a>
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        <span>发布</span>
+      </a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">管理</div>
+      <a class="nav-item" href="./console.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+        <span>运营控制台</span>
+      </a>
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 1 0-14 0 7 7 0 0 0 14 0z"/></svg>
+        <span>设置</span>
+      </a>
+    </div>
+    <div class="nav-spacer"></div>
+    <div class="nav-foot">
+      <div class="t-caption">演示模式 · 数据来自本地样例</div>
+    </div>
+  </nav>
+
+  <!-- ===== 主列 ===== -->
+  <div class="main-col">
+    <header class="topbar">
+      <div class="topbar-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input placeholder="搜索灵感、作者、提示词…" />
+      </div>
+      <div class="topbar-right">
+        <button class="skin-toggle" id="skinToggle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
+          <span id="skinLabel">深色</span>
+        </button>
+        <button class="btn btn-ghost btn-sm">充值</button>
+        <span class="avatar">旭</span>
+      </div>
+    </header>
+
+    <main class="feed-wrap">
+      <!-- Hero -->
+      <section class="hero">
+        <span class="t-eyebrow">Inspiration · 社区灵感</span>
+        <h1 class="t-display">灵感，<em>先于工具</em>。</h1>
+        <p class="t-lead">从社区正在发生的画面开始：每一张作品都带着完整的提示词与参数，看上哪一张，直接做成你的同款。</p>
+        <div class="hero-meta">
+          <span><strong>1,284</strong> 张今日新作</span>
+          <span><strong>3</strong> 个模型在线</span>
+          <span><strong>96.4%</strong> 本周成功率</span>
+        </div>
+      </section>
+
+      <!-- 分类条 -->
+      <div class="feed-bar">
+        <div class="tabs">
+          <button class="tab active">推荐</button>
+          <button class="tab">视频<span class="tab-count">412</span></button>
+          <button class="tab">图片<span class="tab-count">689</span></button>
+          <button class="tab">模板<span class="tab-count">96</span></button>
+          <button class="tab">挑战<span class="tab-count">7</span></button>
+        </div>
+        <div class="feed-tools">
+          <button class="btn btn-quiet btn-sm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+            最新
+          </button>
+        </div>
+      </div>
+
+      <!-- 瀑布流 -->
+      <section class="masonry" id="masonry"></section>
+    </main>
+  </div>
+</div>
+
+<!-- 悬浮创作胶囊 -->
+<div class="composer-pill">
+  <span class="cue">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/></svg>
+  </span>
+  <input placeholder="描述你想要的画面，例如：晨光里的雪山，镜头缓慢推近…" />
+  <span class="composer-model">CinemoX Pro 2.1</span>
+  <button class="btn btn-primary" onclick="location.href='./create.html'">
+    创作
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+  </button>
+</div>
+
+<script>
+  /* ---- 皮肤切换 ---- */
+  const root = document.documentElement;
+  const saved = localStorage.getItem("xt-skin");
+  if (saved) root.dataset.theme = saved;
+  const label = document.getElementById("skinLabel");
+  const syncLabel = () => (label.textContent = root.dataset.theme === "dark" ? "浅色" : "深色");
+  syncLabel();
+  document.getElementById("skinToggle").addEventListener("click", () => {
+    root.dataset.theme = root.dataset.theme === "dark" ? "" : "dark";
+    localStorage.setItem("xt-skin", root.dataset.theme);
+    syncLabel();
+  });
+
+  /* ---- 瀑布流数据（项目自有素材） ---- */
+  const works = [
+    { img: "../public/community/community-hero.png", title: "薄雾山谷的清晨，第一缕光越过山脊", author: "@mistwalker", tag: "视频", h: 340 },
+    { img: "../public/community/ice-landscape.png", title: "极地冰原，蓝调时刻的长曝光", author: "@northlight", tag: "图片", h: 300 },
+    { img: "../public/community/blue-editorial-portrait.png", title: "蓝色编辑部人像，硬朗侧光", author: "@studio_k", tag: "图片", h: 380 },
+    { img: "../public/community/cyber-fashion-portrait.png", title: "赛博时装大片，霓虹与金属", author: "@neon.chen", tag: "模板", h: 360 },
+    { img: "../public/community/miniature-fashion.png", title: "微缩世界的时装秀，移轴镜头", author: "@tinyworld", tag: "视频", h: 280 },
+    { img: "../public/community/neon-anime-street.png", title: "雨后霓虹街道，新海诚色调", author: "@ame.anime", tag: "挑战", h: 330 },
+    { img: "../public/media/speaker-water-hero.png", title: "水面悬浮的音箱，慢镜头涟漪", author: "@productlab", tag: "视频", h: 310 },
+    { img: "../public/media/scene-indoor.png", title: "室内自然光场景，柔和日常", author: "@dailylight", tag: "图片", h: 260 },
+    { img: "../public/media/scene-hand-rain.png", title: "掌心接住的雨，微距瞬间", author: "@rainpoet", tag: "视频", h: 350 },
+    { img: "../public/media/scene-lifestyle.png", title: "生活方式随拍，暖调午后", author: "@warmtone", tag: "图片", h: 290 },
+  ];
+
+  const masonry = document.getElementById("masonry");
+  masonry.innerHTML = works
+    .map(
+      (w) => `
+      <figure class="work-card">
+        <img src="${w.img}" alt="${w.title}" style="aspect-ratio:${(Math.random() > 0.5 ? "3/4" : "4/3")}" loading="lazy" />
+        <span class="work-tag">${w.tag}</span>
+        <figcaption class="work-veil">
+          <div class="work-title">${w.title}</div>
+          <div class="work-author">${w.author}</div>
+          <div class="work-actions">
+            <button class="btn btn-frost primary">做同款</button>
+            <button class="btn btn-frost">复制提示词</button>
+          </div>
+        </figcaption>
+      </figure>`
+    )
+    .join("");
+</script>
+</body>
+</html>

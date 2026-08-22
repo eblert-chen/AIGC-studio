@@ -1,0 +1,1652 @@
+name: ai-video-new-api-secure
+
+x-relay-secret-isolation-audience: &relay-secret-isolation-audience
+  PLATFORM_PUBLIC_BASE_URL: ${PLATFORM_PUBLIC_BASE_URL:?set canonical public Platform origin}
+  NEW_API_RELAY_PUBLIC_BASE_URL: ${NEW_API_RELAY_PUBLIC_BASE_URL:?set canonical public new-api origin}
+  DOWNLOAD_GATEWAY_PUBLIC_BASE_URL: ${DOWNLOAD_GATEWAY_PUBLIC_BASE_URL:?set canonical public download-edge origin}
+  PLATFORM_NEW_API_RELAY_CONTRACT_REVISION: generations.v1
+
+# Shared staging/production hardening layer. Always combine this file with
+# exactly one environment overlay below. The ordinary and protected topologies
+# share the same single new-api Relay data-plane service names.
+services:
+  # Production state is managed outside Compose. These containers are useful
+  # only for an operator-owned secure-state rehearsal and never start by
+  # default with this topology.
+  postgres:
+    profiles: ["secure-state-rehearsal"]
+  redis:
+    profiles: ["secure-state-rehearsal"]
+  relay-new-api-postgres:
+    profiles: ["secure-state-rehearsal"]
+  relay-new-api-redis:
+    profiles: ["secure-state-rehearsal"]
+  platform-input-asset-init:
+    profiles: ["secure-state-rehearsal"]
+
+  relay-new-api-volume-init:
+    profiles: !reset []
+    build: !reset null
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    command: !override
+      - >-
+        if [ -L /run/relay-root-secret-isolation-proof/.proof.lock ]; then exit 1;
+        elif [ ! -e /run/relay-root-secret-isolation-proof/.proof.lock ]; then
+        (umask 077 && : > /run/relay-root-secret-isolation-proof/.proof.lock); fi &&
+        test -f /run/relay-root-secret-isolation-proof/.proof.lock &&
+        chown -R 10001:10001 /data /app/logs /artifacts
+        /run/relay-secret-isolation/pre
+        /run/relay-secret-isolation/migrate
+        /run/relay-secret-isolation/post
+        /run/relay-secret-isolation/principal
+        /run/relay-secret-isolation/api
+        /run/relay-secret-isolation/edge
+        /run/relay-secret-isolation/platform-migration
+        /run/relay-secret-isolation/platform-api
+        /run/relay-secret-isolation/platform-dispatcher
+        /run/relay-secret-isolation/platform-relay-sync
+        /run/relay-secret-isolation/platform-timeout-worker
+        /run/relay-secret-isolation/platform-publishing-worker
+        /run/relay-secret-isolation/platform-download-gateway-registration-worker
+        /run/relay-secret-isolation/platform-db-role-pre
+        /run/relay-secret-isolation/root-bootstrap
+        /run/relay-root-secret-isolation-proof
+        /run/relay-database-release-proof
+        /run/platform-database-release-proof
+        /run/relay-secret-isolation-commit &&
+        chmod 0600 /run/relay-root-secret-isolation-proof/.proof.lock &&
+        chmod 0700 /data /app/logs /artifacts
+        /run/relay-secret-isolation/pre
+        /run/relay-secret-isolation/migrate
+        /run/relay-secret-isolation/post
+        /run/relay-secret-isolation/principal
+        /run/relay-secret-isolation/api
+        /run/relay-secret-isolation/edge
+        /run/relay-secret-isolation/platform-migration
+        /run/relay-secret-isolation/platform-api
+        /run/relay-secret-isolation/platform-dispatcher
+        /run/relay-secret-isolation/platform-relay-sync
+        /run/relay-secret-isolation/platform-timeout-worker
+        /run/relay-secret-isolation/platform-publishing-worker
+        /run/relay-secret-isolation/platform-download-gateway-registration-worker
+        /run/relay-secret-isolation/platform-db-role-pre
+        /run/relay-secret-isolation/root-bootstrap
+        /run/relay-root-secret-isolation-proof
+        /run/relay-database-release-proof
+        /run/platform-database-release-proof
+        /run/relay-secret-isolation-commit
+    volumes: !override
+      - relay-new-api-runtime-data:/data
+      - relay-new-api-logs:/app/logs
+      - relay-new-api-artifacts:/artifacts
+      - relay-new-api-secret-isolation-pre:/run/relay-secret-isolation/pre
+      - relay-new-api-secret-isolation-migrate:/run/relay-secret-isolation/migrate
+      - relay-new-api-secret-isolation-post:/run/relay-secret-isolation/post
+      - relay-new-api-secret-isolation-principal:/run/relay-secret-isolation/principal
+      - relay-new-api-secret-isolation-api:/run/relay-secret-isolation/api
+      - relay-new-api-secret-isolation-edge:/run/relay-secret-isolation/edge
+      - relay-new-api-secret-isolation-platform-migration:/run/relay-secret-isolation/platform-migration
+      - relay-new-api-secret-isolation-platform-api:/run/relay-secret-isolation/platform-api
+      - relay-new-api-secret-isolation-platform-dispatcher:/run/relay-secret-isolation/platform-dispatcher
+      - relay-new-api-secret-isolation-platform-relay-sync:/run/relay-secret-isolation/platform-relay-sync
+      - relay-new-api-secret-isolation-platform-timeout-worker:/run/relay-secret-isolation/platform-timeout-worker
+      - relay-new-api-secret-isolation-platform-publishing-worker:/run/relay-secret-isolation/platform-publishing-worker
+      - relay-new-api-secret-isolation-platform-download-gateway-registration-worker:/run/relay-secret-isolation/platform-download-gateway-registration-worker
+      - relay-new-api-secret-isolation-platform-db-role-pre:/run/relay-secret-isolation/platform-db-role-pre
+      - relay-new-api-secret-isolation-root-bootstrap:/run/relay-secret-isolation/root-bootstrap
+      - relay-new-api-root-secret-isolation-proof:/run/relay-root-secret-isolation-proof
+      - relay-new-api-database-release-proof:/run/relay-database-release-proof
+      - platform-database-release-proof:/run/platform-database-release-proof
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit
+
+  # This networkless one-shot sees every new-api secret source exactly once,
+  # rejects cross-domain reuse, and writes a release/source/file-bound
+  # commitment into fourteen isolated receipt volumes, then atomically commits
+  # one shared value-free run marker. Each downstream consumer
+  # mounts only its own receipt; no long-lived process receives the global
+  # secret set or another consumer's commitments.
+  relay-new-api-secret-isolation:
+    profiles: !reset []
+    build: !reset null
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    entrypoint: !override ["/new-api", "relay-validate-secret-isolation"]
+    command: !reset []
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      RELAY_PROVIDER_ALERT_WEBHOOK_URL: ${NEW_API_RELAY_PROVIDER_ALERT_WEBHOOK_URL:?set exact Platform provider-alert receiver}
+      RELAY_PLATFORM_CHANNEL_COST_URL: ${NEW_API_RELAY_PLATFORM_CHANNEL_COST_URL:?set exact Platform channel-cost receiver}
+      RELAY_PLATFORM_TASK_STAGE_URL: ${NEW_API_RELAY_PLATFORM_TASK_STAGE_URL:?set exact Platform task-stage receiver}
+      RELAY_PLATFORM_OPERATIONS_SNAPSHOT_URL: ${NEW_API_RELAY_PLATFORM_OPERATIONS_SNAPSHOT_URL:?set exact Platform operations-snapshot receiver}
+      RELAY_DOWNLOAD_EDGE_PUBLIC_BASE_URL: ${DOWNLOAD_GATEWAY_PUBLIC_BASE_URL:?set canonical public download-edge origin}
+      RELAY_DOWNLOAD_EDGE_PLATFORM_COMPLETION_URL: ${NEW_API_RELAY_DOWNLOAD_EDGE_PLATFORM_COMPLETION_URL:?set exact Platform completion receiver}
+      DOWNLOAD_GATEWAY_REGISTRATION_URL: ${DOWNLOAD_GATEWAY_REGISTRATION_URL:?set exact download-edge registration endpoint}
+      APP_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      DEPLOYMENT_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      NODE_TYPE: master
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "true"
+      RELAY_SECRET_ISOLATION_GENERATION: root-proof-present
+      RELAY_ROOT_SECRET_ISOLATION_PROOF_FILE: /run/relay-root-secret-isolation-proof/proof.json
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:?set protected NOLOGIN schema owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:?set migration login role}
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      PLATFORM_DATABASE_NAME: ${PLATFORM_DATABASE_NAME:?set canonical Platform application database name}
+      RELAY_SERVICE_PRINCIPALS_FILE: /run/secrets/relay-service-principals.json
+      RELAY_API_RUNTIME_SECRETS_FILE: /run/secrets/relay-api-runtime-secrets.json
+      RELAY_DOWNLOAD_EDGE_RUNTIME_SECRETS_FILE: /run/secrets/relay-download-edge-runtime-secrets.json
+      RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE: /run/secrets/relay-provider-credential-keyring
+      RELAY_DATABASE_CA_FILE: /run/secrets/relay-database-ca.pem
+      RELAY_REDIS_TLS_CA_FILE: /run/secrets/relay-redis-tls-ca.pem
+      PLATFORM_DATABASE_CA_FILE: /run/secrets/platform-database-ca.pem
+      RELAY_SECRET_ISOLATION_ROLE_ADMIN_SQL_DSN_FILE: /run/secrets/relay-role-admin-dsn
+      RELAY_SECRET_ISOLATION_MIGRATION_SQL_DSN_FILE: /run/secrets/relay-migration-sql-dsn
+      RELAY_SECRET_ISOLATION_RUNTIME_SQL_DSN_FILE: /run/secrets/relay-runtime-sql-dsn
+      RELAY_SECRET_ISOLATION_EDGE_SQL_DSN_FILE: /run/secrets/relay-download-edge-sql-dsn
+      RELAY_MIGRATION_DATABASE_PASSWORD_FILE: /run/secrets/relay-migration-password
+      RELAY_RUNTIME_DATABASE_PASSWORD_FILE: /run/secrets/relay-runtime-password
+      RELAY_DOWNLOAD_EDGE_DATABASE_PASSWORD_FILE: /run/secrets/relay-download-edge-password
+      PLATFORM_MIGRATION_RUNTIME_SECRETS_FILE: /run/secrets/platform-migration-runtime-secrets.json
+      PLATFORM_API_RUNTIME_SECRETS_FILE: /run/secrets/platform-api-runtime-secrets.json
+      PLATFORM_DISPATCHER_RUNTIME_SECRETS_FILE: /run/secrets/platform-dispatcher-runtime-secrets.json
+      PLATFORM_RELAY_SYNC_RUNTIME_SECRETS_FILE: /run/secrets/platform-relay-sync-runtime-secrets.json
+      PLATFORM_TIMEOUT_WORKER_RUNTIME_SECRETS_FILE: /run/secrets/platform-timeout-worker-runtime-secrets.json
+      PLATFORM_PUBLISHING_WORKER_RUNTIME_SECRETS_FILE: /run/secrets/platform-publishing-worker-runtime-secrets.json
+      PLATFORM_DOWNLOAD_GATEWAY_WORKER_RUNTIME_SECRETS_FILE: /run/secrets/platform-download-gateway-registration-worker-runtime-secrets.json
+      PLATFORM_DATABASE_ROLE_ADMIN_DSN_FILE: /run/secrets/platform-role-admin-sql-dsn
+      PLATFORM_MIGRATION_DATABASE_PASSWORD_FILE: /run/secrets/platform-migration-database-password
+      PLATFORM_API_DATABASE_PASSWORD_FILE: /run/secrets/platform-api-database-password
+      PLATFORM_DISPATCHER_DATABASE_PASSWORD_FILE: /run/secrets/platform-dispatcher-database-password
+      PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE: /run/secrets/platform-relay-sync-database-password
+      PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-timeout-worker-database-password
+      PLATFORM_PUBLISHING_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-publishing-worker-database-password
+      PLATFORM_DOWNLOAD_GATEWAY_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-download-gateway-worker-database-password
+      RELAY_SECRET_ISOLATION_COMMIT_DIRECTORY: /run/relay-secret-isolation-commit
+      RELAY_SECRET_ISOLATION_RECEIPT_PRE_DIRECTORY: /run/relay-secret-isolation/pre
+      RELAY_SECRET_ISOLATION_RECEIPT_MIGRATE_DIRECTORY: /run/relay-secret-isolation/migrate
+      RELAY_SECRET_ISOLATION_RECEIPT_POST_DIRECTORY: /run/relay-secret-isolation/post
+      RELAY_SECRET_ISOLATION_RECEIPT_PRINCIPAL_DIRECTORY: /run/relay-secret-isolation/principal
+      RELAY_SECRET_ISOLATION_RECEIPT_API_DIRECTORY: /run/relay-secret-isolation/api
+      RELAY_SECRET_ISOLATION_RECEIPT_EDGE_DIRECTORY: /run/relay-secret-isolation/edge
+      RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_MIGRATION_DIRECTORY: /run/relay-secret-isolation/platform-migration
+      RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_API_DIRECTORY: /run/relay-secret-isolation/platform-api
+      RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_DISPATCHER_DIRECTORY: /run/relay-secret-isolation/platform-dispatcher
+      RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_RELAY_SYNC_DIRECTORY: /run/relay-secret-isolation/platform-relay-sync
+      RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_TIMEOUT_WORKER_DIRECTORY: /run/relay-secret-isolation/platform-timeout-worker
+      RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_PUBLISHING_WORKER_DIRECTORY: /run/relay-secret-isolation/platform-publishing-worker
+      RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_DOWNLOAD_GATEWAY_REGISTRATION_WORKER_DIRECTORY: /run/relay-secret-isolation/platform-download-gateway-registration-worker
+      RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_DB_ROLE_PRE_DIRECTORY: /run/relay-secret-isolation/platform-db-role-pre
+    volumes: !override
+      - type: bind
+        source: ${NEW_API_RELAY_DATABASE_CA_FILE:?set owner-only Relay PostgreSQL CA bundle}
+        target: /run/secrets/relay-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_REDIS_TLS_CA_FILE:?set owner-only Relay Redis TLS CA bundle}
+        target: /run/secrets/relay-redis-tls-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_ROLE_ADMIN_SQL_DSN_FILE:?set owner-only role-admin PostgreSQL DSN file}
+        target: /run/secrets/relay-role-admin-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_MIGRATION_SQL_DSN_FILE:?set owner-only migration PostgreSQL DSN file}
+        target: /run/secrets/relay-migration-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_RUNTIME_SQL_DSN_FILE:?set owner-only runtime PostgreSQL DSN file}
+        target: /run/secrets/relay-runtime-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${RELAY_DOWNLOAD_EDGE_SQL_DSN_FILE:?set owner-only edge PostgreSQL DSN file}
+        target: /run/secrets/relay-download-edge-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_MIGRATION_DATABASE_PASSWORD_FILE:?set owner-only migration password file}
+        target: /run/secrets/relay-migration-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_RUNTIME_DATABASE_PASSWORD_FILE:?set owner-only runtime password file}
+        target: /run/secrets/relay-runtime-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${RELAY_DOWNLOAD_EDGE_DATABASE_PASSWORD_FILE:?set owner-only edge password file}
+        target: /run/secrets/relay-download-edge-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_SERVICE_PRINCIPALS_FILE:?set owner-only service principal identity file}
+        target: /run/secrets/relay-service-principals.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_API_RUNTIME_SECRETS_FILE:?set owner-only API runtime secret file}
+        target: /run/secrets/relay-api-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_DOWNLOAD_EDGE_RUNTIME_SECRETS_FILE:?set owner-only edge runtime secret file}
+        target: /run/secrets/relay-download-edge-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE:?set owner-only provider credential keyring file}
+        target: /run/secrets/relay-provider-credential-keyring
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_MIGRATION_RUNTIME_SECRETS_FILE:?set owner-only Platform migration runtime secret file}
+        target: /run/secrets/platform-migration-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_API_RUNTIME_SECRETS_FILE:?set owner-only Platform API runtime secret file}
+        target: /run/secrets/platform-api-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DISPATCHER_RUNTIME_SECRETS_FILE:?set owner-only Platform dispatcher runtime secret file}
+        target: /run/secrets/platform-dispatcher-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_RELAY_SYNC_RUNTIME_SECRETS_FILE:?set owner-only Platform relay-sync runtime secret file}
+        target: /run/secrets/platform-relay-sync-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_TIMEOUT_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform timeout-worker runtime secret file}
+        target: /run/secrets/platform-timeout-worker-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_PUBLISHING_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform publishing-worker runtime secret file}
+        target: /run/secrets/platform-publishing-worker-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DOWNLOAD_GATEWAY_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform Download Gateway worker runtime secret file}
+        target: /run/secrets/platform-download-gateway-registration-worker-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DATABASE_ROLE_ADMIN_DSN_FILE:?set owner-only Platform role-admin PostgreSQL DSN file}
+        target: /run/secrets/platform-role-admin-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_MIGRATION_DATABASE_PASSWORD_FILE:?set owner-only Platform migration password file}
+        target: /run/secrets/platform-migration-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_API_DATABASE_PASSWORD_FILE:?set owner-only Platform API password file}
+        target: /run/secrets/platform-api-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DISPATCHER_DATABASE_PASSWORD_FILE:?set owner-only Platform dispatcher password file}
+        target: /run/secrets/platform-dispatcher-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE:?set owner-only Platform relay-sync password file}
+        target: /run/secrets/platform-relay-sync-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD_FILE:?set owner-only Platform timeout-worker password file}
+        target: /run/secrets/platform-timeout-worker-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_PUBLISHING_WORKER_DATABASE_PASSWORD_FILE:?set owner-only Platform publishing-worker password file}
+        target: /run/secrets/platform-publishing-worker-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DOWNLOAD_GATEWAY_WORKER_DATABASE_PASSWORD_FILE:?set owner-only Platform Download Gateway worker password file}
+        target: /run/secrets/platform-download-gateway-worker-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-pre:/run/relay-secret-isolation/pre
+      - relay-new-api-secret-isolation-migrate:/run/relay-secret-isolation/migrate
+      - relay-new-api-secret-isolation-post:/run/relay-secret-isolation/post
+      - relay-new-api-secret-isolation-principal:/run/relay-secret-isolation/principal
+      - relay-new-api-secret-isolation-api:/run/relay-secret-isolation/api
+      - relay-new-api-secret-isolation-edge:/run/relay-secret-isolation/edge
+      - relay-new-api-secret-isolation-platform-migration:/run/relay-secret-isolation/platform-migration
+      - relay-new-api-secret-isolation-platform-api:/run/relay-secret-isolation/platform-api
+      - relay-new-api-secret-isolation-platform-dispatcher:/run/relay-secret-isolation/platform-dispatcher
+      - relay-new-api-secret-isolation-platform-relay-sync:/run/relay-secret-isolation/platform-relay-sync
+      - relay-new-api-secret-isolation-platform-timeout-worker:/run/relay-secret-isolation/platform-timeout-worker
+      - relay-new-api-secret-isolation-platform-publishing-worker:/run/relay-secret-isolation/platform-publishing-worker
+      - relay-new-api-secret-isolation-platform-download-gateway-registration-worker:/run/relay-secret-isolation/platform-download-gateway-registration-worker
+      - relay-new-api-secret-isolation-platform-db-role-pre:/run/relay-secret-isolation/platform-db-role-pre
+      - relay-new-api-root-secret-isolation-proof:/run/relay-root-secret-isolation-proof:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit
+    depends_on: !override
+      relay-new-api-volume-init:
+        condition: service_completed_successfully
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: none
+    restart: "no"
+
+  # Fresh installs use the same fixed proof volume in a deliberately explicit
+  # pre-root generation. This succeeds only while proof.json is truly absent
+  # on that read-only mount; once a root proof exists it cannot be selected as
+  # a downgrade path. Run pre/migrate/post with their published --no-deps
+  # commands, then create the root proof and root, and finally force-recreate
+  # the ordinary validator above to produce a proof-present generation.
+  relay-new-api-secret-isolation-pre-root:
+    profiles: ["relay-root-provision"]
+    extends:
+      service: relay-new-api-secret-isolation
+    environment:
+      RELAY_SECRET_ISOLATION_GENERATION: pre-root
+
+  # The privileged predecessor is a native command in the exact immutable API
+  # image. It derives SCRAM verifiers in memory and applies role topology,
+  # credentials, ownership, ACLs and the edge stub in one locked transaction.
+  relay-new-api-db-role-pre:
+    profiles: !reset []
+    build: !reset null
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    entrypoint: !override ["/new-api", "relay-provision-database-roles"]
+    command: !reset []
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      APP_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      DEPLOYMENT_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      NODE_TYPE: master
+      SQL_DSN_FILE: /run/secrets/relay-role-admin-dsn
+      RELAY_DATABASE_CA_FILE: /run/secrets/relay-database-ca.pem
+      RELAY_DATABASE_RELEASE_PROOF_DIRECTORY: /run/relay-database-release-proof
+      RELAY_DATABASE_RELEASE_PROOF_FILE: /run/relay-database-release-proof/receipt.json
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:?set protected NOLOGIN schema owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:?set migration login role}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILES_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_MIGRATION_DATABASE_PASSWORD_FILE: /run/secrets/relay-migration-password
+      RELAY_RUNTIME_DATABASE_PASSWORD_FILE: /run/secrets/relay-runtime-password
+      RELAY_DOWNLOAD_EDGE_DATABASE_PASSWORD_FILE: /run/secrets/relay-download-edge-password
+    volumes: !override
+      - type: bind
+        source: ${NEW_API_RELAY_DATABASE_CA_FILE:?set owner-only Relay PostgreSQL CA bundle}
+        target: /run/secrets/relay-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_ROLE_ADMIN_SQL_DSN_FILE:?set owner-only role-admin PostgreSQL DSN file}
+        target: /run/secrets/relay-role-admin-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_MIGRATION_DATABASE_PASSWORD_FILE:?set owner-only migration password file}
+        target: /run/secrets/relay-migration-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_RUNTIME_DATABASE_PASSWORD_FILE:?set owner-only runtime password file}
+        target: /run/secrets/relay-runtime-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${RELAY_DOWNLOAD_EDGE_DATABASE_PASSWORD_FILE:?set owner-only edge password file}
+        target: /run/secrets/relay-download-edge-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-pre:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - relay-new-api-database-release-proof:/run/relay-database-release-proof
+    depends_on: !override
+      relay-new-api-secret-isolation:
+        condition: service_completed_successfully
+    user: "10001:10001"
+    networks: !override
+      - relay-new-api-managed-state
+
+  # Same immutable image as the API. Its environment intentionally contains
+  # no Redis, caller token, Provider credential, OBS or callback secret.
+  relay-new-api-migrate:
+    profiles: !reset []
+    build: !reset null
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      APP_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      DEPLOYMENT_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      NODE_TYPE: master
+      SQL_DSN_FILE: /run/secrets/relay-migration-sql-dsn
+      RELAY_DATABASE_CA_FILE: /run/secrets/relay-database-ca.pem
+      RELAY_DATABASE_RELEASE_PROOF_FILE: /run/relay-database-release-proof/receipt.json
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILES_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:?set protected NOLOGIN schema owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:?set migration login role}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE: /run/secrets/relay-provider-credential-keyring
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+    volumes: !override
+      - type: bind
+        source: ${NEW_API_RELAY_DATABASE_CA_FILE:?set owner-only Relay PostgreSQL CA bundle}
+        target: /run/secrets/relay-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_MIGRATION_SQL_DSN_FILE:?set owner-only migration PostgreSQL DSN file}
+        target: /run/secrets/relay-migration-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-migrate:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - relay-new-api-database-release-proof:/run/relay-database-release-proof:ro
+      - type: bind
+        source: ${NEW_API_RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE:?set host path to provider credential keyring file}
+        target: /run/secrets/relay-provider-credential-keyring
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on: !override
+      relay-new-api-db-role-pre:
+        condition: service_completed_successfully
+    networks: !override
+      - relay-new-api-managed-state
+
+  # Post provisioning is role attachment only. The versioned binary manifest
+  # has already granted and attested the exact edge DML surface.
+  relay-new-api-db-role-post:
+    profiles: !reset []
+    build: !reset null
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      APP_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      DEPLOYMENT_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      NODE_TYPE: master
+      SQL_DSN_FILE: /run/secrets/relay-role-admin-dsn
+      RELAY_DATABASE_CA_FILE: /run/secrets/relay-database-ca.pem
+      RELAY_DATABASE_RELEASE_PROOF_FILE: /run/relay-database-release-proof/receipt.json
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILES_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:?set protected NOLOGIN schema owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:?set migration login role}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+    entrypoint: !override ["/new-api", "relay-provision-edge-login"]
+    command: !reset []
+    volumes: !override
+      - type: bind
+        source: ${NEW_API_RELAY_DATABASE_CA_FILE:?set owner-only Relay PostgreSQL CA bundle}
+        target: /run/secrets/relay-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_ROLE_ADMIN_SQL_DSN_FILE:?set owner-only role-admin PostgreSQL DSN file}
+        target: /run/secrets/relay-role-admin-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-post:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - relay-new-api-database-release-proof:/run/relay-database-release-proof:ro
+    depends_on: !override
+      relay-new-api-migrate:
+        condition: service_completed_successfully
+    networks: !override
+      - relay-new-api-edge
+      - relay-new-api-managed-state
+
+  # The install-only validator sees the one-time root password plus the same
+  # complete source set as the ordinary validator. It atomically creates (or
+  # exactly replays) the permanent validator-only forbidden-root proof, then
+  # writes a least-privilege root receipt. The proof volume is intentionally
+  # read/write only here and read-only in the ordinary networkless validator.
+  relay-new-api-root-secret-isolation:
+    profiles: ["relay-root-provision"]
+    extends:
+      service: relay-new-api-secret-isolation
+    entrypoint: !override ["/new-api", "relay-validate-root-secret-isolation-v1"]
+    environment:
+      RELAY_PROVISION_ROOT_USERNAME: ${NEW_API_RELAY_ROOT_USERNAME:?set ASCII-safe application root username}
+      RELAY_PROVISION_ROOT_PASSWORD_FILE: /run/secrets/relay-new-api-root-password
+      RELAY_ROOT_SECRET_ISOLATION_PROOF_DIRECTORY: /run/relay-root-secret-isolation-proof-write
+      RELAY_SECRET_ISOLATION_RECEIPT_ROOT_BOOTSTRAP_DIRECTORY: /run/relay-secret-isolation/root-bootstrap
+    volumes:
+      - type: bind
+        source: ${NEW_API_RELAY_ROOT_PASSWORD_FILE:?set owner-only root password file}
+        target: /run/secrets/relay-new-api-root-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-root-secret-isolation-proof:/run/relay-root-secret-isolation-proof-write
+      - relay-new-api-secret-isolation-root-bootstrap:/run/relay-secret-isolation/root-bootstrap
+
+  # Explicit fresh-install bootstrap for both staging and production. Never
+  # rerun this after the root account has been used: its exact clean-auth proof
+  # intentionally conflicts with later sessions, login time, passkeys or 2FA.
+  relay-new-api-root-provision:
+    profiles: ["relay-root-provision"]
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    entrypoint: ["/new-api", "relay-provision-root"]
+    environment:
+      <<: *relay-secret-isolation-audience
+      APP_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      DEPLOYMENT_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      NODE_TYPE: master
+      SQL_DSN_FILE: /run/secrets/relay-runtime-sql-dsn
+      RELAY_DATABASE_CA_FILE: /run/secrets/relay-database-ca.pem
+      RELAY_DATABASE_RELEASE_PROOF_FILE: /run/relay-database-release-proof/receipt.json
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILES_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:?set protected NOLOGIN schema owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:?set migration login role}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      RELAY_PROVISION_ROOT_USERNAME: ${NEW_API_RELAY_ROOT_USERNAME:?set ASCII-safe application root username}
+      RELAY_PROVISION_ROOT_PASSWORD_FILE: /run/secrets/relay-new-api-root-password
+      RELAY_ROOT_SECRET_ISOLATION_PROOF_FILE: /run/relay-root-secret-isolation-proof/proof.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+    volumes:
+      - type: bind
+        source: ${NEW_API_RELAY_DATABASE_CA_FILE:?set owner-only Relay PostgreSQL CA bundle}
+        target: /run/secrets/relay-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_RUNTIME_SQL_DSN_FILE:?set owner-only runtime PostgreSQL DSN file}
+        target: /run/secrets/relay-runtime-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_ROOT_PASSWORD_FILE:?set owner-only root password file}
+        target: /run/secrets/relay-new-api-root-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-root-bootstrap:/run/relay-secret-isolation:ro
+      - relay-new-api-root-secret-isolation-proof:/run/relay-root-secret-isolation-proof:ro
+      - relay-new-api-database-release-proof:/run/relay-database-release-proof:ro
+    depends_on:
+      relay-new-api-root-secret-isolation:
+        condition: service_completed_successfully
+    networks: !override
+      - relay-new-api-managed-state
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700
+    restart: "no"
+
+  # Creates or exactly replays the complete non-interactive Platform service
+  # principal set. It receives only the runtime DSN and the isolated identity
+  # file; Redis, API/callback, provider, OBS and KEK secrets are absent.
+  relay-new-api-service-principal-provision:
+    profiles: !reset []
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    entrypoint: ["/new-api", "relay-provision-service-principals"]
+    environment:
+      <<: *relay-secret-isolation-audience
+      APP_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      DEPLOYMENT_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      NODE_TYPE: master
+      SQL_DSN_FILE: /run/secrets/relay-runtime-sql-dsn
+      RELAY_DATABASE_CA_FILE: /run/secrets/relay-database-ca.pem
+      RELAY_DATABASE_RELEASE_PROOF_FILE: /run/relay-database-release-proof/receipt.json
+      RELAY_SERVICE_PRINCIPALS_FILE: /run/secrets/relay-service-principals.json
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILES_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:?set protected NOLOGIN schema owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:?set migration login role}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+    volumes:
+      - type: bind
+        source: ${NEW_API_RELAY_DATABASE_CA_FILE:?set owner-only Relay PostgreSQL CA bundle}
+        target: /run/secrets/relay-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_RUNTIME_SQL_DSN_FILE:?set owner-only runtime PostgreSQL DSN file}
+        target: /run/secrets/relay-runtime-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_SERVICE_PRINCIPALS_FILE:?set owner-only service principal identity file}
+        target: /run/secrets/relay-service-principals.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-principal:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - relay-new-api-database-release-proof:/run/relay-database-release-proof:ro
+    depends_on:
+      relay-new-api-db-role-post:
+        condition: service_completed_successfully
+    networks: !override
+      - relay-new-api-managed-state
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700
+    restart: "no"
+
+  relay-new-api:
+    profiles: !reset []
+    build: !reset null
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      APP_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      DEPLOYMENT_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      SQL_DSN_FILE: /run/secrets/relay-runtime-sql-dsn
+      RELAY_DATABASE_CA_FILE: /run/secrets/relay-database-ca.pem
+      RELAY_REDIS_TLS_CA_FILE: /run/secrets/relay-redis-tls-ca.pem
+      RELAY_DATABASE_RELEASE_PROOF_FILE: /run/relay-database-release-proof/receipt.json
+      RELAY_SERVICE_PRINCIPALS_FILE: /run/secrets/relay-service-principals.json
+      RELAY_API_RUNTIME_SECRETS_FILE: /run/secrets/relay-api-runtime-secrets.json
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILES_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:?set protected NOLOGIN schema owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:?set migration login role}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      DEBUG: "false"
+      DIFY_DEBUG: "false"
+      GIN_MODE: release
+      # These legacy background writers are not lifecycle-fenced. Secure Relay
+      # uses synchronous accounting writes and rejects Codex channels until the
+      # refresh/rotation flow has durable unknown-outcome reconciliation.
+      BATCH_UPDATE_ENABLED: "false"
+      RELAY_CODEX_CREDENTIAL_AUTO_REFRESH_ENABLED: "false"
+      RELAY_NATIVE_PAID_COMPAT_ENABLED: "false"
+      # Provider KEKs never enter Compose environment or the image. The file
+      # contains only versioned AES-256 keys and is also mounted into the
+      # one-shot migrator so legacy plaintext conversion is atomic.
+      RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE: /run/secrets/relay-provider-credential-keyring
+      SESSION_COOKIE_SECURE: "true"
+      SESSION_COOKIE_TRUSTED_URL: ${NEW_API_RELAY_PUBLIC_BASE_URL:?set public HTTPS new-api root},${PLATFORM_RELAY_NATIVE_ADMIN_CONSOLE_ORIGIN:?set protected HTTPS new-api administrator origin}
+      NODE_TYPE: master
+      NODE_NAME: ${NEW_API_RELAY_NODE_NAME:?set stable unique node name}
+      RELAY_COMPAT_ENABLED: "true"
+      RELAY_COMPAT_ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_PUBLIC_KEYS_JSON: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_PUBLIC_KEYS_JSON:?set release-pinned Ed25519 public verification keys}
+      # Global channel control is not a capability of every operations tenant.
+      # It is pinned to the canonical customer Platform identity.
+      RELAY_PLATFORM_CONTROL_TENANT_ID: ${RELAY_TENANT_ID:?set canonical Platform tenant UUID}
+      RELAY_COMPAT_MODEL_ROUTES_JSON: ${NEW_API_RELAY_MODEL_ROUTES_JSON:?set approved secret-free production routes}
+      RELAY_COMPAT_MODEL_CAPABILITIES_JSON: ""
+      RELAY_COMPAT_WORKER_ENABLED: "true"
+      RELAY_COMPAT_DELAY_QUEUE_NAMESPACE: ${NEW_API_RELAY_DELAY_QUEUE_NAMESPACE:?set environment-specific queue namespace}
+      RELAY_ARTIFACT_STORE: huawei_obs
+      HUAWEI_OBS_ENDPOINT: ${NEW_API_RELAY_HUAWEI_OBS_ENDPOINT:?set official Relay Huawei OBS HTTPS endpoint}
+      HUAWEI_OBS_BUCKET: ${NEW_API_RELAY_HUAWEI_OBS_BUCKET:?set Relay Huawei OBS bucket}
+      RELAY_PROVIDER_MONITOR_ENABLED: "true"
+      RELAY_PROVIDER_MONITOR_INTERVAL_SECONDS: ${NEW_API_RELAY_PROVIDER_MONITOR_INTERVAL_SECONDS:?set provider monitor interval}
+      RELAY_PROVIDER_MONITOR_LEASE_SECONDS: ${NEW_API_RELAY_PROVIDER_MONITOR_LEASE_SECONDS:?set provider monitor lease}
+      RELAY_PROVIDER_MONITOR_ACQUIRE_RETRY_SECONDS: ${NEW_API_RELAY_PROVIDER_MONITOR_ACQUIRE_RETRY_SECONDS:?set monitor acquire retry}
+      RELAY_PROVIDER_HEALTHCHECK_TIMEOUT_SECONDS: ${NEW_API_RELAY_PROVIDER_HEALTHCHECK_TIMEOUT_SECONDS:?set provider probe timeout}
+      RELAY_PROVIDER_CHANNEL_TEST_MAX_AGE_SECONDS: ${NEW_API_RELAY_PROVIDER_CHANNEL_TEST_MAX_AGE_SECONDS:?set maximum native channel test age}
+      CHANNEL_TEST_ENABLED: "true"
+      CHANNEL_TEST_FREQUENCY: ${NEW_API_RELAY_CHANNEL_TEST_FREQUENCY:?set positive channel-test minutes}
+      RELAY_PROVIDER_MONITOR_WINDOW_SECONDS: ${NEW_API_RELAY_PROVIDER_MONITOR_WINDOW_SECONDS:?set provider outcome window}
+      RELAY_PROVIDER_MONITOR_MIN_OUTCOMES: ${NEW_API_RELAY_PROVIDER_MONITOR_MIN_OUTCOMES:?set minimum outcome count}
+      RELAY_PROVIDER_MONITOR_MIN_SUCCESS_RATE: ${NEW_API_RELAY_PROVIDER_MONITOR_MIN_SUCCESS_RATE:?set breach threshold}
+      RELAY_PROVIDER_MONITOR_SUCCESS_RECOVERY_RATE: ${NEW_API_RELAY_PROVIDER_MONITOR_SUCCESS_RECOVERY_RATE:?set recovery threshold}
+      RELAY_PROVIDER_MONITOR_WIDESPREAD_FAILURE_RATIO: ${NEW_API_RELAY_PROVIDER_MONITOR_WIDESPREAD_FAILURE_RATIO:?set widespread failure ratio}
+      RELAY_PROVIDER_MONITOR_WIDESPREAD_RECOVERY_RATIO: ${NEW_API_RELAY_PROVIDER_MONITOR_WIDESPREAD_RECOVERY_RATIO:?set widespread recovery ratio}
+      RELAY_PROVIDER_MONITOR_WIDESPREAD_MIN_ROUTES: ${NEW_API_RELAY_PROVIDER_MONITOR_WIDESPREAD_MIN_ROUTES:?set minimum route population}
+      RELAY_PROVIDER_MONITOR_BATCH_DISABLED_THRESHOLD: ${NEW_API_RELAY_PROVIDER_MONITOR_BATCH_DISABLED_THRESHOLD:?set batch invalidation threshold}
+      RELAY_PROVIDER_ALERT_WEBHOOK_URL: ${NEW_API_RELAY_PROVIDER_ALERT_WEBHOOK_URL:?set public HTTPS Platform alert receiver}
+      RELAY_PROVIDER_ALERT_CLAIM_LEASE_SECONDS: ${NEW_API_RELAY_PROVIDER_ALERT_CLAIM_LEASE_SECONDS:?set alert delivery lease}
+      RELAY_PROVIDER_ALERT_POLL_SECONDS: ${NEW_API_RELAY_PROVIDER_ALERT_POLL_SECONDS:?set alert delivery poll}
+      RELAY_PLATFORM_CHANNEL_COST_URL: ${NEW_API_RELAY_PLATFORM_CHANNEL_COST_URL:?set public HTTPS Platform cost receiver}
+      RELAY_PROVIDER_CONTRACT_RATES_JSON: ${NEW_API_RELAY_PROVIDER_CONTRACT_RATES_JSON:?set versioned evidence-backed contract rates}
+      RELAY_CHANNEL_COST_CLAIM_LEASE_SECONDS: ${NEW_API_RELAY_CHANNEL_COST_CLAIM_LEASE_SECONDS:?set cost delivery lease}
+      RELAY_CHANNEL_COST_POLL_SECONDS: ${NEW_API_RELAY_CHANNEL_COST_POLL_SECONDS:?set cost delivery poll}
+      RELAY_PLATFORM_TASK_STAGE_URL: ${NEW_API_RELAY_PLATFORM_TASK_STAGE_URL:?set public HTTPS Platform task-stage receiver}
+      RELAY_PLATFORM_OPERATIONS_SNAPSHOT_URL: ${NEW_API_RELAY_PLATFORM_OPERATIONS_SNAPSHOT_URL:?set public HTTPS Platform operations receiver}
+      RELAY_TELEMETRY_CLAIM_LEASE_SECONDS: ${NEW_API_RELAY_TELEMETRY_CLAIM_LEASE_SECONDS:?set telemetry delivery lease}
+      RELAY_TELEMETRY_POLL_SECONDS: ${NEW_API_RELAY_TELEMETRY_POLL_SECONDS:?set telemetry delivery poll}
+    volumes:
+      - type: bind
+        source: ${NEW_API_RELAY_DATABASE_CA_FILE:?set owner-only Relay PostgreSQL CA bundle}
+        target: /run/secrets/relay-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_REDIS_TLS_CA_FILE:?set owner-only Relay Redis TLS CA bundle}
+        target: /run/secrets/relay-redis-tls-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_RUNTIME_SQL_DSN_FILE:?set owner-only runtime PostgreSQL DSN file}
+        target: /run/secrets/relay-runtime-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-api:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - relay-new-api-database-release-proof:/run/relay-database-release-proof:ro
+      - type: bind
+        source: ${NEW_API_RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE:?set host path to provider credential keyring file}
+        target: /run/secrets/relay-provider-credential-keyring
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_SERVICE_PRINCIPALS_FILE:?set owner-only service principal identity file}
+        target: /run/secrets/relay-service-principals.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_API_RUNTIME_SECRETS_FILE:?set owner-only API runtime secret file}
+        target: /run/secrets/relay-api-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on: !override
+      relay-new-api-volume-init:
+        condition: service_completed_successfully
+      relay-new-api-migrate:
+        condition: service_completed_successfully
+      relay-new-api-db-role-post:
+        condition: service_completed_successfully
+      relay-new-api-service-principal-provision:
+        condition: service_completed_successfully
+    networks: !override
+      - relay-new-api-edge
+      - relay-new-api-data
+      - relay-new-api-managed-state
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
+    stop_grace_period: 260s
+    healthcheck:
+      # HTTP 503 remains unavailable. HTTP 200 healthy/degraded is serviceable:
+      # provider-only incidents must not restart the API or block reconciliation.
+      test:
+        - CMD-SHELL
+        - >-
+          body=$$(wget -q -O - http://127.0.0.1:3000/health/ready) &&
+          printf '%s' "$$body" |
+          grep -Eq '^[[:space:]]*\{[[:space:]]*"state"[[:space:]]*:[[:space:]]*"(healthy|degraded)"'
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
+
+  relay-download-edge:
+    profiles: !reset []
+    build: !reset null
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      RELAY_DOWNLOAD_EDGE_SQL_DSN_FILE: /run/secrets/relay-download-edge-sql-dsn
+      RELAY_DATABASE_CA_FILE: /run/secrets/relay-database-ca.pem
+      RELAY_DATABASE_RELEASE_PROOF_FILE: /run/relay-database-release-proof/receipt.json
+      RELAY_DOWNLOAD_EDGE_RUNTIME_SECRETS_FILE: /run/secrets/relay-download-edge-runtime-secrets.json
+      RELAY_DOWNLOAD_EDGE_ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      APP_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      DEPLOYMENT_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      DEBUG: "false"
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILES_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:?set protected NOLOGIN schema owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:?set migration login role}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_DOWNLOAD_EDGE_PUBLIC_BASE_URL: ${DOWNLOAD_GATEWAY_PUBLIC_BASE_URL:?set public HTTPS gateway root}
+      RELAY_DOWNLOAD_EDGE_ALLOWED_OBS_HOSTS: ${NEW_API_RELAY_DOWNLOAD_EDGE_ALLOWED_OBS_HOSTS:?set exact OBS signed URL hosts}
+      RELAY_DOWNLOAD_EDGE_PLATFORM_COMPLETION_URL: ${NEW_API_RELAY_DOWNLOAD_EDGE_PLATFORM_COMPLETION_URL:?set public HTTPS Platform completion receiver}
+      RELAY_DOWNLOAD_EDGE_PROOF_KEY_ID: ${NEW_API_RELAY_DOWNLOAD_EDGE_PROOF_KEY_ID:?set proof key id}
+      RELAY_DOWNLOAD_EDGE_PRODUCER_SUBJECT: ${NEW_API_RELAY_DOWNLOAD_EDGE_PRODUCER_SUBJECT:?set stable producer subject}
+    volumes: !override
+      - type: bind
+        source: ${NEW_API_RELAY_DATABASE_CA_FILE:?set owner-only Relay PostgreSQL CA bundle}
+        target: /run/secrets/relay-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${RELAY_DOWNLOAD_EDGE_SQL_DSN_FILE:?set owner-only edge PostgreSQL DSN file}
+        target: /run/secrets/relay-download-edge-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-edge:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - relay-new-api-database-release-proof:/run/relay-database-release-proof:ro
+      - type: bind
+        source: ${NEW_API_RELAY_DOWNLOAD_EDGE_RUNTIME_SECRETS_FILE:?set owner-only edge runtime secret file}
+        target: /run/secrets/relay-download-edge-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on: !override
+      relay-new-api-db-role-post:
+        condition: service_completed_successfully
+      relay-new-api:
+        condition: service_healthy
+      platform-api:
+        condition: service_healthy
+    networks: !override
+      - relay-new-api-edge
+      - relay-new-api-data
+      - relay-new-api-managed-state
+    stop_grace_period: 40s
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          body=$$(wget -q -O - http://127.0.0.1:8080/health/ready) &&
+          printf '%s' "$$body" |
+          grep -Eq '^[[:space:]]*\{[[:space:]]*"status"[[:space:]]*:[[:space:]]*"ready"'
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  # The role-admin predecessor is the only Platform process that can provision
+  # cluster roles or transfer legacy ownership. It receives seven bare database
+  # passwords, never the API/worker bundles that contain unrelated credentials.
+  platform-db-role-pre:
+    profiles: !reset []
+    build: !reset null
+    image: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+    user: "10001:10001"
+    command: ["python", "-m", "platform_api.database_role_pre"]
+    environment:
+      <<: *relay-secret-isolation-audience
+      ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      PLATFORM_PROTECTED_RUNTIME: "true"
+      PLATFORM_PROCESS_ROLE: database-role-pre
+      PLATFORM_DATABASE_NAME: ${PLATFORM_DATABASE_NAME:?set canonical Platform application database name}
+      PLATFORM_DATABASE_ROLE_VALID_UNTIL: ${PLATFORM_DATABASE_ROLE_VALID_UNTIL:?set canonical UTC role credential expiry}
+      PLATFORM_LEGACY_DATABASE_OWNER: ${PLATFORM_LEGACY_DATABASE_OWNER:-}
+      PLATFORM_DATABASE_ROLE_ADMIN_DSN_FILE: /run/secrets/platform-role-admin-sql-dsn
+      PLATFORM_MIGRATION_DATABASE_PASSWORD_FILE: /run/secrets/platform-migration-database-password
+      PLATFORM_API_DATABASE_PASSWORD_FILE: /run/secrets/platform-api-database-password
+      PLATFORM_DISPATCHER_DATABASE_PASSWORD_FILE: /run/secrets/platform-dispatcher-database-password
+      PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE: /run/secrets/platform-relay-sync-database-password
+      PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-timeout-worker-database-password
+      PLATFORM_PUBLISHING_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-publishing-worker-database-password
+      PLATFORM_DOWNLOAD_GATEWAY_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-download-gateway-worker-database-password
+      PLATFORM_DATABASE_CA_FILE: /run/secrets/platform-database-ca.pem
+      PLATFORM_DATABASE_RELEASE_PROOF_FILE: /run/platform-database-release-proof/attestation.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+    volumes:
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DATABASE_ROLE_ADMIN_DSN_FILE:?set owner-only Platform role-admin PostgreSQL DSN file}
+        target: /run/secrets/platform-role-admin-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_MIGRATION_DATABASE_PASSWORD_FILE:?set owner-only Platform migration database password file}
+        target: /run/secrets/platform-migration-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_API_DATABASE_PASSWORD_FILE:?set owner-only Platform API database password file}
+        target: /run/secrets/platform-api-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DISPATCHER_DATABASE_PASSWORD_FILE:?set owner-only Platform dispatcher database password file}
+        target: /run/secrets/platform-dispatcher-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE:?set owner-only Platform relay-sync database password file}
+        target: /run/secrets/platform-relay-sync-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD_FILE:?set owner-only Platform timeout-worker database password file}
+        target: /run/secrets/platform-timeout-worker-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_PUBLISHING_WORKER_DATABASE_PASSWORD_FILE:?set owner-only Platform publishing-worker database password file}
+        target: /run/secrets/platform-publishing-worker-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DOWNLOAD_GATEWAY_WORKER_DATABASE_PASSWORD_FILE:?set owner-only Platform Download Gateway worker database password file}
+        target: /run/secrets/platform-download-gateway-worker-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-platform-db-role-pre:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - platform-database-release-proof:/run/platform-database-release-proof
+    depends_on: !override
+      relay-new-api-secret-isolation:
+        condition: service_completed_successfully
+    networks:
+      - relay-new-api-managed-state
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+      - /run/platform-database-ca-snapshot:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+    restart: "no"
+
+  # Platform migrations have a DB-only identity. They never receive an API or
+  # worker bundle, and the API image no longer runs Alembic in its shell command.
+  platform-migrate:
+    build: !reset null
+    image: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+    user: "10001:10001"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *relay-secret-isolation-audience
+      ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      PLATFORM_PROTECTED_RUNTIME: "true"
+      PLATFORM_PROCESS_ROLE: migration
+      PLATFORM_PROCESS_RUNTIME_SECRETS_FILE: /run/secrets/platform-migration-runtime-secrets.json
+      PLATFORM_DATABASE_CA_FILE: /run/secrets/platform-database-ca.pem
+      PLATFORM_DATABASE_RELEASE_PROOF_FILE: /run/platform-database-release-proof/attestation.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      AUTO_CREATE_TABLES: "false"
+      DEVELOPMENT_HEADER_AUTH_ENABLED: "false"
+      ENABLE_BOOTSTRAP: "false"
+    volumes:
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_MIGRATION_RUNTIME_SECRETS_FILE:?set owner-only Platform migration runtime secret file}
+        target: /run/secrets/platform-migration-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-platform-migration:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - platform-database-release-proof:/run/platform-database-release-proof:ro
+    depends_on: !override
+      relay-new-api-secret-isolation:
+        condition: service_completed_successfully
+      platform-db-role-pre:
+        condition: service_completed_successfully
+    networks:
+      - relay-new-api-managed-state
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+      - /run/platform-database-ca-snapshot:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+    restart: "no"
+
+  platform-api:
+    build: !reset null
+    image: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+    user: "10001:10001"
+    command: !override
+      ["uvicorn", "platform_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "${PLATFORM_API_GATEWAY_IP:?set the fixed dedicated Platform gateway IP}", "--no-access-log"]
+    ports: !reset []
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      PLATFORM_PROTECTED_RUNTIME: "true"
+      PLATFORM_PROCESS_ROLE: platform-api
+      PLATFORM_PROCESS_RUNTIME_SECRETS_FILE: /run/secrets/platform-api-runtime-secrets.json
+      PLATFORM_DATABASE_CA_FILE: /run/secrets/platform-database-ca.pem
+      PLATFORM_DATABASE_RELEASE_PROOF_FILE: /run/platform-database-release-proof/attestation.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      AUTO_CREATE_TABLES: "false"
+      DEVELOPMENT_HEADER_AUTH_ENABLED: "false"
+      ENABLE_BOOTSTRAP: "false"
+      CORS_ORIGINS: ${PLATFORM_CORS_ORIGINS_JSON:?set exact HTTPS origins JSON}
+      RELAY_DEFAULT_BACKEND_ID: ${PLATFORM_NEW_API_RELAY_BACKEND_ID:?set stable new-api backend id}
+      RELAY_DEFAULT_CONTRACT_REVISION: generations.v1
+      RELAY_OPERATIONS_BASE_URL: ${NEW_API_RELAY_PUBLIC_BASE_URL:?set public HTTPS new-api root}
+      RELAY_NATIVE_ADMIN_CONSOLE_ORIGIN: ${PLATFORM_RELAY_NATIVE_ADMIN_CONSOLE_ORIGIN:?set protected HTTPS new-api administrator origin}
+      RELAY_CALLBACK_PUBLIC_URL: ${PLATFORM_RELAY_CALLBACK_PUBLIC_URL:?set public HTTPS callback URL}
+      CHANNEL_COST_SIGNATURE_REQUIRED: "true"
+      PROVIDER_ALERT_FORWARD_WEBHOOK_URL: ${PROVIDER_ALERT_FORWARD_WEBHOOK_URL:?set external operator alert sink}
+      DOWNLOAD_GATEWAY_REGISTRATION_URL: ${DOWNLOAD_GATEWAY_REGISTRATION_URL:?set public HTTPS gateway registration URL}
+      DOWNLOAD_GATEWAY_PUBLIC_BASE_URL: ${DOWNLOAD_GATEWAY_PUBLIC_BASE_URL:?set public HTTPS gateway root}
+      DOWNLOAD_GATEWAY_REGISTRATION_WORKER_ENABLED: "true"
+      RELAY_ALLOW_LEGACY_ARTIFACT_DOWNLOAD_RESPONSE: "false"
+      AUTH_LEGACY_BEARER_ENABLED: "false"
+      OIDC_ENABLED: "true"
+      OIDC_SELF_SIGNUP_ENABLED: ${PLATFORM_OIDC_SELF_SIGNUP_ENABLED:?set exact true or false}
+      OIDC_ISSUER: ${PLATFORM_OIDC_ISSUER:?set exact OIDC issuer}
+      OIDC_AUTHORIZATION_ENDPOINT: ${PLATFORM_OIDC_AUTHORIZATION_ENDPOINT:?set fixed OIDC authorization endpoint}
+      OIDC_TOKEN_ENDPOINT: ${PLATFORM_OIDC_TOKEN_ENDPOINT:?set fixed OIDC token endpoint}
+      OIDC_JWKS_URI: ${PLATFORM_OIDC_JWKS_URI:?set fixed OIDC JWKS endpoint}
+      OIDC_CLIENT_ID: ${PLATFORM_OIDC_CLIENT_ID:?set public PKCE client id}
+      OIDC_REDIRECT_URI: ${PLATFORM_PUBLIC_BASE_URL:?set canonical public Platform origin}/api/v1/auth/callback
+      FRONTEND_ORIGIN: ${PLATFORM_FRONTEND_ORIGIN:?set exact customer frontend origin}
+      ACCOUNT_MANAGEMENT_URL: ${PLATFORM_ACCOUNT_MANAGEMENT_URL:?set fixed HTTPS IdP account-management URL}
+      AUTH_SESSION_TTL_SECONDS: ${PLATFORM_AUTH_SESSION_TTL_SECONDS:-28800}
+      AUTH_SESSION_IDLE_TTL_SECONDS: ${PLATFORM_AUTH_SESSION_IDLE_TTL_SECONDS:-1800}
+      AUTH_ACCOUNT_STEP_UP_MAX_AGE_SECONDS: ${PLATFORM_AUTH_ACCOUNT_STEP_UP_MAX_AGE_SECONDS:-300}
+      OIDC_LOGIN_TRANSACTION_TTL_SECONDS: ${PLATFORM_OIDC_LOGIN_TRANSACTION_TTL_SECONDS:-600}
+      OIDC_ID_TOKEN_MAX_LIFETIME_SECONDS: ${PLATFORM_OIDC_ID_TOKEN_MAX_LIFETIME_SECONDS:-900}
+      OIDC_LOGIN_IP_WINDOW_SECONDS: ${PLATFORM_OIDC_LOGIN_IP_WINDOW_SECONDS:-600}
+      OIDC_LOGIN_IP_MAX_ATTEMPTS: ${PLATFORM_OIDC_LOGIN_IP_MAX_ATTEMPTS:-20}
+      INVITATION_TTL_SECONDS: ${PLATFORM_INVITATION_TTL_SECONDS:-604800}
+      PLATFORM_OWNER_USER_IDS: ${PLATFORM_OWNER_USER_IDS_JSON:?set owner subject allowlist JSON}
+      PLATFORM_ADMIN_REQUIRED_AMR: ${PLATFORM_ADMIN_REQUIRED_AMR_JSON:?set phishing-resistant AMR JSON}
+      PLATFORM_ADMIN_STEP_UP_MAX_AGE_SECONDS: ${PLATFORM_ADMIN_STEP_UP_MAX_AGE_SECONDS:-300}
+      INPUT_ASSET_STORE: huawei_obs
+      INPUT_ASSET_PUBLIC_BASE_URL: ${PLATFORM_PUBLIC_BASE_URL:?set public HTTPS Platform root}
+      INPUT_ASSET_RELAY_BASE_URL: ${PLATFORM_PUBLIC_BASE_URL:?set Relay-reachable HTTPS Platform root}
+      HUAWEI_OBS_ENDPOINT: ${PLATFORM_HUAWEI_OBS_ENDPOINT:?set official Platform Huawei OBS HTTPS endpoint}
+      HUAWEI_OBS_BUCKET: ${PLATFORM_HUAWEI_OBS_BUCKET:?set Platform input-asset Huawei OBS bucket}
+      PUBLISHING_WORKER_ENABLED: ${PUBLISHING_WORKER_ENABLED:?set explicit production publishing worker policy}
+      PUBLISHING_MOCK_ENABLED: "false"
+      PUBLISHING_ADAPTERS: ${PUBLISHING_ADAPTERS:-}
+      PUBLISHING_MEDIA_RESOLVER: ${PUBLISHING_MEDIA_RESOLVER:-}
+      PUBLISHING_OAUTH_CALLBACK_URL: ${PUBLISHING_OAUTH_CALLBACK_URL:?set exact public OAuth callback URL}
+      PUBLISHING_OAUTH_SUCCESS_URL: ${PUBLISHING_OAUTH_SUCCESS_URL:?set exact customer publishing success URL}
+      PUBLISHING_OAUTH_STATE_TTL_SECONDS: ${PUBLISHING_OAUTH_STATE_TTL_SECONDS:-600}
+    volumes: !override
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_API_RUNTIME_SECRETS_FILE:?set owner-only Platform API runtime secret file}
+        target: /run/secrets/platform-api-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-platform-api:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - platform-database-release-proof:/run/platform-database-release-proof:ro
+    networks: !override
+      platform-api-ingress:
+        ipv4_address: ${PLATFORM_API_INTERNAL_IP:?set the fixed dedicated Platform API IP}
+      relay-new-api-edge: {}
+      relay-new-api-managed-state: {}
+    depends_on: !override
+      relay-new-api-secret-isolation:
+        condition: service_completed_successfully
+      platform-migrate:
+        condition: service_completed_successfully
+      relay-new-api:
+        condition: service_healthy
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+      - /run/platform-database-ca-snapshot:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+
+  api-gateway:
+    environment:
+      PLATFORM_TRUSTED_EDGE_CIDR: ${PLATFORM_TRUSTED_EDGE_CIDR:?set the exact host TLS ingress address or CIDR}
+    volumes: !override
+      - ./infra/nginx/platform-api.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./infra/nginx/platform-api-trusted-edge.conf.template:/etc/nginx/templates/platform-api-trusted-edge.conf.template:ro
+    networks: !override
+      platform-api-ingress:
+        ipv4_address: ${PLATFORM_API_GATEWAY_IP:?set the fixed dedicated Platform gateway IP}
+    depends_on: !override
+      platform-api:
+        condition: service_healthy
+
+  platform-dispatcher:
+    build: !reset null
+    image: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+    user: "10001:10001"
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      PLATFORM_PROTECTED_RUNTIME: "true"
+      PLATFORM_PROCESS_ROLE: dispatcher
+      PLATFORM_PROCESS_RUNTIME_SECRETS_FILE: /run/secrets/platform-dispatcher-runtime-secrets.json
+      PLATFORM_DATABASE_CA_FILE: /run/secrets/platform-database-ca.pem
+      PLATFORM_DATABASE_RELEASE_PROOF_FILE: /run/platform-database-release-proof/attestation.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      AUTO_CREATE_TABLES: "false"
+      DEVELOPMENT_HEADER_AUTH_ENABLED: "false"
+      ENABLE_BOOTSTRAP: "false"
+      RELAY_DEFAULT_BACKEND_ID: ${PLATFORM_NEW_API_RELAY_BACKEND_ID:?set stable new-api backend id}
+      RELAY_DEFAULT_CONTRACT_REVISION: generations.v1
+      INPUT_ASSET_STORE: huawei_obs
+      INPUT_ASSET_PUBLIC_BASE_URL: ${PLATFORM_PUBLIC_BASE_URL:?set public HTTPS Platform root}
+      INPUT_ASSET_RELAY_BASE_URL: ${PLATFORM_PUBLIC_BASE_URL:?set Relay-reachable HTTPS Platform root}
+      HUAWEI_OBS_ENDPOINT: ${PLATFORM_HUAWEI_OBS_ENDPOINT:?set official Platform Huawei OBS HTTPS endpoint}
+      HUAWEI_OBS_BUCKET: ${PLATFORM_HUAWEI_OBS_BUCKET:?set Platform input-asset Huawei OBS bucket}
+    volumes: !override
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DISPATCHER_RUNTIME_SECRETS_FILE:?set owner-only Platform dispatcher runtime secret file}
+        target: /run/secrets/platform-dispatcher-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-platform-dispatcher:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - platform-database-release-proof:/run/platform-database-release-proof:ro
+    networks: !override
+      - relay-new-api-edge
+      - relay-new-api-managed-state
+    depends_on: !override
+      relay-new-api-secret-isolation:
+        condition: service_completed_successfully
+      platform-migrate:
+        condition: service_completed_successfully
+      platform-api:
+        condition: service_healthy
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+      - /run/platform-database-ca-snapshot:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+
+  platform-relay-sync:
+    build: !reset null
+    image: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+    user: "10001:10001"
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      PLATFORM_PROTECTED_RUNTIME: "true"
+      PLATFORM_PROCESS_ROLE: relay-sync
+      PLATFORM_PROCESS_RUNTIME_SECRETS_FILE: /run/secrets/platform-relay-sync-runtime-secrets.json
+      PLATFORM_DATABASE_CA_FILE: /run/secrets/platform-database-ca.pem
+      PLATFORM_DATABASE_RELEASE_PROOF_FILE: /run/platform-database-release-proof/attestation.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      AUTO_CREATE_TABLES: "false"
+      DEVELOPMENT_HEADER_AUTH_ENABLED: "false"
+      ENABLE_BOOTSTRAP: "false"
+      RELAY_DEFAULT_BACKEND_ID: ${PLATFORM_NEW_API_RELAY_BACKEND_ID:?set stable new-api backend id}
+      RELAY_DEFAULT_CONTRACT_REVISION: generations.v1
+    volumes: !override
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_RELAY_SYNC_RUNTIME_SECRETS_FILE:?set owner-only Platform relay-sync runtime secret file}
+        target: /run/secrets/platform-relay-sync-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-platform-relay-sync:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - platform-database-release-proof:/run/platform-database-release-proof:ro
+    depends_on: !override
+      relay-new-api-secret-isolation:
+        condition: service_completed_successfully
+      platform-migrate:
+        condition: service_completed_successfully
+      relay-new-api:
+        condition: service_healthy
+      platform-api:
+        condition: service_healthy
+    networks: !override
+      - relay-new-api-edge
+      - relay-new-api-managed-state
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+      - /run/platform-database-ca-snapshot:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+
+  platform-timeout-worker:
+    build: !reset null
+    image: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+    user: "10001:10001"
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      PLATFORM_PROTECTED_RUNTIME: "true"
+      PLATFORM_PROCESS_ROLE: timeout-worker
+      PLATFORM_PROCESS_RUNTIME_SECRETS_FILE: /run/secrets/platform-timeout-worker-runtime-secrets.json
+      PLATFORM_DATABASE_CA_FILE: /run/secrets/platform-database-ca.pem
+      PLATFORM_DATABASE_RELEASE_PROOF_FILE: /run/platform-database-release-proof/attestation.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      AUTO_CREATE_TABLES: "false"
+      DEVELOPMENT_HEADER_AUTH_ENABLED: "false"
+      ENABLE_BOOTSTRAP: "false"
+      RELAY_DEFAULT_BACKEND_ID: ${PLATFORM_NEW_API_RELAY_BACKEND_ID:?set stable new-api backend id}
+      RELAY_DEFAULT_CONTRACT_REVISION: generations.v1
+    volumes: !override
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_TIMEOUT_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform timeout-worker runtime secret file}
+        target: /run/secrets/platform-timeout-worker-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-platform-timeout-worker:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - platform-database-release-proof:/run/platform-database-release-proof:ro
+    depends_on: !override
+      relay-new-api-secret-isolation:
+        condition: service_completed_successfully
+      platform-migrate:
+        condition: service_completed_successfully
+    networks: !override
+      - relay-new-api-edge
+      - relay-new-api-managed-state
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+      - /run/platform-database-ca-snapshot:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+
+  platform-publishing-worker:
+    profiles: ["publishing"]
+    build: !reset null
+    image: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+    user: "10001:10001"
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      PLATFORM_PROTECTED_RUNTIME: "true"
+      PLATFORM_PROCESS_ROLE: publishing-worker
+      PLATFORM_PROCESS_RUNTIME_SECRETS_FILE: /run/secrets/platform-publishing-worker-runtime-secrets.json
+      PLATFORM_DATABASE_CA_FILE: /run/secrets/platform-database-ca.pem
+      PLATFORM_DATABASE_RELEASE_PROOF_FILE: /run/platform-database-release-proof/attestation.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      AUTO_CREATE_TABLES: "false"
+      DEVELOPMENT_HEADER_AUTH_ENABLED: "false"
+      ENABLE_BOOTSTRAP: "false"
+      PUBLISHING_WORKER_ENABLED: ${PUBLISHING_WORKER_ENABLED:?set explicit production publishing worker policy}
+      PUBLISHING_MOCK_ENABLED: "false"
+      PUBLISHING_ADAPTERS: ${PUBLISHING_ADAPTERS:-}
+      PUBLISHING_MEDIA_RESOLVER: ${PUBLISHING_MEDIA_RESOLVER:-}
+    volumes: !override
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_PUBLISHING_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform publishing-worker runtime secret file}
+        target: /run/secrets/platform-publishing-worker-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-platform-publishing-worker:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - platform-database-release-proof:/run/platform-database-release-proof:ro
+    depends_on: !override
+      relay-new-api-secret-isolation:
+        condition: service_completed_successfully
+      platform-migrate:
+        condition: service_completed_successfully
+    networks: !override
+      - relay-new-api-managed-state
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+      - /run/platform-database-ca-snapshot:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+
+  platform-download-gateway-registration-worker:
+    profiles: !reset []
+    build: !reset null
+    image: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+    user: "10001:10001"
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      PLATFORM_PROTECTED_RUNTIME: "true"
+      PLATFORM_PROCESS_ROLE: download-gateway-registration-worker
+      PLATFORM_PROCESS_RUNTIME_SECRETS_FILE: /run/secrets/platform-download-gateway-registration-worker-runtime-secrets.json
+      PLATFORM_DATABASE_CA_FILE: /run/secrets/platform-database-ca.pem
+      PLATFORM_DATABASE_RELEASE_PROOF_FILE: /run/platform-database-release-proof/attestation.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      AUTO_CREATE_TABLES: "false"
+      DEVELOPMENT_HEADER_AUTH_ENABLED: "false"
+      ENABLE_BOOTSTRAP: "false"
+      DOWNLOAD_GATEWAY_REGISTRATION_URL: ${DOWNLOAD_GATEWAY_REGISTRATION_URL:?set public HTTPS gateway registration URL}
+      DOWNLOAD_GATEWAY_PUBLIC_BASE_URL: ${DOWNLOAD_GATEWAY_PUBLIC_BASE_URL:?set public HTTPS gateway root}
+      DOWNLOAD_GATEWAY_REGISTRATION_WORKER_ENABLED: "true"
+      RELAY_ARTIFACT_SIGNED_URL_TTL_SECONDS: ${NEW_API_RELAY_ARTIFACT_SIGNED_URL_TTL_SECONDS:-600}
+    volumes: !override
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DOWNLOAD_GATEWAY_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform Download Gateway worker runtime secret file}
+        target: /run/secrets/platform-download-gateway-registration-worker-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-platform-download-gateway-registration-worker:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - platform-database-release-proof:/run/platform-database-release-proof:ro
+    networks: !override
+      - relay-new-api-edge
+      - relay-new-api-managed-state
+    depends_on: !override
+      relay-new-api-secret-isolation:
+        condition: service_completed_successfully
+      platform-migrate:
+        condition: service_completed_successfully
+      platform-api:
+        condition: service_healthy
+      relay-download-edge:
+        condition: service_healthy
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+      - /run/platform-database-ca-snapshot:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+
+networks:
+  platform-api-ingress:
+    name: ${PLATFORM_API_INGRESS_NETWORK_NAME:?set a deployment-unique Platform ingress network name}
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${PLATFORM_API_INGRESS_SUBNET:?set a dedicated non-overlapping Platform ingress subnet}
+  relay-new-api-managed-state:
+    external: true
+    name: ${NEW_API_RELAY_MANAGED_STATE_NETWORK:?set pre-created VPC network restricted to managed PostgreSQL and Redis}
+
+volumes:
+  relay-new-api-secret-isolation-pre:
+  relay-new-api-secret-isolation-migrate:
+  relay-new-api-secret-isolation-post:
+  relay-new-api-secret-isolation-principal:
+  relay-new-api-secret-isolation-api:
+  relay-new-api-secret-isolation-edge:
+  relay-new-api-secret-isolation-platform-migration:
+  relay-new-api-secret-isolation-platform-api:
+  relay-new-api-secret-isolation-platform-dispatcher:
+  relay-new-api-secret-isolation-platform-relay-sync:
+  relay-new-api-secret-isolation-platform-timeout-worker:
+  relay-new-api-secret-isolation-platform-publishing-worker:
+  relay-new-api-secret-isolation-platform-download-gateway-registration-worker:
+  relay-new-api-secret-isolation-platform-db-role-pre:
+  relay-new-api-secret-isolation-root-bootstrap:
+  relay-new-api-secret-isolation-commit:
+  # Permanent release-independent forbidden-root proof. Back up this volume as
+  # encrypted deployment state. Never remove it with `docker compose down -v`:
+  # the one-time root password is intentionally destroyed after bootstrap and
+  # the proof cannot be safely regenerated without that exact source.
+  relay-new-api-root-secret-isolation-proof:
+  # Non-secret, generation-bound database attestations. The corresponding
+  # role-predecessor is the only writer; every later process mounts its proof
+  # read-only and verifies it on the same physical PostgreSQL connection.
+  relay-new-api-database-release-proof:
+  platform-database-release-proof:

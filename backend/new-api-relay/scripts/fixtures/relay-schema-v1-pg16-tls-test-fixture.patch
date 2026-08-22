@@ -1,0 +1,135 @@
+diff --git a/backend/new-api-relay/model/schema_migration_postgres_test.go b/backend/new-api-relay/model/schema_migration_postgres_test.go
+index f269556..9cbc197 100644
+--- a/backend/new-api-relay/model/schema_migration_postgres_test.go
++++ b/backend/new-api-relay/model/schema_migration_postgres_test.go
+@@ -1241,14 +1241,60 @@ func TestRelaySchemaPostgresLegacyCandidateUpgrade(t *testing.T) {
+ 	require.True(t, strings.HasPrefix(serverVersion, "16."))
+ 	require.False(t, admin.Migrator().HasTable(&RelaySchemaState{}), "fixture must be the pre-migration candidate")
+ 	require.True(t, admin.Migrator().HasTable(&Channel{}))
++	var lifecycleRoot User
++	require.NoError(t, admin.Where("id = ? AND username = ?", 92001, "lifecycle_root").Take(&lifecycleRoot).Error)
++	require.Positive(t, lifecycleRoot.CreatedAt)
++	require.Equal(t,
++		productionRootShape(newProductionRoot("lifecycle_root", lifecycleRoot.Password)),
++		productionRootShape(lifecycleRoot),
++	)
++	require.True(t, common.ValidatePasswordAndHash(
++		relaySchemaTestSecret("root-password")[:64], lifecycleRoot.Password,
++	))
++	var lifecycleSetup Setup
++	require.NoError(t, admin.Where("id = ?", 92001).Take(&lifecycleSetup).Error)
++	require.Equal(t, common.Version, lifecycleSetup.Version)
++	require.Positive(t, lifecycleSetup.InitializedAt)
++	type lifecycleRootSetupEvidence struct {
++		RootCount   int64  `gorm:"column:root_count"`
++		RootDigest  string `gorm:"column:root_digest"`
++		SetupCount  int64  `gorm:"column:setup_count"`
++		SetupDigest string `gorm:"column:setup_digest"`
++	}
++	captureLifecycleRootSetup := func(database *gorm.DB) (lifecycleRootSetupEvidence, error) {
++		var evidence lifecycleRootSetupEvidence
++		err := database.Raw(`
++SELECT (SELECT count(*) FROM users WHERE role = 100 AND username = 'lifecycle_root') AS root_count,
++       COALESCE((SELECT md5(to_jsonb(fixture)::text) FROM users fixture
++                  WHERE role = 100 AND username = 'lifecycle_root'), '') AS root_digest,
++       (SELECT count(*) FROM setups) AS setup_count,
++       COALESCE((SELECT md5(to_jsonb(fixture)::text) FROM setups fixture
++                  ORDER BY id ASC LIMIT 1), '') AS setup_digest`).Scan(&evidence).Error
++		return evidence, err
++	}
++	rootSetupBefore, err := captureLifecycleRootSetup(admin)
++	require.NoError(t, err)
++	require.Equal(t, int64(1), rootSetupBefore.RootCount)
++	require.Equal(t, int64(1), rootSetupBefore.SetupCount)
++	require.NotEmpty(t, rootSetupBefore.RootDigest)
++	require.NotEmpty(t, rootSetupBefore.SetupDigest)
+ 	beforeEvidence, err := relayCaptureLegacyCandidateEvidence(admin)
+ 	require.NoError(t, err)
+ 	require.Equal(t, int64(1), beforeEvidence.UserCount)
+-	require.Equal(t, int64(1), beforeEvidence.SetupCount)
++	require.Zero(t, beforeEvidence.SetupCount)
+ 	require.Equal(t, int64(1), beforeEvidence.ChannelCount)
+ 	require.Equal(t, int64(1), beforeEvidence.TaskCount)
+ 	require.Equal(t, int64(1), beforeEvidence.RouteCount)
+ 	require.NotEmpty(t, beforeEvidence.ChannelCredentialDigest)
++	require.NoError(t, admin.Exec(`DO $dedicated_cluster$
++DECLARE other_database record;
++BEGIN
++  FOR other_database IN SELECT datname FROM pg_database WHERE datname <> current_database()
++  LOOP
++    EXECUTE format('REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE %I FROM PUBLIC', other_database.datname);
++  END LOOP;
++END
++$dedicated_cluster$`).Error)
+ 
+ 	for _, statement := range []string{
+ 		`CREATE ROLE relay_schema_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`,
+@@ -1259,6 +1305,16 @@ func TestRelaySchemaPostgresLegacyCandidateUpgrade(t *testing.T) {
+ 	} {
+ 		require.NoError(t, admin.Exec(statement).Error, statement)
+ 	}
++	require.NoError(t, admin.Exec(`DO $role_bindings$
++DECLARE binding_prefix text := 'ai-video-relay-role/v1;database=' || current_database() ||
++  ';database_oid=' || (SELECT oid::text FROM pg_database WHERE datname = current_database()) || ';kind=';
++BEGIN
++  EXECUTE format('COMMENT ON ROLE relay_schema_owner IS %L', binding_prefix || 'owner');
++  EXECUTE format('COMMENT ON ROLE relay_schema_migrator IS %L', binding_prefix || 'migrator');
++  EXECUTE format('COMMENT ON ROLE relay_runtime IS %L', binding_prefix || 'runtime');
++  EXECUTE format('COMMENT ON ROLE relay_download_edge IS %L', binding_prefix || 'download-edge');
++END
++$role_bindings$`).Error)
+ 	require.NoError(t, relayTransferLegacyPublicObjects(admin, relaySchemaTestOwnerRole))
+ 	for _, statement := range []string{
+ 		`REVOKE CREATE, TEMPORARY ON DATABASE "` + databaseName + `" FROM PUBLIC`,
+@@ -1283,6 +1339,17 @@ func TestRelaySchemaPostgresLegacyCandidateUpgrade(t *testing.T) {
+ 	t.Setenv("NODE_TYPE", "master")
+ 	t.Setenv("RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED", "true")
+ 	t.Setenv("RELAY_DATABASE_TLS_ATTESTATION_REQUIRED", "true")
++	databaseCAPath := parsed.Query().Get("sslrootcert")
++	require.NotEmpty(t, databaseCAPath)
++	require.True(t, filepath.IsAbs(databaseCAPath))
++	databaseCARaw, err := os.ReadFile(databaseCAPath)
++	require.NoError(t, err)
++	t.Setenv(relayDatabaseCAFileEnvironment, databaseCAPath)
++	require.NoError(t, common.InstallProtectedSecretFileSnapshots([]common.ProtectedSecretFileSnapshot{{
++		Environment: relayDatabaseCAFileEnvironment,
++		Value:       databaseCARaw,
++	}}))
++	clear(databaseCARaw)
+ 	relaySchemaTestUseProtectedDatabaseDSN(t, "legacy-migration-sql-dsn", migrationDSN)
+ 	t.Setenv(relayMigrationDatabaseRoleEnvironment, relaySchemaTestMigratorRole)
+ 	t.Setenv(relaySchemaOwnerRoleEnvironment, relaySchemaTestOwnerRole)
+@@ -1340,6 +1407,33 @@ func TestRelaySchemaPostgresLegacyCandidateUpgrade(t *testing.T) {
+ 	require.Equal(t, beforeEvidence.ChannelDigest, afterEvidence.ChannelDigest)
+ 	require.Equal(t, beforeEvidence.TaskDigest, afterEvidence.TaskDigest)
+ 	require.Equal(t, beforeEvidence.RouteDigest, afterEvidence.RouteDigest)
++	require.Equal(t, int64(1), afterEvidence.UserCount)
++	require.Zero(t, afterEvidence.SetupCount)
++	rootSetupAfter, err := captureLifecycleRootSetup(migrationDB)
++	require.NoError(t, err)
++	require.Equal(t, rootSetupBefore, rootSetupAfter,
++		"immutable v1 must preserve the exact existing root and setup rows")
++	var protectedSideEffects struct {
++		RootCount           int64 `gorm:"column:root_count"`
++		SetupCount          int64 `gorm:"column:setup_count"`
++		PrincipalUserCount  int64 `gorm:"column:principal_user_count"`
++		PrincipalTokenCount int64 `gorm:"column:principal_token_count"`
++	}
++	require.NoError(t, migrationDB.Raw(`
++SELECT (SELECT count(*) FROM users WHERE role = 100) AS root_count,
++       (SELECT count(*) FROM setups) AS setup_count,
++       (SELECT count(*) FROM users
++         WHERE remark = 'platform-relay-service-v1'
++            OR left(lower(username), 5) = 'rsvc_') AS principal_user_count,
++       (SELECT count(*) FROM tokens
++         WHERE left(name, 15) = 'platform-relay:') AS principal_token_count`).
++		Scan(&protectedSideEffects).Error)
++	require.Equal(t, int64(1), protectedSideEffects.RootCount,
++		"immutable v1 must preserve the one pre-existing root")
++	require.Equal(t, int64(1), protectedSideEffects.SetupCount,
++		"immutable v1 must preserve the one pre-existing setup marker")
++	require.Zero(t, protectedSideEffects.PrincipalUserCount, "immutable v1 bridge stage must not provision principals")
++	require.Zero(t, protectedSideEffects.PrincipalTokenCount, "immutable v1 bridge stage must not provision principal tokens")
+ 	var acceptedChannelType int
+ 	require.NoError(t, migrationDB.Raw(`SELECT accepted_channel_type FROM platform_generation_provider_routes WHERE id = 91001`).Scan(&acceptedChannelType).Error)
+ 	require.Zero(t, acceptedChannelType, "legacy routes must receive the v1 accepted-channel default explicitly")

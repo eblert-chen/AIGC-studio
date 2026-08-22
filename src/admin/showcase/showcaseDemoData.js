@@ -1,0 +1,148 @@
+const DEMO_ITEMS = [
+  {
+    id: "10000000-0000-0000-0000-000000000001",
+    mediaId: "20000000-0000-0000-0000-000000000001",
+    mediaType: "image",
+    mediaUrl: "/community/community-hero.png",
+    posterUrl: "",
+    title: "把声音，变成画面",
+    section: "视频",
+    category: "广告魔法",
+    altText: "深黑空间中的银蓝色声波艺术装置",
+    publicPrompt: "银蓝色声波装置在暗色空间中舒展，镜头缓慢推进，突出声音被塑造成画面的过程。",
+    aspectRatio: "16:9",
+    aspect: "landscape",
+    isHero: true,
+    sortOrder: 0,
+    status: "draft",
+    sourceLabel: "演示数据",
+    updatedAt: "2026-08-21T09:26:00+08:00",
+  },
+  {
+    id: "10000000-0000-0000-0000-000000000002",
+    mediaId: "20000000-0000-0000-0000-000000000002",
+    mediaType: "image",
+    mediaUrl: "/community/blue-editorial-portrait.png",
+    posterUrl: "",
+    title: "蓝银妆容特写",
+    section: "挑战",
+    category: "数字人",
+    altText: "蓝银发与闪粉妆容的棚拍人物肖像",
+    publicPrompt: "浅灰摄影棚里的蓝银发人物特写，柔和主光配冷色轮廓光，镜头缓慢环绕。",
+    aspectRatio: "3:4",
+    aspect: "portrait",
+    isHero: false,
+    sortOrder: 1,
+    status: "draft",
+    sourceLabel: "演示数据",
+    updatedAt: "2026-08-21T09:18:00+08:00",
+  },
+  {
+    id: "10000000-0000-0000-0000-000000000003",
+    mediaId: "20000000-0000-0000-0000-000000000003",
+    mediaType: "image",
+    mediaUrl: "/community/ice-landscape.png",
+    posterUrl: "",
+    title: "冰原尺度感",
+    section: "视频",
+    category: "电影叙事",
+    altText: "巨型冰川前行进的远景小队",
+    publicPrompt: "巨大冰川与雪原的史诗远景，小队缓慢向冰壁前进，镜头平稳推进。",
+    aspectRatio: "16:9",
+    aspect: "landscape",
+    isHero: false,
+    sortOrder: 2,
+    status: "draft",
+    sourceLabel: "演示数据",
+    updatedAt: "2026-08-21T09:12:00+08:00",
+  },
+  {
+    id: "10000000-0000-0000-0000-000000000004",
+    mediaId: "20000000-0000-0000-0000-000000000004",
+    mediaType: "image",
+    mediaUrl: "/community/neon-anime-street.png",
+    posterUrl: "",
+    title: "雨夜街头双人秀",
+    section: "模板",
+    category: "动漫剧场",
+    altText: "雨后霓虹街道上的两位三维动漫角色",
+    publicPrompt: "雨后城市街头，两位原创三维角色并肩走来，湿地反射霓虹灯光。",
+    aspectRatio: "9:16",
+    aspect: "tall",
+    isHero: false,
+    sortOrder: 3,
+    status: "draft",
+    sourceLabel: "演示数据",
+    updatedAt: "2026-08-21T09:08:00+08:00",
+  },
+];
+
+export const SHOWCASE_DEMO_ARTWORKS = [
+  {
+    artifact_id: "30000000-0000-0000-0000-000000000001",
+    task_id: "40000000-0000-0000-0000-000000000001",
+    media_type: "image",
+    model_display_name: "旭天 Image Pro",
+    preview_url: "/community/miniature-fashion.png",
+  },
+  {
+    artifact_id: "30000000-0000-0000-0000-000000000002",
+    task_id: "40000000-0000-0000-0000-000000000002",
+    media_type: "image",
+    model_display_name: "旭天 Portrait",
+    preview_url: "/community/cyber-fashion-portrait.png",
+  },
+];
+
+function cloneItems(items) {
+  return items.map((item) => ({ ...item }));
+}
+
+export function createShowcaseDemoSnapshot() {
+  const currentItems = cloneItems(DEMO_ITEMS.slice(0, 3));
+  const previousItems = cloneItems(DEMO_ITEMS.slice(0, 2));
+  const currentRelease = {
+    id: "50000000-0000-0000-0000-000000000002",
+    version: "2",
+    note: "更新首页头图与冰原案例",
+    publishedAt: "2026-08-21T09:30:00+08:00",
+    publishedBy: "周宁（演示）",
+    itemCount: currentItems.length,
+    items: currentItems,
+  };
+  return {
+    publicationVersion: 2,
+    media: DEMO_ITEMS.map((item) => ({
+      id: item.mediaId,
+      sourceTaskArtifactId: "",
+      filename: `${item.title}.png`,
+      mediaType: item.mediaType,
+      contentType: item.mediaType === "video" ? "video/mp4" : "image/png",
+      sizeBytes: 0,
+      sha256: "",
+      mediaUrl: item.mediaUrl,
+      createdAt: item.updatedAt,
+    })),
+    draft: {
+      version: 7,
+      updatedAt: "2026-08-21T09:36:00+08:00",
+      changed: true,
+      items: cloneItems(DEMO_ITEMS),
+    },
+    liveRelease: currentRelease,
+    lastUnpublishedEvent: null,
+    publicationEvents: [],
+    releases: [
+      currentRelease,
+      {
+        id: "50000000-0000-0000-0000-000000000001",
+        version: "1",
+        note: "首页精选案例首版",
+        publishedAt: "2026-08-20T18:10:00+08:00",
+        publishedBy: "周宁（演示）",
+        itemCount: previousItems.length,
+        items: previousItems,
+      },
+    ],
+  };
+}

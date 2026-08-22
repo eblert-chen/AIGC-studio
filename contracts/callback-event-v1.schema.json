@@ -1,0 +1,379 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.example.com/ai-video/callback-event-v1.schema.json",
+  "title": "Relay generation status callback v1",
+  "description": "Normative body signed by X-Relay-Signature v1. The signature covers the raw JSON bytes, not a reserialized form.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "api_version",
+    "schema_version",
+    "event_id",
+    "type",
+    "occurred_at",
+    "job"
+  ],
+  "properties": {
+    "api_version": {
+      "const": "v1"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "const": "generation.status_changed"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "job": {
+      "$ref": "#/$defs/callbackJob"
+    }
+  },
+  "$defs": {
+    "revision": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "reconciliation_required",
+        "processing",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "reservationAction": {
+      "type": "string",
+      "enum": [
+        "hold",
+        "settle",
+        "release"
+      ]
+    },
+    "publicAsyncErrorCode": {
+      "type": "string",
+      "enum": [
+        "MODEL_CAPABILITY_UNAVAILABLE",
+        "CAPABILITY_REVISION_MISMATCH",
+        "REQUEST_NOT_SUPPORTED_BY_MODEL",
+        "MODE_NOT_SUPPORTED_BY_MODEL",
+        "NO_PROVIDER_AVAILABLE",
+        "PROVIDER_ACCOUNT_POOL_BUSY",
+        "PROVIDER_ACCOUNT_POOL_RATE_LIMITED",
+        "PROVIDER_TASK_NOT_ASSIGNED",
+        "PROVIDER_NOT_FOUND",
+        "PROVIDER_CIRCUIT_OPEN",
+        "PROVIDER_POLL_FAILED",
+        "PROVIDER_TASK_MISMATCH",
+        "PROVIDER_TASK_ID_INVALID",
+        "UPSTREAM_FAILED",
+        "CONTENT_POLICY_REJECTED",
+        "INPUT_ASSET_UNAVAILABLE",
+        "GENERATION_FAILED",
+        "GENERATION_TASK_NOT_FOUND_UPSTREAM",
+        "GENERATION_CHANNEL_RESPONSE_INVALID",
+        "GENERATION_CHANNEL_UNAVAILABLE",
+        "ARTIFACT_TRANSFER_RETRYING",
+        "ARTIFACT_TRANSFER_FAILED",
+        "SUBMISSION_RECONCILIATION_REQUIRED",
+        "SUBMISSION_CONFIRMED_NOT_CREATED",
+        "PROVIDER_RETRIES_EXHAUSTED",
+        "WORKER_ATTEMPTS_EXHAUSTED",
+        "PROVIDER_POLL_RECONCILIATION_REQUIRED"
+      ]
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "object_key",
+        "media_type",
+        "content_type",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "object_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Opaque durable identity; obtain a short-lived URL through the authenticated download endpoint."
+        },
+        "media_type": {
+          "type": "string",
+          "enum": [
+            "image",
+            "video"
+          ]
+        },
+        "content_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "details"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/publicAsyncErrorCode"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "reservationInvariant": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reservation_action": {
+                "const": "settle"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "failed",
+                  "cancelled"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reservation_action": {
+                "const": "release"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "reconciliation_required",
+                  "processing"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reservation_action": {
+                "const": "hold"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "terminalInvariant": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "progress": {
+                "const": 100
+              },
+              "outputs": {
+                "minItems": 1,
+                "maxItems": 16
+              },
+              "error": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "outputs": {
+                "maxItems": 0
+              },
+              "error": {
+                "$ref": "#/$defs/error"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "cancelled",
+                  "reconciliation_required",
+                  "processing"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "outputs": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "callbackJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "api_version",
+        "id",
+        "client_reference_id",
+        "status",
+        "progress",
+        "outputs",
+        "error",
+        "expected_capability_revision",
+        "capability_revision",
+        "reservation_action"
+      ],
+      "properties": {
+        "api_version": {
+          "const": "v1"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "client_reference_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "progress": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact"
+          }
+        },
+        "error": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expected_capability_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "capability_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "reservation_action": {
+          "$ref": "#/$defs/reservationAction"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/reservationInvariant"
+        },
+        {
+          "$ref": "#/$defs/terminalInvariant"
+        }
+      ]
+    }
+  }
+}

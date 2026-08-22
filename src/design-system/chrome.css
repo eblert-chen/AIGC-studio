@@ -1,0 +1,360 @@
+/*
+ * Product chrome
+ *
+ * The three surfaces keep their own navigation model, but share the same
+ * command-bar material, sizing rhythm and selected-state language. Route
+ * content belongs in the dedicated route sheets, not here.
+ */
+
+:where(.app-shell, .control-shell, .ops-console) {
+  --chrome-height: var(--shell-topbar-size, 56px);
+  --chrome-border: var(--line, var(--ops-line, #e3e7e4));
+  --chrome-surface: var(--topbar-surface, var(--surface-elevated, #fff));
+  --chrome-quiet-surface: var(--surface-soft, var(--ops-surface-soft, #f7f9f8));
+  --chrome-accent-soft: var(--accent-soft, var(--ops-accent-soft, #eaf4ee));
+  --chrome-ink: var(--ink, var(--ops-ink, #171a18));
+  --chrome-muted: var(--quiet, var(--ops-muted, #68716b));
+}
+
+/* Studio command bar ------------------------------------------------------ */
+
+.app-shell > .topbar {
+  position: relative;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+  padding-inline: 18px;
+  border-bottom: 1px solid var(--chrome-border);
+  background: var(--chrome-surface);
+  box-shadow: none;
+}
+
+.app-shell .topbar-spacer {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 16px;
+}
+
+.app-shell .brand {
+  min-width: 0;
+  flex: 0 0 auto;
+  padding-inline-end: 18px;
+  margin-inline-end: 4px;
+}
+
+.app-shell .brand-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--chrome-accent-soft);
+}
+
+.app-shell .brand-context {
+  margin-inline: 0 2px;
+  color: var(--chrome-muted);
+}
+
+.app-shell .mode-badge {
+  display: inline-flex;
+  min-height: var(--control-size-compact, 32px);
+  align-items: center;
+  padding-inline: 10px;
+  margin: 0;
+  border-radius: var(--radius-control, 6px);
+  font-size: var(--text-caption, 12px);
+  font-weight: var(--weight-semibold, 600);
+  white-space: nowrap;
+}
+
+.app-shell .surface-switch {
+  display: inline-flex;
+  height: var(--control-size-default, 40px);
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--chrome-border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--chrome-quiet-surface);
+}
+
+.app-shell .surface-switch button {
+  min-height: var(--control-size-compact, 32px);
+  padding-inline: 11px;
+  border-radius: var(--radius-control, 6px);
+}
+
+.app-shell .project-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 164px;
+}
+
+.app-shell .project-select select {
+  width: 100%;
+  appearance: none;
+  min-height: var(--control-size-default, 40px);
+  padding-inline: 12px 34px;
+  border-radius: var(--radius-control, 6px);
+}
+
+.app-shell .project-select > svg {
+  position: absolute;
+  right: 12px;
+  color: var(--chrome-muted);
+  pointer-events: none;
+}
+
+.app-shell .skin-switcher,
+.app-shell .icon-button,
+.app-shell .user-button {
+  min-height: var(--control-size-default, 40px);
+}
+
+.app-shell > .side-nav {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 12px 8px 10px;
+  border-right: 1px solid var(--chrome-border);
+  background: var(--surface-elevated, #fff);
+}
+
+.app-shell > .side-nav > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.app-shell > .side-nav button,
+.app-shell > .side-nav > button {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-height: 60px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 4px;
+  border: 0;
+  border-radius: var(--radius-md, 8px);
+  color: var(--chrome-muted);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.app-shell > .side-nav button span,
+.app-shell > .side-nav > button span {
+  font-size: var(--text-caption, 12px);
+  line-height: 1.25;
+}
+
+.app-shell > .side-nav button::before,
+.app-shell > .side-nav > button::before {
+  position: absolute;
+  content: "";
+  background: transparent;
+}
+
+.app-shell > .side-nav button svg,
+.app-shell > .side-nav > button svg {
+  width: 22px;
+  height: 22px;
+}
+
+.app-shell > .side-nav button:hover,
+.app-shell > .side-nav > button:hover {
+  color: var(--chrome-ink);
+  background: var(--chrome-quiet-surface);
+}
+
+.app-shell > .side-nav button.is-active,
+.app-shell > .side-nav > button.is-active {
+  color: var(--accent, #26784a);
+  background: var(--chrome-accent-soft);
+}
+
+.app-shell > .side-nav button.is-active::before,
+.app-shell > .side-nav > button.is-active::before {
+  inset: 12px auto 12px -8px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent, #26784a);
+}
+
+/* Company command bar ----------------------------------------------------- */
+
+.control-shell > .control-topbar {
+  position: relative;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+  padding-inline: 16px;
+  border-bottom: 1px solid var(--chrome-border);
+  background: var(--chrome-surface);
+}
+
+.control-shell .control-brand {
+  width: calc(var(--shell-company-sidebar-size, 240px) - 32px);
+}
+
+.control-shell .control-brand > span {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md, 8px);
+}
+
+.control-shell .surface-switch {
+  display: inline-flex;
+  height: var(--control-size-default, 40px);
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--chrome-border);
+  border-radius: var(--radius-md, 8px);
+}
+
+.control-shell .surface-switch button {
+  min-height: var(--control-size-compact, 32px);
+  padding-inline: 11px;
+  border-radius: var(--radius-control, 6px);
+}
+
+.control-shell > .control-sidebar {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  border-right: 1px solid var(--chrome-border);
+  background: var(--surface-elevated, #fff);
+}
+
+.control-shell .control-sidebar nav {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.control-shell .control-sidebar nav button {
+  min-height: 44px;
+  border-radius: var(--radius-md, 8px);
+}
+
+.control-shell .control-sidebar nav button.is-active {
+  background: var(--chrome-accent-soft);
+}
+
+/* Operations command bar -------------------------------------------------- */
+
+.ops-console > .ops-topbar {
+  position: sticky;
+  z-index: 40;
+  top: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  border-bottom: 1px solid var(--ops-line, var(--chrome-border));
+  background: var(--ops-surface, var(--chrome-surface));
+  box-shadow: none;
+}
+
+.ops-console .ops-brand {
+  min-height: var(--chrome-height);
+}
+
+.ops-console .ops-brand > span {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--ops-accent-soft, var(--chrome-accent-soft));
+}
+
+.ops-console .ops-admin-tools {
+  background: var(--ops-surface, var(--chrome-surface));
+}
+
+.ops-console .ops-basic-config-button,
+.ops-console .ops-help-button,
+.ops-console .ops-account-button {
+  border-radius: var(--radius-control, 6px);
+}
+
+@media (min-width: 901px) and (max-width: 1240px) {
+  .app-shell .brand-context,
+  .app-shell .project-select {
+    display: none;
+  }
+
+  .app-shell .brand {
+    padding-inline-end: 14px;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell .topbar-spacer {
+    min-width: 0;
+  }
+
+  .app-shell > .side-nav {
+    padding: 3px 6px 4px;
+    border-top: 1px solid var(--chrome-border);
+    border-right: 0;
+  }
+
+  .app-shell > .side-nav > div {
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-direction: row;
+  }
+
+  .app-shell > .side-nav > div {
+    height: 56px;
+  }
+
+  .app-shell > .side-nav button,
+  .app-shell > .side-nav > button {
+    height: 56px;
+    min-height: 56px;
+    gap: 2px;
+    padding: 4px 2px;
+    border-radius: var(--radius-control, 6px);
+  }
+
+  .app-shell > .side-nav button.is-active::before,
+  .app-shell > .side-nav > button.is-active::before {
+    inset: -3px 24% auto;
+    width: auto;
+    height: 2px;
+    border-radius: 0 0 2px 2px;
+  }
+}
+
+@media (max-width: 720px) {
+  .control-shell .control-brand {
+    width: auto;
+  }
+
+  .control-shell > .control-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--chrome-border);
+  }
+
+  .control-shell .control-sidebar nav {
+    flex-direction: row;
+  }
+}
+
+@media (max-width: 390px) {
+  .app-shell > .side-nav > div {
+    gap: 2px;
+  }
+}

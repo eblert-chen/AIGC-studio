@@ -1,0 +1,9 @@
+# Copy this file to /etc/ngrok/pilot-policy.yml on the server and replace the
+# example credential there. Never commit the real password.
+on_http_request:
+  - actions:
+      - type: basic-auth
+        config:
+          realm: "AI Video Closed Pilot"
+          credentials:
+            - "pilot:replace-with-a-long-random-password"

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="旭天 Logo C 播放旭日">
+  <rect x="30" y="30" width="140" height="140" rx="32" fill="#101114" stroke="#EDEFF2" stroke-opacity="0.25" stroke-width="1.5"/>
+  <circle cx="100" cy="86" r="32" fill="#F2C94C"/>
+  <polygon points="91,70 91,102 119,86" fill="#101114"/>
+  <line x1="52" y1="132" x2="148" y2="132" stroke="#EDEFF2" stroke-width="5" stroke-linecap="round" opacity="0.55"/>
+</svg>

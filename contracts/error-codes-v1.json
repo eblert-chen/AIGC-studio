@@ -1,0 +1,489 @@
+{
+  "api_version": "v1",
+  "schema_version": 1,
+  "contract": "relay-generation-v1",
+  "reservation_policy": {
+    "queued": "hold",
+    "submitting": "hold",
+    "reconciliation_required": "hold",
+    "processing": "hold",
+    "transferring": "hold",
+    "succeeded": "settle",
+    "failed": "release",
+    "cancelled": "release"
+  },
+  "rules": [
+    "job.reservation_action or callback.job.reservation_action is authoritative whenever a job resource exists",
+    "HTTP entries separate create_reservation_action from existing_job_action because a read, catalog, or download error must never mutate an existing job reservation",
+    "an HTTP timeout, connection loss, 500, or idempotency conflict is not proof that a create request failed; keep the reservation and retry the identical body with the original Idempotency-Key",
+    "an HTTP error received while reading an existing job never changes that job's reservation",
+    "provider-specific names, diagnostics, and raw error codes are not part of this registry"
+  ],
+  "errors": [
+    {
+      "code": "CLIENT_AUTHENTICATION_REQUIRED",
+      "surfaces": ["http"],
+      "stage": "authentication",
+      "http_status": 401,
+      "retry": {"allowed": true, "strategy": "after_credentials_are_supplied"},
+      "caller_action": "supply the assigned service credentials; never fall back to another tenant identity",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "INVALID_CLIENT_CREDENTIALS",
+      "surfaces": ["http"],
+      "stage": "authentication",
+      "http_status": 401,
+      "retry": {"allowed": true, "strategy": "after_credentials_are_corrected"},
+      "caller_action": "stop automatic retries and repair or rotate the internal-tiktok credential",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "INSUFFICIENT_CLIENT_SCOPE",
+      "surfaces": ["operator_http"],
+      "stage": "authorization",
+      "http_status": 403,
+      "retry": {"allowed": true, "strategy": "use_separate_scoped_operations_credential"},
+      "caller_action": "keep the job unchanged; submission reconciliation requires operations:submission-reconciliation",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "REQUEST_VALIDATION_FAILED",
+      "surfaces": ["http"],
+      "stage": "request_validation",
+      "http_status": 422,
+      "retry": {"allowed": false, "strategy": "fix_request_before_new_submission"},
+      "caller_action": "fix the fields reported in details.issues and use a new logical submission only after correction",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "IDEMPOTENCY_KEY_REUSED",
+      "surfaces": ["http"],
+      "stage": "idempotency",
+      "http_status": 409,
+      "retry": {"allowed": false, "strategy": "operator_reconciliation"},
+      "caller_action": "do not generate a replacement key; locate the original logical request and reconcile it",
+      "create_reservation_action": "hold",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "CALLBACK_NOT_CONFIGURED",
+      "surfaces": ["http"],
+      "stage": "request_validation",
+      "http_status": 422,
+      "retry": {"allowed": false, "strategy": "configure_trusted_callback_or_omit_callback"},
+      "caller_action": "configure the exact tenant callback route or submit without callback and poll",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "CALLBACK_URL_NOT_ALLOWED",
+      "surfaces": ["http"],
+      "stage": "request_validation",
+      "http_status": 422,
+      "retry": {"allowed": false, "strategy": "use_registered_callback_url"},
+      "caller_action": "use the exact pre-registered HTTPS callback URL without credentials, query, fragment, or redirect",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "JOB_NOT_FOUND",
+      "surfaces": ["http"],
+      "stage": "resource_lookup",
+      "http_status": 404,
+      "retry": {"allowed": false, "strategy": "verify_tenant_and_job_id"},
+      "caller_action": "verify the job ID and service tenant; cross-tenant resources intentionally look absent",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "MODEL_NOT_FOUND",
+      "surfaces": ["http"],
+      "stage": "catalog_lookup",
+      "http_status": 404,
+      "retry": {"allowed": true, "strategy": "refresh_catalog_before_resubmission"},
+      "caller_action": "refresh /v1/models and select a published model",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "ARTIFACT_NOT_FOUND",
+      "surfaces": ["http"],
+      "stage": "artifact_access",
+      "http_status": 404,
+      "retry": {"allowed": false, "strategy": "refresh_job_before_retry"},
+      "caller_action": "re-read the job; issue download URLs only for outputs on a succeeded job",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "ARTIFACT_SIGNATURE_INVALID",
+      "surfaces": ["http"],
+      "stage": "artifact_access",
+      "http_status": 403,
+      "retry": {"allowed": true, "strategy": "request_new_signed_download_url"},
+      "caller_action": "discard the expired or invalid URL and call the authenticated download endpoint again",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "ROUTE_NOT_FOUND",
+      "surfaces": ["http"],
+      "stage": "routing",
+      "http_status": 404,
+      "retry": {"allowed": false, "strategy": "fix_endpoint"},
+      "caller_action": "use a path defined by the v1 OpenAPI contract",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "METHOD_NOT_ALLOWED",
+      "surfaces": ["http"],
+      "stage": "routing",
+      "http_status": 405,
+      "retry": {"allowed": false, "strategy": "fix_http_method"},
+      "caller_action": "use the method defined by the v1 OpenAPI contract",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "HTTP_REQUEST_REJECTED",
+      "surfaces": ["http"],
+      "stage": "routing",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "inspect_http_status_and_fix_request"},
+      "caller_action": "treat the request as rejected unless transport delivery was uncertain",
+      "create_reservation_action": "release",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "INTERNAL_ERROR",
+      "surfaces": ["http"],
+      "stage": "relay_internal",
+      "http_status": 500,
+      "retry": {"allowed": true, "strategy": "exponential_backoff_same_request_and_idempotency_key"},
+      "caller_action": "keep the reservation; for POST retry the identical bytes with the original key, and for GET retry safely",
+      "create_reservation_action": "hold",
+      "existing_job_action": "unchanged"
+    },
+    {
+      "code": "PROVIDER_ROUTE_MISMATCH",
+      "surfaces": ["operator_http"],
+      "stage": "reconciliation",
+      "http_status": 409,
+      "retry": {"allowed": false, "strategy": "operator_review"},
+      "caller_action": "retain the original route and verify evidence before another reconciliation attempt",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_TASK_ID_MISMATCH",
+      "surfaces": ["operator_http"],
+      "stage": "reconciliation",
+      "http_status": 409,
+      "retry": {"allowed": false, "strategy": "operator_review"},
+      "caller_action": "retain the persisted upstream task identity and investigate the conflicting evidence",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "RECONCILIATION_NOT_REQUIRED",
+      "surfaces": ["operator_http"],
+      "stage": "reconciliation",
+      "http_status": 409,
+      "retry": {"allowed": false, "strategy": "read_current_job"},
+      "caller_action": "read the current job and follow its reservation_action",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "RECONCILIATION_OUTCOME_NOT_ALLOWED",
+      "surfaces": ["operator_http"],
+      "stage": "reconciliation",
+      "http_status": 409,
+      "retry": {"allowed": false, "strategy": "operator_review"},
+      "caller_action": "do not mark not_created when any upstream task identity exists",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_ROUTE_REQUIRED",
+      "surfaces": ["operator_http"],
+      "stage": "reconciliation",
+      "http_status": 422,
+      "retry": {"allowed": true, "strategy": "supply_verified_original_route"},
+      "caller_action": "provide the verified original route; never choose a replacement route",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_ROUTE_NOT_FOUND",
+      "surfaces": ["operator_http"],
+      "stage": "reconciliation",
+      "http_status": 422,
+      "retry": {"allowed": false, "strategy": "restore_route_or_escalate"},
+      "caller_action": "restore the assigned route configuration and reconcile without moving the task",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_TASK_ID_INVALID",
+      "surfaces": ["operator_http", "job", "callback"],
+      "stage": "reconciliation",
+      "http_status": 422,
+      "retry": {"allowed": false, "strategy": "verify_upstream_task_identity"},
+      "caller_action": "for an operator HTTP rejection leave the existing job unchanged; for a terminal public job follow its release action",
+      "reservation_action": "release",
+      "operator_existing_job_action": "unchanged"
+    },
+    {
+      "code": "PROVIDER_TASK_ALREADY_ASSIGNED",
+      "surfaces": ["operator_http"],
+      "stage": "reconciliation",
+      "http_status": 409,
+      "retry": {"allowed": false, "strategy": "operator_review"},
+      "caller_action": "investigate the duplicate upstream task assignment without changing either job",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "RECONCILIATION_CONFLICT",
+      "surfaces": ["operator_http"],
+      "stage": "reconciliation",
+      "http_status": 409,
+      "retry": {"allowed": true, "strategy": "read_current_job_before_any_retry"},
+      "caller_action": "read the winning state and apply its reservation_action idempotently",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "MODEL_CAPABILITY_UNAVAILABLE",
+      "surfaces": ["job", "callback"],
+      "stage": "admission",
+      "http_status": null,
+      "retry": {"allowed": true, "strategy": "refresh_catalog_and_create_new_logical_submission"},
+      "caller_action": "refresh the catalog; do not retry this terminal job",
+      "reservation_action": "release"
+    },
+    {
+      "code": "CAPABILITY_REVISION_MISMATCH",
+      "surfaces": ["job", "callback"],
+      "stage": "admission",
+      "http_status": null,
+      "retry": {"allowed": true, "strategy": "refresh_catalog_and_create_new_logical_submission"},
+      "caller_action": "refresh /v1/models and submit a new logical job pinned to the new revision",
+      "reservation_action": "release"
+    },
+    {
+      "code": "REQUEST_NOT_SUPPORTED_BY_MODEL",
+      "surfaces": ["job", "callback"],
+      "stage": "admission",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "change_request_to_match_capability"},
+      "caller_action": "correct the inputs or parameters against the pinned model capability before a new submission",
+      "reservation_action": "release"
+    },
+    {
+      "code": "MODE_NOT_SUPPORTED_BY_MODEL",
+      "surfaces": ["job", "callback"],
+      "stage": "admission",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "select_supported_mode"},
+      "caller_action": "select a mode present in the model's capability document",
+      "reservation_action": "release"
+    },
+    {
+      "code": "NO_PROVIDER_AVAILABLE",
+      "surfaces": ["job", "callback"],
+      "stage": "admission",
+      "http_status": null,
+      "retry": {"allowed": true, "strategy": "relay_managed_retry_or_poll_with_backoff"},
+      "caller_action": "do not submit a duplicate; keep polling the accepted job while reservation_action is hold",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_ACCOUNT_POOL_BUSY",
+      "surfaces": ["job", "callback"],
+      "stage": "admission",
+      "http_status": null,
+      "retry": {"allowed": true, "strategy": "relay_managed_delayed_admission"},
+      "caller_action": "do not submit a duplicate; keep polling the accepted job",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_ACCOUNT_POOL_RATE_LIMITED",
+      "surfaces": ["job", "callback"],
+      "stage": "admission",
+      "http_status": null,
+      "retry": {"allowed": true, "strategy": "relay_managed_delayed_admission"},
+      "caller_action": "do not submit a duplicate; Relay will delay admission until the account RPM window allows it",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_TASK_NOT_ASSIGNED",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "stop_terminal_job"},
+      "caller_action": "stop polling after the terminal state and release exactly once",
+      "reservation_action": "release"
+    },
+    {
+      "code": "PROVIDER_NOT_FOUND",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "operator_reconciliation_if_job_not_terminal"},
+      "caller_action": "follow the enclosing job reservation_action; do not reroute a possibly accepted task",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_CIRCUIT_OPEN",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": true, "strategy": "relay_managed_backoff"},
+      "caller_action": "keep polling the same job; never submit a replacement",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_POLL_FAILED",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": true, "strategy": "relay_managed_backoff"},
+      "caller_action": "keep polling the same job; Relay retains the original provider route",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_TASK_MISMATCH",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "operator_reconciliation"},
+      "caller_action": "hold and escalate; never overwrite the persisted upstream identity",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "UPSTREAM_FAILED",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "new_logical_submission_if_business_requests"},
+      "caller_action": "release this job; a user-requested retry must be a new logical submission",
+      "reservation_action": "release"
+    },
+    {
+      "code": "CONTENT_POLICY_REJECTED",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "change_content_before_new_submission"},
+      "caller_action": "release and require content correction before another submission",
+      "reservation_action": "release"
+    },
+    {
+      "code": "INPUT_ASSET_UNAVAILABLE",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "repair_input_asset_before_new_submission"},
+      "caller_action": "release; renew or replace the input asset before a new logical submission",
+      "reservation_action": "release"
+    },
+    {
+      "code": "GENERATION_FAILED",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "new_logical_submission_if_business_requests"},
+      "caller_action": "release this job exactly once",
+      "reservation_action": "release"
+    },
+    {
+      "code": "GENERATION_TASK_NOT_FOUND_UPSTREAM",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "operator_review_if_not_terminal"},
+      "caller_action": "follow the enclosing terminal state; never create a replacement automatically",
+      "reservation_action": "release"
+    },
+    {
+      "code": "GENERATION_CHANNEL_RESPONSE_INVALID",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "operator_review_if_outcome_uncertain"},
+      "caller_action": "follow the enclosing job; do not infer non-creation from a malformed upstream response",
+      "reservation_action": "release"
+    },
+    {
+      "code": "GENERATION_CHANNEL_UNAVAILABLE",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_execution",
+      "http_status": null,
+      "retry": {"allowed": true, "strategy": "follow_error_retryable_and_job_status"},
+      "caller_action": "if the job is nonterminal keep polling; if terminal release; never duplicate an accepted job",
+      "reservation_action": "release"
+    },
+    {
+      "code": "SUBMISSION_RECONCILIATION_REQUIRED",
+      "surfaces": ["job", "callback"],
+      "stage": "submission_reconciliation",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "scoped_operator_reconciliation"},
+      "caller_action": "hold; an operations:submission-reconciliation principal must verify the original provider before resolving",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "PROVIDER_POLL_RECONCILIATION_REQUIRED",
+      "surfaces": ["job", "callback"],
+      "stage": "provider_reconciliation",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "scoped_operator_reconciliation"},
+      "caller_action": "hold and resume only the persisted route/task after operator verification",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "SUBMISSION_CONFIRMED_NOT_CREATED",
+      "surfaces": ["job", "callback"],
+      "stage": "submission_reconciliation",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "terminal"},
+      "caller_action": "release the reservation exactly once; any new attempt is a new logical submission",
+      "reservation_action": "release"
+    },
+    {
+      "code": "PROVIDER_RETRIES_EXHAUSTED",
+      "surfaces": ["job", "callback"],
+      "stage": "submission",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "terminal"},
+      "caller_action": "release this job; do not retry it under a replacement idempotency key automatically",
+      "reservation_action": "release"
+    },
+    {
+      "code": "WORKER_ATTEMPTS_EXHAUSTED",
+      "surfaces": ["job", "callback"],
+      "stage": "relay_worker",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "terminal"},
+      "caller_action": "release and alert Relay operations",
+      "reservation_action": "release"
+    },
+    {
+      "code": "ARTIFACT_TRANSFER_RETRYING",
+      "surfaces": ["job"],
+      "stage": "artifact_transfer",
+      "http_status": null,
+      "retry": {"allowed": true, "strategy": "relay_managed_retry"},
+      "caller_action": "hold and keep polling; provider URLs are not durable outputs",
+      "reservation_action": "hold"
+    },
+    {
+      "code": "ARTIFACT_TRANSFER_FAILED",
+      "surfaces": ["job", "callback"],
+      "stage": "artifact_transfer",
+      "http_status": null,
+      "retry": {"allowed": false, "strategy": "terminal"},
+      "caller_action": "release; no artifact is considered delivered",
+      "reservation_action": "release"
+    }
+  ]
+}

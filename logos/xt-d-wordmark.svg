@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 170" role="img" aria-label="旭天 Logo D 中文字标">
+  <defs>
+    <clipPath id="sunClipD"><rect x="46" y="96" width="44" height="26"/></clipPath>
+  </defs>
+  <text x="120" y="92" text-anchor="middle" font-size="56" font-weight="500" fill="#EDEFF2" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif">旭天</text>
+  <line x1="62" y1="120" x2="178" y2="120" stroke="#EDEFF2" stroke-width="3" stroke-linecap="round" opacity="0.45"/>
+  <circle cx="74" cy="122" r="11" fill="#F2C94C" clip-path="url(#sunClipD)"/>
+  <text x="126" y="148" text-anchor="middle" font-size="13" letter-spacing="8" fill="#9B9DA4" font-family="PingFang SC, Microsoft YaHei, sans-serif">XUTIAN</text>
+</svg>

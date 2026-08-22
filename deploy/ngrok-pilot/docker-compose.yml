@@ -1,0 +1,18 @@
+services:
+  pilot-web:
+    image: nginx:1.27-alpine
+    container_name: ai-video-ngrok-pilot-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./client:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    mem_limit: 96m
+    cpus: 0.25
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/pilot-health | grep -q ngrok-pilot-web-ok"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s

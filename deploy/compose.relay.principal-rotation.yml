@@ -1,0 +1,304 @@
+# Maintenance-only, token-only rotation for the immutable Relay service-
+# principal identity set. Always combine this overlay with
+# docker-compose.yml, compose.relay.secure.yml, and exactly one protected
+# environment overlay. It is never part of an ordinary `up`.
+services:
+  relay-new-api-principal-rotation-volume-init:
+    profiles: ["relay-principal-rotation"]
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    user: "0:0"
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        chown 10001:10001 /run/relay-secret-isolation/principal-rotation &&
+        chmod 0700 /run/relay-secret-isolation/principal-rotation
+    volumes:
+      - relay-new-api-secret-isolation-principal-rotation:/run/relay-secret-isolation/principal-rotation
+    network_mode: none
+    restart: "no"
+
+  # Reads the complete ordinary release source set plus the current A file,
+  # but has no network and no write access to ordinary receipts or their
+  # shared commit marker. Only its dedicated rotation receipt is writable.
+  relay-new-api-principal-rotation-secret-isolation:
+    profiles: ["relay-principal-rotation"]
+    extends:
+      file: deploy/compose.relay.secure.yml
+      service: relay-new-api-secret-isolation
+    entrypoint: !override
+      ["/new-api", "relay-validate-service-principal-rotation-secret-isolation-v1"]
+    environment:
+      RELAY_CURRENT_SERVICE_PRINCIPALS_FILE: /run/secrets/relay-current-service-principals.json
+      RELAY_SECRET_ISOLATION_RECEIPT_PRINCIPAL_ROTATION_DIRECTORY: /run/relay-secret-isolation/principal-rotation
+    volumes: !override
+      - type: bind
+        source: ${NEW_API_RELAY_DATABASE_CA_FILE:?set owner-only Relay PostgreSQL CA bundle}
+        target: /run/secrets/relay-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_REDIS_TLS_CA_FILE:?set owner-only Relay Redis TLS CA bundle}
+        target: /run/secrets/relay-redis-tls-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_ROLE_ADMIN_SQL_DSN_FILE:?set owner-only role-admin PostgreSQL DSN file}
+        target: /run/secrets/relay-role-admin-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_MIGRATION_SQL_DSN_FILE:?set owner-only migration PostgreSQL DSN file}
+        target: /run/secrets/relay-migration-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_RUNTIME_SQL_DSN_FILE:?set owner-only runtime PostgreSQL DSN file}
+        target: /run/secrets/relay-runtime-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${RELAY_DOWNLOAD_EDGE_SQL_DSN_FILE:?set owner-only edge PostgreSQL DSN file}
+        target: /run/secrets/relay-download-edge-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_MIGRATION_DATABASE_PASSWORD_FILE:?set owner-only migration password file}
+        target: /run/secrets/relay-migration-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_RUNTIME_DATABASE_PASSWORD_FILE:?set owner-only runtime password file}
+        target: /run/secrets/relay-runtime-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${RELAY_DOWNLOAD_EDGE_DATABASE_PASSWORD_FILE:?set owner-only edge password file}
+        target: /run/secrets/relay-download-edge-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_CURRENT_SERVICE_PRINCIPALS_FILE:?set owner-only current service principal file}
+        target: /run/secrets/relay-current-service-principals.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_SERVICE_PRINCIPALS_FILE:?set owner-only desired service principal file}
+        target: /run/secrets/relay-service-principals.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_API_RUNTIME_SECRETS_FILE:?set owner-only API runtime secret file}
+        target: /run/secrets/relay-api-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_DOWNLOAD_EDGE_RUNTIME_SECRETS_FILE:?set owner-only edge runtime secret file}
+        target: /run/secrets/relay-download-edge-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE:?set owner-only provider credential keyring file}
+        target: /run/secrets/relay-provider-credential-keyring
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_MIGRATION_RUNTIME_SECRETS_FILE:?set owner-only Platform migration runtime secret file}
+        target: /run/secrets/platform-migration-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_API_RUNTIME_SECRETS_FILE:?set owner-only Platform API runtime secret file}
+        target: /run/secrets/platform-api-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DISPATCHER_RUNTIME_SECRETS_FILE:?set owner-only Platform dispatcher runtime secret file}
+        target: /run/secrets/platform-dispatcher-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_RELAY_SYNC_RUNTIME_SECRETS_FILE:?set owner-only Platform relay-sync runtime secret file}
+        target: /run/secrets/platform-relay-sync-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_TIMEOUT_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform timeout-worker runtime secret file}
+        target: /run/secrets/platform-timeout-worker-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_PUBLISHING_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform publishing-worker runtime secret file}
+        target: /run/secrets/platform-publishing-worker-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DOWNLOAD_GATEWAY_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform Download Gateway worker runtime secret file}
+        target: /run/secrets/platform-download-gateway-registration-worker-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DATABASE_ROLE_ADMIN_DSN_FILE:?set owner-only Platform role-admin PostgreSQL DSN file}
+        target: /run/secrets/platform-role-admin-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_MIGRATION_DATABASE_PASSWORD_FILE:?set owner-only Platform migration password file}
+        target: /run/secrets/platform-migration-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_API_DATABASE_PASSWORD_FILE:?set owner-only Platform API password file}
+        target: /run/secrets/platform-api-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DISPATCHER_DATABASE_PASSWORD_FILE:?set owner-only Platform dispatcher password file}
+        target: /run/secrets/platform-dispatcher-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE:?set owner-only Platform relay-sync password file}
+        target: /run/secrets/platform-relay-sync-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD_FILE:?set owner-only Platform timeout-worker password file}
+        target: /run/secrets/platform-timeout-worker-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_PUBLISHING_WORKER_DATABASE_PASSWORD_FILE:?set owner-only Platform publishing-worker password file}
+        target: /run/secrets/platform-publishing-worker-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_DOWNLOAD_GATEWAY_WORKER_DATABASE_PASSWORD_FILE:?set owner-only Platform Download Gateway worker password file}
+        target: /run/secrets/platform-download-gateway-worker-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-root-secret-isolation-proof:/run/relay-root-secret-isolation-proof:ro
+      - relay-new-api-secret-isolation-principal-rotation:/run/relay-secret-isolation/principal-rotation
+    depends_on: !override
+      relay-new-api-principal-rotation-volume-init:
+        condition: service_completed_successfully
+
+  # The networked job gets exactly six read-only inputs: runtime DSN, Relay DB
+  # CA, current A, desired A, the dedicated receipt, and the current database
+  # release proof. It cannot read Redis, KEK, API, edge, Platform, role-admin,
+  # migration, or root secrets.
+  relay-new-api-service-principal-rotation:
+    profiles: ["relay-principal-rotation"]
+    image: ${NEW_API_RELAY_IMAGE_REPOSITORY:?set immutable new-api image repository}@${NEW_API_RELAY_IMAGE_DIGEST:?set sha256 image manifest digest}
+    entrypoint: ["/new-api", "relay-rotate-service-principals-v1"]
+    command: []
+    environment:
+      PLATFORM_PUBLIC_BASE_URL: ${PLATFORM_PUBLIC_BASE_URL:?set canonical public Platform origin}
+      NEW_API_RELAY_PUBLIC_BASE_URL: ${NEW_API_RELAY_PUBLIC_BASE_URL:?set canonical public new-api origin}
+      DOWNLOAD_GATEWAY_PUBLIC_BASE_URL: ${DOWNLOAD_GATEWAY_PUBLIC_BASE_URL:?set canonical public download-edge origin}
+      PLATFORM_NEW_API_RELAY_CONTRACT_REVISION: generations.v1
+      APP_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      DEPLOYMENT_ENV: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      NODE_TYPE: master
+      SQL_DSN_FILE: /run/secrets/relay-runtime-sql-dsn
+      RELAY_DATABASE_CA_FILE: /run/secrets/relay-database-ca.pem
+      RELAY_DATABASE_RELEASE_PROOF_FILE: /run/relay-database-release-proof/receipt.json
+      RELAY_CURRENT_SERVICE_PRINCIPALS_FILE: /run/secrets/relay-current-service-principals.json
+      RELAY_SERVICE_PRINCIPALS_FILE: /run/secrets/relay-service-principals.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILES_REQUIRED: "true"
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: ${NEW_API_RELAY_SCHEMA_OWNER_DATABASE_ROLE:?set protected NOLOGIN schema owner}
+      RELAY_MIGRATION_DATABASE_ROLE: ${NEW_API_RELAY_MIGRATION_DATABASE_ROLE:?set migration login role}
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+    volumes:
+      - type: bind
+        source: ${NEW_API_RELAY_DATABASE_CA_FILE:?set owner-only Relay PostgreSQL CA bundle}
+        target: /run/secrets/relay-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_RUNTIME_SQL_DSN_FILE:?set owner-only runtime PostgreSQL DSN file}
+        target: /run/secrets/relay-runtime-sql-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_CURRENT_SERVICE_PRINCIPALS_FILE:?set owner-only current service principal file}
+        target: /run/secrets/relay-current-service-principals.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEW_API_RELAY_SERVICE_PRINCIPALS_FILE:?set owner-only desired service principal file}
+        target: /run/secrets/relay-service-principals.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-principal-rotation:/run/relay-secret-isolation:ro
+      - relay-new-api-database-release-proof:/run/relay-database-release-proof:ro
+    depends_on:
+      relay-new-api-principal-rotation-secret-isolation:
+        condition: service_completed_successfully
+    networks: !override
+      - relay-new-api-managed-state
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700
+    restart: "no"
+
+volumes:
+  relay-new-api-secret-isolation-principal-rotation:

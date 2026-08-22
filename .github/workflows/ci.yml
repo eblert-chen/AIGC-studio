@@ -1,0 +1,341 @@
+name: AI video root CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-video-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend tests and Sites build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Verify new-api is tracked by the root repository, not as an opaque gitlink
+        run: |
+          if git ls-files --stage backend/new-api-relay | grep -q '^160000 '; then
+            echo 'backend/new-api-relay must be imported into the root repository as normal files, not an unpinned embedded repository or gitlink'
+            exit 1
+          fi
+          test "$(git ls-files backend/new-api-relay/go.mod)" = "backend/new-api-relay/go.mod"
+      - name: Reject tracked Relay credential-render directories
+        run: node scripts/check-relay-secret-paths.mjs
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm run test:sites
+
+  platform:
+    name: Platform full suite and PostgreSQL migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: platform_ci
+          POSTGRES_PASSWORD: platform-ci-password
+          POSTGRES_DB: platform_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U platform_ci -d platform_ci"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Create isolated Python environment
+        run: python3 -m venv .venv-ci
+      - name: Install Platform dependencies
+        run: .venv-ci/bin/python -m pip install --disable-pip-version-check -r backend/platform/requirements.txt
+      - name: Upgrade and verify Platform PostgreSQL schema
+        working-directory: backend/platform
+        env:
+          DATABASE_URL: postgresql+psycopg://platform_ci:platform-ci-password@127.0.0.1:5432/platform_ci
+        run: |
+          ../../.venv-ci/bin/python -m alembic upgrade head
+          ../../.venv-ci/bin/python -m alembic check
+          ../../.venv-ci/bin/python -m alembic current
+      - name: Run full Platform suite including PostgreSQL concurrency
+        working-directory: backend/platform
+        env:
+          PLATFORM_TEST_DATABASE_URL: postgresql+psycopg://platform_ci:platform-ci-password@127.0.0.1:5432/platform_ci
+        run: ../../.venv-ci/bin/python -m pytest -q -p no:cacheprovider
+
+  offline-python-relay-oracle:
+    # This job preserves the frozen Python implementation as an isolated
+    # behavioral oracle. It is not an active or deployable production data plane.
+    name: Offline historical Python Relay oracle regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: relay_ci
+          POSTGRES_PASSWORD: relay-ci-password
+          POSTGRES_DB: relay_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relay_ci -d relay_ci"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Create isolated Python environment
+        run: python3 -m venv .venv-ci
+      - name: Install offline oracle dependencies
+        run: .venv-ci/bin/python -m pip install --disable-pip-version-check -e "backend/relay[test]"
+      - name: Upgrade and verify isolated oracle PostgreSQL schema
+        working-directory: backend/relay
+        env:
+          RELAY_DATABASE_URL: postgresql+asyncpg://relay_ci:relay-ci-password@127.0.0.1:5432/relay_ci
+        run: |
+          ../../.venv-ci/bin/python -m alembic upgrade head
+          ../../.venv-ci/bin/python -m alembic check
+          ../../.venv-ci/bin/python -m alembic current
+      - name: Run isolated oracle regression with PostgreSQL and Redis
+        working-directory: backend/relay
+        env:
+          RELAY_TEST_DATABASE_URL: postgresql+asyncpg://relay_ci:relay-ci-password@127.0.0.1:5432/relay_ci
+          RELAY_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+        run: ../../.venv-ci/bin/python -m pytest -q -p no:cacheprovider
+
+  new-api-web:
+    name: new-api web typecheck, tests, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend/new-api-relay/web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.14'
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run build
+
+  new-api-go-race:
+    name: new-api Go unit and race tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: backend/new-api-relay
+    env:
+      GOWORK: 'off'
+      CGO_ENABLED: '1'
+      GOEXPERIMENT: greenteagc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: backend/new-api-relay/go.mod
+          cache-dependency-path: |
+            backend/new-api-relay/go.sum
+            backend/new-api-relay/relaykit/go.sum
+      - name: Create frontend embed placeholder
+        run: mkdir -p web/dist && touch web/dist/index.html
+      - run: go vet ./...
+      - run: go test -race -shuffle=on -count=1 -timeout=30m ./...
+      - name: Test relaykit independently with race detector
+        working-directory: backend/new-api-relay/relaykit
+        run: go test -race -shuffle=on -count=1 -timeout=15m ./...
+
+  new-api-postgres-redis:
+    name: new-api PostgreSQL/Redis integration and race
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Run real PostgreSQL 16, Redis 7 AOF, and Go race harness
+        run: >-
+          docker compose
+          -f backend/new-api-relay/integration/docker-compose.yml
+          up --build --abort-on-container-exit --exit-code-from go-race
+      - name: Remove isolated integration resources
+        if: always()
+        run: docker compose -f backend/new-api-relay/integration/docker-compose.yml down -v --remove-orphans
+
+  cross-service-cost:
+    name: Built Relay to Platform channel-cost acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      COST_CANDIDATE_IMAGE: ai-video/new-api-relay:ci-cost-${{ github.run_id }}-${{ github.run_attempt }}
+      # Public test trust-set digest only. Production release builds must use the
+      # digest of their reviewed Ed25519 public-key set.
+      NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256: sha256:1111111111111111111111111111111111111111111111111111111111111111
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - name: Create isolated Platform environment
+        run: python3 -m venv .venv-cost-ci
+      - name: Install Platform dependencies
+        run: .venv-cost-ci/bin/python -m pip install --disable-pip-version-check -r backend/platform/requirements.txt
+      - name: Build provenance-bound Relay candidate
+        run: |
+          mapfile -t relay_build_args < <(node scripts/relay-candidate-image-args.mjs)
+          docker build "${relay_build_args[@]}" --tag "${COST_CANDIDATE_IMAGE}" backend/new-api-relay
+      - name: Run real cross-service channel-cost acceptance
+        env:
+          COST_ACCEPTANCE_RUN_LABEL: ${{ github.run_id }}-${{ github.run_attempt }}
+          COST_EVIDENCE_PATH: ${{ runner.temp }}/cross-service-cost-${{ github.run_id }}-${{ github.run_attempt }}.json
+        run: >-
+          node scripts/run-cross-service-cost-acceptance.mjs
+          --candidate-image ${COST_CANDIDATE_IMAGE}
+          --python ${GITHUB_WORKSPACE}/.venv-cost-ci/bin/python
+          --out ${COST_EVIDENCE_PATH}
+      - name: Reject leaked runner-owned acceptance resources
+        if: always()
+        env:
+          COST_ACCEPTANCE_RUN_LABEL: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          leaked=0
+          if docker ps -a --filter "label=ai.video.acceptance-ci-run=${COST_ACCEPTANCE_RUN_LABEL}" --format '{{.ID}}' | grep -q .; then
+            echo 'this CI run left an acceptance container behind'
+            leaked=1
+          fi
+          if docker volume ls --filter "label=ai.video.acceptance-ci-run=${COST_ACCEPTANCE_RUN_LABEL}" --format '{{.Name}}' | grep -q .; then
+            echo 'this CI run left an acceptance volume behind'
+            leaked=1
+          fi
+          if docker network ls --filter "label=ai.video.acceptance-ci-run=${COST_ACCEPTANCE_RUN_LABEL}" --format '{{.Name}}' | grep -q .; then
+            echo 'this CI run left an acceptance network behind'
+            leaked=1
+          fi
+          exit "$leaked"
+      - name: Retain secret-free acceptance evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cross-service-cost-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cross-service-cost-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove candidate image
+        if: always()
+        run: |
+          if docker image inspect "${COST_CANDIDATE_IMAGE}" >/dev/null 2>&1; then
+            docker image rm --force "${COST_CANDIDATE_IMAGE}"
+          fi
+
+  contracts:
+    name: Relay contracts, provenance, and Compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:relay-migration
+      - run: npm run test:relay-cost-contract
+      - run: npm run test:relay-deployment
+      - run: node --test tests/relay-cutover-release-contract.test.mjs
+      - run: npm run relay:candidate:check
+      - run: docker compose config --quiet
+      - name: Validate staging new-api-only topology
+        run: >-
+          docker compose
+          --env-file deploy/relay-secure.env.example
+          --env-file deploy/relay-staging.env.example
+          -f docker-compose.yml
+          -f deploy/compose.relay.secure.yml
+          -f deploy/compose.relay.staging.yml
+          config --quiet
+      - name: Validate production new-api-only topology
+        run: >-
+          docker compose
+          --env-file deploy/relay-secure.env.example
+          --env-file deploy/relay-production.env.example
+          -f docker-compose.yml
+          -f deploy/compose.relay.secure.yml
+          -f deploy/compose.relay.production.yml
+          config --quiet
+
+  required-gates:
+    name: Required CI gates
+    if: always()
+    needs:
+      - frontend
+      - platform
+      - offline-python-relay-oracle
+      - new-api-web
+      - new-api-go-race
+      - new-api-postgres-redis
+      - cross-service-cost
+      - contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every required gate succeeded
+        env:
+          REQUIRED_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node -e '
+            const results = JSON.parse(process.env.REQUIRED_RESULTS);
+            const failed = Object.entries(results)
+              .filter(([, value]) => value.result !== "success")
+              .map(([name, value]) => `${name}=${value.result}`);
+            if (failed.length) {
+              console.error(`required CI gates did not succeed: ${failed.join(", ")}`);
+              process.exit(1);
+            }
+          '

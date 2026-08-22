@@ -1,0 +1,83 @@
+node_modules/
+dist/
+/dist-verify/
+.tmp/
+.venv/
+.venv-ci/
+__pycache__/
+*.py[cod]
+*.db
+.pytest_cache/
+.agents/
+.codex/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Local audit, harness, and migration scratch directories. Acceptance evidence
+# under artifacts/ remains intentionally trackable. Patterns match at any depth
+# because test harnesses render scratch dirs under backend/platform and
+# backend/relay as well as the repository root.
+.codex-*/
+.review-*/
+.pytest-*/
+.route-audit/
+.test-*/
+.tmp-*/
+.unity-audit-*/
+.workbuddy/
+.docx-review/
+.model-v1-*/
+.brand-qa-*/
+.design-qa-*/
+.qa-browser-*/
+.web-audit-*/
+.product-design-audit/
+.visual-audit-*/
+.impeccable/
+.gate-*/
+test-temp-*/
+tmp/
+
+# Repository history archives must stay outside the product worktree.
+*.bundle
+~$*
+
+# Visual audit screenshots are evidence; the copied build output is reproducible
+# from source and would otherwise duplicate the complete frontend asset set.
+/audit/
+
+# Large generated course videos and transient test artifacts under artifacts/.
+/artifacts/learning/
+/artifacts/pytest-tmp-*/
+/artifacts/resume-edit/
+/artifacts/resume-review-current/
+/artifacts/cross-service-cost-acceptance/
+/artifacts/relay-fault-acceptance/
+/artifacts/relay-live-fault-acceptance/
+/artifacts/relay-real-channel-acceptance/
+/artifacts/relay-final-acceptance-*.json
+
+# Runtime acceptance evidence may contain environment-derived identifiers and
+# is reproducible from the committed acceptance harnesses.
+/backend/platform/tests/integration/evidence/
+
+# Runtime-uploaded assets and local object-store mirrors. Source-controlled
+# showcase fixtures belong under public/ or tests/fixtures instead.
+/data/
+/backend/platform/data/
+
+# Secret-manager-rendered one-shot deployment material. Never commit root
+# provisioning passwords; keep an optional policy README outside this folder.
+/deploy/secrets/
+# A local database-role rehearsal may render files here temporarily, but no
+# credential, DSN, pgservice or SCRAM verifier belongs in a source snapshot.
+/infra/postgres/local/

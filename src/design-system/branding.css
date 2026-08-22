@@ -1,0 +1,156 @@
+/**
+ * Approved XuTian brand assets.
+ *
+ * The supplied metallic mark was designed for a dark presentation board.
+ * Product chrome uses its approved graphite light-surface adaptation while
+ * preserving the violet-cyan centre signal.
+ */
+
+.brand-logo {
+  display: block;
+  flex: none;
+  max-width: 100%;
+  object-position: center;
+}
+
+.brand-logo--wordmark,
+.brand-logo__image {
+  width: 132px;
+  height: 42px;
+  object-fit: contain;
+  object-position: center;
+}
+
+.brand-logo--symbol {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.brand-logo--responsive {
+  display: inline-flex;
+  width: 132px;
+  height: 42px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.brand-logo--responsive .brand-logo__image {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: 0 1 100%;
+}
+
+/* Studio */
+.app-shell[data-theme] > .topbar .brand {
+  min-width: 132px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.app-shell[data-theme] > .topbar .brand .brand-logo {
+  pointer-events: none;
+}
+
+/* Authentication and fail-closed gates */
+.auth-gate-brand {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-gate-brand .brand-logo--wordmark {
+  width: min(230px, 72vw);
+  height: 74px;
+}
+
+/* Company and legacy platform */
+.control-shell .control-brand {
+  gap: 10px;
+}
+
+.control-shell .control-brand > .brand-logo--wordmark {
+  width: 112px;
+  height: 38px;
+}
+
+.control-shell .control-brand > strong {
+  padding-inline-start: 10px;
+  border-inline-start: 1px solid var(--management-line, var(--line));
+  color: var(--management-secondary, var(--text-soft));
+  font-size: 12px;
+  font-weight: var(--weight-medium, 500);
+  letter-spacing: 0;
+}
+
+.control-shell .control-mobile-home > .brand-logo--symbol,
+.control-shell .control-mobile-home.is-static > .brand-logo--symbol {
+  width: 28px;
+  height: 28px;
+}
+
+.control-shell .control-context > .brand-logo--symbol {
+  width: 30px;
+  height: 30px;
+  overflow: hidden;
+}
+
+/* Operations */
+.ops-console .ops-brand {
+  min-width: 124px;
+  padding-inline: 10px 12px;
+}
+
+.ops-console .ops-brand > .brand-logo--responsive {
+  width: 116px;
+  height: 38px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+@media (max-width: 820px) {
+  .ops-console .ops-brand {
+    width: 52px;
+    min-width: 52px;
+    padding: 0;
+  }
+
+  .ops-console .ops-brand > .brand-logo--responsive {
+    width: 36px;
+    height: 36px;
+  }
+
+}
+
+@media (max-width: 720px) {
+  .app-shell[data-theme] > .topbar .brand {
+    width: 38px;
+    min-width: 38px;
+    flex-basis: 38px;
+  }
+
+  .app-shell[data-theme] > .topbar .brand .brand-logo--responsive {
+    width: 38px;
+    height: 38px;
+  }
+
+  .control-shell .control-mobile-home,
+  .control-shell .control-mobile-home.is-static {
+    overflow: hidden;
+    color: inherit;
+    background: var(--management-surface, var(--surface));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-logo--symbol {
+    transition: none;
+  }
+}

@@ -1,0 +1,10 @@
+name: ai-video-new-api-staging
+
+services:
+  relay-new-api:
+    labels:
+      com.ai-video.relay.deployment-environment: staging
+  relay-download-edge:
+    labels:
+      com.ai-video.relay.deployment-environment: staging
+

@@ -1,0 +1,50 @@
+services:
+  relay-new-api:
+    environment:
+      RELAY_ARTIFACT_STORE: huawei_obs
+      HUAWEI_OBS_ENDPOINT: ${NEW_API_RELAY_HUAWEI_OBS_ENDPOINT:?set Relay OBS endpoint}
+      HUAWEI_OBS_BUCKET: ${NEW_API_RELAY_HUAWEI_OBS_BUCKET:?set Relay OBS bucket}
+      HUAWEI_OBS_ACCESS_KEY_ID: ${NEW_API_RELAY_HUAWEI_OBS_ACCESS_KEY_ID:?set Relay OBS access key}
+      HUAWEI_OBS_SECRET_ACCESS_KEY: ${NEW_API_RELAY_HUAWEI_OBS_SECRET_ACCESS_KEY:?set Relay OBS secret key}
+      RELAY_COMPAT_WORKER_ENABLED: "true"
+
+  relay-download-edge:
+    environment:
+      RELAY_DOWNLOAD_EDGE_ALLOWED_OBS_HOSTS: ${NEW_API_RELAY_DOWNLOAD_EDGE_ALLOWED_OBS_HOSTS:?set exact Relay OBS signed URL host}
+
+  platform-input-asset-init:
+    build:
+      args:
+        INSTALL_OBS: "true"
+
+  platform-api: &platform-pilot
+    build:
+      args:
+        INSTALL_OBS: "true"
+    environment:
+      ENVIRONMENT: development
+      DEVELOPMENT_HEADER_AUTH_ENABLED: "true"
+      ENABLE_BOOTSTRAP: "true"
+      INPUT_ASSET_STORE: huawei_obs
+      HUAWEI_OBS_ENDPOINT: ${PLATFORM_HUAWEI_OBS_ENDPOINT:?set Platform OBS endpoint}
+      HUAWEI_OBS_BUCKET: ${PLATFORM_HUAWEI_OBS_BUCKET:?set Platform OBS bucket}
+      HUAWEI_OBS_ACCESS_KEY_ID: ${PLATFORM_HUAWEI_OBS_ACCESS_KEY_ID:?set Platform OBS access key}
+      HUAWEI_OBS_SECRET_ACCESS_KEY: ${PLATFORM_HUAWEI_OBS_SECRET_ACCESS_KEY:?set Platform OBS secret key}
+      PUBLISHING_WORKER_ENABLED: "false"
+      RELAY_OPERATIONS_BASE_URL: http://relay-new-api:3000
+      DOWNLOAD_GATEWAY_REGISTRATION_URL: http://relay-download-edge:8080/internal/v1/download-tickets
+      DOWNLOAD_GATEWAY_PUBLIC_BASE_URL: http://127.0.0.1:${NEW_API_RELAY_DOWNLOAD_EDGE_HOST_PORT:-8400}
+      DOWNLOAD_GATEWAY_REGISTRATION_WORKER_ENABLED: "true"
+      RELAY_ALLOW_LEGACY_ARTIFACT_DOWNLOAD_RESPONSE: "false"
+
+  platform-dispatcher:
+    <<: *platform-pilot
+
+  platform-relay-sync:
+    <<: *platform-pilot
+
+  platform-timeout-worker:
+    <<: *platform-pilot
+
+  platform-publishing-worker:
+    profiles: ["publishing-disabled-until-real-adapter"]

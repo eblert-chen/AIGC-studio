@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "algorithm": "Ed25519",
+  "key_id": "finance-provider-cost-key-2026-08",
+  "payload_sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "signature_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+}

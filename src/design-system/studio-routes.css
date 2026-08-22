@@ -1,0 +1,3488 @@
+/**
+ * Studio route presentation
+ *
+ * One light production-workspace language for every non-home Studio route.
+ * The existing route DOM, permissions, actions, data states, and composer
+ * geometry remain unchanged. The shared composer and home sheets follow this
+ * file in system.routes so their route-specific geometry stays authoritative.
+ */
+
+:is(.app-shell.is-secondary-page, .app-shell.is-creation-hub) {
+  --studio-route-surface-radius: var(--radius-lg, 12px);
+  --studio-route-media-radius: 10px;
+  --studio-route-control-radius: var(--radius-control, 6px);
+  --studio-route-overlay-radius: 14px;
+  --studio-route-divider: var(--line, #e3e7e4);
+  --studio-route-divider-strong: var(--line-strong, #d5dbd7);
+  --studio-route-muted-surface: var(--surface-soft, #f7f9f8);
+  --studio-route-hover-surface: color-mix(
+    in srgb,
+    var(--accent-soft, #eaf4ee) 46%,
+    transparent
+  );
+}
+
+/* Route anatomy is declared here so legacy page sheets can be removed. */
+:is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+  :is(.creation-hub, .secondary-view) {
+  box-sizing: border-box;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+
+:is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+  :is(.creation-hub-titlebar, .secondary-heading, .publication-heading) {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-6);
+}
+
+.app-shell.is-creation-hub .creation-title-tools,
+.app-shell.is-creation-hub .creation-title-meta,
+.app-shell.is-creation-hub .creation-search {
+  display: flex;
+  align-items: center;
+}
+
+.app-shell.is-creation-hub .creation-title-tools {
+  gap: var(--space-3);
+}
+
+.app-shell.is-creation-hub .creation-title-meta {
+  gap: 6px;
+  padding-inline-end: var(--space-3);
+  border-inline-end: 1px solid var(--line);
+}
+
+.app-shell.is-creation-hub .creation-title-meta strong {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-heading-sm);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.app-shell.is-creation-hub .creation-title-meta span {
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+}
+
+.app-shell.is-creation-hub .creation-search input,
+.app-shell.is-creation-hub .creation-search button {
+  border: 1px solid var(--line-strong);
+  font: inherit;
+}
+
+.app-shell.is-creation-hub .creation-search input::placeholder {
+  color: var(--text-muted);
+}
+
+.app-shell.is-creation-hub .creation-hub-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.app-shell.is-creation-hub .creation-media-tabs {
+  display: flex;
+  min-width: 0;
+  align-items: stretch;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+}
+
+.app-shell.is-creation-hub .creation-media-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.app-shell.is-creation-hub .creation-media-tabs button {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.app-shell.is-creation-hub .creation-media-tabs button::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  background: transparent;
+}
+
+.app-shell.is-creation-hub .creation-capability-note {
+  display: inline-flex;
+  max-width: 360px;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+}
+
+.app-shell.is-creation-hub .creation-toolbar-left,
+.app-shell.is-creation-hub .creation-toolbar-right {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.app-shell.is-creation-hub .creation-toolbar button,
+.app-shell.is-creation-hub .creation-select {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  padding-inline: var(--space-3);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font: inherit;
+  white-space: nowrap;
+}
+
+.app-shell.is-creation-hub .creation-toolbar button {
+  cursor: pointer;
+}
+
+.app-shell.is-creation-hub .creation-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: .46;
+}
+
+.app-shell.is-creation-hub .creation-select {
+  position: relative;
+  padding: 0;
+}
+
+.app-shell.is-creation-hub .creation-select select {
+  width: 100%;
+  height: 100%;
+  appearance: none;
+  padding: 0 34px 0 var(--space-3);
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-size: var(--text-body-sm);
+  cursor: pointer;
+}
+
+.app-shell.is-creation-hub .creation-select > svg {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.app-shell.is-creation-hub .creation-layout-switch {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+}
+
+.app-shell.is-creation-hub .creation-task-grid {
+  display: grid;
+}
+
+.app-shell.is-creation-hub .creation-task-grid.is-list {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-shell.is-creation-hub .creation-task-preview {
+  position: relative;
+  display: grid;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.app-shell.is-creation-hub .creation-task-preview > :is(img, video) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.app-shell.is-creation-hub .creation-task-status,
+.app-shell.is-creation-hub .creation-task-play {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-shell.is-creation-hub .creation-task-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.app-shell.is-creation-hub .creation-task-copy small {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 7px;
+}
+
+.app-shell.is-creation-hub .creation-task-copy code {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: inherit;
+}
+
+.app-shell.is-creation-hub .creation-task-copy em {
+  color: var(--warning);
+  font-style: normal;
+}
+
+.app-shell.is-creation-hub .creation-task-open,
+.app-shell.is-creation-hub .creation-task-preview-load,
+.app-shell.is-creation-hub .creation-pagination button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.app-shell.is-creation-hub .creation-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+}
+
+.app-shell.is-creation-hub .creation-record-skeleton {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-4);
+  padding-block: var(--space-6);
+}
+
+.app-shell.is-creation-hub .creation-record-skeleton > div {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.app-shell.is-creation-hub .creation-record-skeleton > div > span {
+  height: 13px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-soft);
+  animation: studio-record-skeleton 1.2s ease-in-out infinite alternate;
+}
+
+.app-shell.is-creation-hub .creation-record-skeleton > div > span:first-child {
+  height: 156px;
+  border-radius: var(--studio-route-media-radius);
+}
+
+.app-shell.is-creation-hub .creation-record-skeleton > div > span:last-child {
+  width: 58%;
+}
+
+@keyframes studio-record-skeleton {
+  to { opacity: .46; }
+}
+
+.app-shell[data-theme] > .topbar .personal-balance {
+  display: inline-flex;
+  min-height: var(--control-md, 40px);
+  flex: 0 0 auto;
+  align-items: center;
+  padding-inline: var(--space-3, 12px);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: var(--radius-control, 6px);
+  color: var(--accent-strong, var(--accent));
+  background: var(--accent-soft);
+  font-size: var(--text-body-sm, 13px);
+  font-weight: var(--weight-semibold, 600);
+  white-space: nowrap;
+}
+
+.app-shell[data-theme] > .topbar .surface-label-short {
+  display: none;
+}
+
+.app-shell[data-theme] > .topbar .personal-balance.is-error {
+  border-color: color-mix(in srgb, var(--danger) 36%, var(--line));
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.app-shell[data-theme] .task-action.is-readonly {
+  display: inline-flex;
+  min-height: var(--control-md, 40px);
+  align-items: center;
+  justify-content: center;
+  padding-inline: var(--space-4, 16px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control, 6px);
+  color: var(--quiet);
+  background: var(--surface-soft);
+  font-size: var(--text-body-sm, 13px);
+  white-space: nowrap;
+}
+
+:is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+  :is(.creation-hub, .secondary-view) {
+  color: var(--ink);
+  background: var(--bg);
+  scrollbar-color: var(--studio-route-divider-strong) transparent;
+}
+
+:is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+  :is(.creation-hub-titlebar, .secondary-heading, .publication-heading) {
+  align-items: flex-end;
+  padding-block-end: var(--space-6, 24px);
+  border-block-end: 1px solid var(--studio-route-divider);
+}
+
+:is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+  :is(.creation-hub-heading, .secondary-heading > div:first-child, .publication-heading > div:first-child) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  min-width: 0;
+}
+
+:is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+  :is(.creation-hub-heading, .secondary-heading, .publication-heading)
+  .view-kicker {
+  order: 3;
+  flex: 0 0 100%;
+  margin-block-start: var(--space-2, 8px);
+  color: var(--quiet);
+  font-size: var(--text-caption, 12px);
+  font-weight: var(--weight-medium, 500);
+  letter-spacing: 0;
+}
+
+:is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+  :is(.creation-hub-heading, .secondary-heading, .publication-heading)
+  h1 {
+  order: 1;
+  flex: 0 0 100%;
+  color: var(--ink);
+  font-size: clamp(1.625rem, 1.45rem + 0.35vw, 1.875rem);
+  font-weight: var(--weight-semibold, 600);
+  line-height: var(--leading-heading, 1.25);
+  letter-spacing: -0.025em;
+}
+
+:is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+  :is(.creation-hub-heading, .secondary-heading, .publication-heading)
+  p:not(.permission-note) {
+  order: 2;
+  flex: 0 0 100%;
+  max-width: 68ch;
+  margin-block-start: var(--space-2, 8px);
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+  line-height: var(--leading-body, 1.6);
+}
+
+:is(.app-shell.is-secondary-page, .app-shell.is-creation-hub) .permission-note {
+  max-width: 72ch;
+  margin-block-start: var(--space-3, 12px);
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border: 0;
+  border-inline-start: 2px solid var(--warning);
+  border-radius: 0;
+  color: var(--warning);
+  background: var(--warning-soft);
+  font-size: var(--text-body-sm, 13px);
+  line-height: var(--leading-body, 1.6);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Creation records                                                           */
+/* -------------------------------------------------------------------------- */
+
+.app-shell.is-creation-hub .creation-hub {
+  --creation-border: var(--studio-route-divider-strong);
+  --creation-surface: var(--surface-elevated);
+  overflow-x: hidden;
+}
+
+.app-shell.is-creation-hub .creation-search {
+  gap: var(--space-2, 8px);
+}
+
+.app-shell.is-creation-hub .creation-search :is(input, button) {
+  height: var(--control-md, 40px);
+  border-color: var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--secondary-ink);
+  background: var(--surface-elevated);
+  box-shadow: none;
+}
+
+.app-shell.is-creation-hub .creation-search input {
+  width: min(280px, 32vw);
+  padding-inline: var(--space-3, 12px);
+}
+
+.app-shell.is-creation-hub .creation-search button {
+  width: var(--control-md, 40px);
+}
+
+.app-shell.is-creation-hub .creation-search button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.app-shell.is-creation-hub .creation-hub-header {
+  min-height: 49px;
+  border-block-end-color: var(--studio-route-divider);
+}
+
+.app-shell.is-creation-hub .creation-media-tabs {
+  gap: clamp(20px, 2.6vw, 34px);
+}
+
+.app-shell.is-creation-hub .creation-media-tabs button {
+  min-height: 48px;
+  gap: 7px;
+  color: var(--quiet);
+  font-size: var(--text-body, 14px);
+  font-weight: var(--weight-medium, 500);
+}
+
+.app-shell.is-creation-hub .creation-media-tabs button::after {
+  height: 2px;
+  border-radius: 0;
+}
+
+.app-shell.is-creation-hub
+  .creation-media-tabs
+  button:is(:hover, .is-active) {
+  color: var(--ink);
+}
+
+.app-shell.is-creation-hub .creation-media-tabs button.is-active::after {
+  background: var(--accent);
+}
+
+.app-shell.is-creation-hub .creation-media-tabs button:disabled {
+  color: var(--quiet);
+  opacity: 0.48;
+}
+
+.app-shell.is-creation-hub .creation-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-4, 16px);
+  padding-block: var(--space-3, 12px);
+  border-block-end: 1px solid var(--studio-route-divider);
+}
+
+.app-shell.is-creation-hub
+  :is(.creation-toolbar-left, .creation-toolbar-right) {
+  gap: var(--space-2, 8px);
+}
+
+.app-shell.is-creation-hub .creation-toolbar-right {
+  justify-content: flex-end;
+  margin-inline-start: 0;
+}
+
+.app-shell.is-creation-hub
+  :is(.creation-toolbar button, .creation-select, .creation-layout-switch) {
+  height: var(--control-md, 40px);
+  border-radius: var(--studio-route-control-radius);
+}
+
+.app-shell.is-creation-hub .creation-toolbar button {
+  color: var(--secondary-ink);
+  font-size: var(--text-body-sm, 13px);
+  font-weight: var(--weight-medium, 500);
+}
+
+.app-shell.is-creation-hub
+  .creation-toolbar
+  button:not(.creation-select-toggle):not(.is-active):not(:hover) {
+  background: transparent;
+}
+
+.app-shell.is-creation-hub
+  .creation-toolbar
+  button:is(:hover, .is-active):not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.app-shell.is-creation-hub :is(.creation-select, .creation-layout-switch) {
+  border-color: var(--studio-route-divider-strong);
+  background: var(--surface-elevated);
+}
+
+.app-shell.is-creation-hub .creation-select {
+  min-width: 132px;
+}
+
+.app-shell.is-creation-hub .creation-filter-button {
+  min-width: 104px;
+}
+
+.app-shell.is-creation-hub .creation-group-select {
+  min-width: 156px;
+}
+
+.app-shell.is-creation-hub .creation-layout-switch {
+  padding: 3px;
+}
+
+.app-shell.is-creation-hub .creation-layout-switch button {
+  width: 34px;
+  height: 32px;
+  border-radius: 4px;
+}
+
+.app-shell.is-creation-hub .creation-layout-switch button.is-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.app-shell.is-creation-hub .creation-hub-body {
+  min-height: 220px;
+}
+
+.app-shell.is-creation-hub .creation-hub-state {
+  width: 100%;
+  min-height: 176px;
+  place-items: start;
+  align-content: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-8, 32px) 0;
+  margin: 0;
+  border: 0;
+  border-block-end: 1px solid var(--studio-route-divider);
+  border-radius: 0;
+  color: var(--quiet);
+  background: transparent;
+  text-align: start;
+}
+
+.app-shell.is-creation-hub .creation-hub-state strong {
+  color: var(--ink);
+  font-size: var(--text-heading-sm, 18px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-creation-hub .creation-hub-state :is(p, span) {
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-creation-hub .creation-hub-state button {
+  min-height: var(--control-md, 40px);
+  margin-block-start: var(--space-2, 8px);
+  border-color: var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--secondary-ink);
+  background: var(--surface-elevated);
+}
+
+.app-shell.is-creation-hub .creation-task-grid {
+  padding-block: var(--space-6, 24px) var(--space-5, 20px);
+}
+
+.app-shell.is-creation-hub
+  .creation-task-grid:is(.is-grid, .is-compact) {
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(min(240px, 100%), 1fr)
+  );
+  gap: var(--space-8, 32px) var(--space-4, 16px);
+}
+
+.app-shell.is-creation-hub .creation-task-grid.is-compact {
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(min(196px, 100%), 1fr)
+  );
+  gap: var(--space-6, 24px) var(--space-3, 12px);
+}
+
+.app-shell.is-creation-hub .creation-task-card {
+  position: relative;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell.is-creation-hub .creation-hub .creation-task-preview {
+  overflow: hidden;
+  border: 1px solid var(--studio-route-divider);
+  border-radius: var(--studio-route-media-radius);
+  background: var(--stage-surface, var(--studio-route-muted-surface));
+  box-shadow: none;
+}
+
+.app-shell.is-creation-hub
+  .creation-task-card:hover
+  .creation-task-preview {
+  border-color: var(--accent);
+}
+
+.app-shell.is-creation-hub
+  .creation-task-preview
+  :is(img, video) {
+  opacity: 1;
+  transition: transform 160ms ease;
+}
+
+.app-shell.is-creation-hub
+  .creation-task-preview:hover
+  :is(img, video) {
+  opacity: 1;
+  transform: scale(1.012);
+}
+
+.app-shell.is-creation-hub .creation-task-status {
+  inset: 9px auto auto 9px;
+  min-height: 24px;
+  padding: 3px 7px;
+  border-radius: var(--studio-route-control-radius);
+  font-size: var(--text-caption, 12px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-creation-hub
+  .creation-task-status:is(.is-failed, .is-cancelled, .is-timed_out, .is-danger) {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.app-shell.is-creation-hub
+  .creation-task-status:is(.is-reconciliation_required, .is-warning) {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.app-shell.is-creation-hub .creation-task-play {
+  right: 9px;
+  bottom: 9px;
+  width: 32px;
+  height: 32px;
+  border: 1px solid color-mix(in srgb, var(--surface-elevated) 62%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 76%, transparent);
+}
+
+.app-shell.is-creation-hub .creation-task-copy {
+  gap: 4px;
+  padding-block-start: var(--space-3, 12px);
+}
+
+.app-shell.is-creation-hub .creation-task-copy strong {
+  color: var(--ink);
+  font-size: var(--text-body, 14px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-creation-hub .creation-task-copy > span,
+.app-shell.is-creation-hub .creation-task-copy small,
+.app-shell.is-creation-hub .creation-task-copy em {
+  color: var(--quiet);
+  font-size: var(--text-caption, 12px);
+}
+
+.app-shell.is-creation-hub .creation-task-open {
+  min-height: var(--control-sm, 32px);
+  padding-inline: 0;
+  margin-block-start: var(--space-1, 4px);
+  border: 0;
+  border-radius: 0;
+  color: var(--accent);
+  background: transparent;
+  font-size: var(--text-body-sm, 13px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-creation-hub .creation-task-open:hover:not(:disabled) {
+  color: var(--accent-strong);
+  background: transparent;
+}
+
+.app-shell.is-creation-hub .creation-task-preview-load {
+  display: inline-flex;
+  min-height: var(--control-sm, 32px);
+  align-items: center;
+  justify-content: center;
+  margin-block-start: var(--space-2, 8px);
+  border-radius: var(--studio-route-control-radius);
+  background: var(--surface-elevated);
+}
+
+.app-shell.is-creation-hub .creation-task-preview-load.is-unavailable {
+  padding-inline: var(--space-3, 12px);
+  border: 1px solid var(--studio-route-divider);
+  color: var(--quiet);
+  font-size: var(--text-caption, 12px);
+}
+
+.app-shell.is-creation-hub .creation-task-card.is-list {
+  grid-template-columns: 156px minmax(0, 1fr) auto;
+  gap: var(--space-4, 16px);
+  min-height: 112px;
+  padding-block: var(--space-3, 12px);
+  border-block-end: 1px solid var(--studio-route-divider);
+}
+
+.app-shell.is-creation-hub
+  .creation-task-card.is-list
+  .creation-task-copy {
+  padding: 0;
+}
+
+.app-shell.is-creation-hub
+  .creation-task-card.is-list
+  .creation-task-open {
+  margin: 0;
+  padding-inline: var(--space-3, 12px);
+  border: 1px solid var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--secondary-ink);
+}
+
+.app-shell.is-creation-hub .creation-pagination {
+  min-height: 56px;
+  border-block-start-color: var(--studio-route-divider);
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-creation-hub .creation-pagination button {
+  min-height: var(--control-md, 40px);
+  border-radius: var(--studio-route-control-radius);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Shared secondary-route controls and empty states                            */
+/* -------------------------------------------------------------------------- */
+
+.app-shell.is-secondary-page .search-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  width: min(300px, 42%);
+  height: var(--control-md, 40px);
+  padding-inline: var(--space-3, 12px);
+  border-color: var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--quiet);
+  background: var(--surface-elevated);
+}
+
+.app-shell.is-secondary-page .search-field:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  outline-offset: 1px;
+}
+
+.app-shell.is-secondary-page .search-field input {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--ink);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .history-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2, 8px);
+}
+
+.app-shell.is-secondary-page .history-toolbar label {
+  display: grid;
+  gap: var(--space-1, 4px);
+  color: var(--quiet);
+  font-size: var(--text-caption, 12px);
+}
+
+.app-shell.is-secondary-page .history-toolbar select {
+  padding-inline: var(--space-3, 12px);
+  border: 1px solid var(--studio-route-divider-strong);
+  font: inherit;
+  min-width: 120px;
+  height: var(--control-md, 40px);
+  border-color: var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--secondary-ink);
+  background: var(--surface-elevated);
+}
+
+.app-shell.is-secondary-page .scope-control {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--studio-route-divider-strong);
+  height: var(--control-md, 40px);
+  padding: 3px;
+  border-color: var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  background: var(--surface-elevated);
+}
+
+.app-shell.is-secondary-page .scope-control button {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  min-height: 32px;
+  padding-inline: var(--space-3, 12px);
+  border-radius: 4px;
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+  font-weight: var(--weight-medium, 500);
+}
+
+.app-shell.is-secondary-page .scope-control button.is-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.app-shell.is-secondary-page
+  :is(
+    .media-view > .artifact-empty,
+    .history-list > .artifact-empty,
+    .artworks-view > .artifact-empty
+  ) {
+  display: grid;
+  min-height: 164px;
+  place-items: start;
+  align-content: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-8, 32px) 0;
+  border: 0;
+  border-block-end: 1px solid var(--studio-route-divider);
+  border-radius: 0;
+  color: var(--quiet);
+  background: transparent;
+  text-align: start;
+}
+
+.app-shell.is-secondary-page
+  :is(
+    .media-view > .artifact-empty,
+    .history-list > .artifact-empty,
+    .artworks-view > .artifact-empty
+  )
+  strong {
+  color: var(--ink);
+  font-size: var(--text-body, 14px);
+}
+
+.app-shell.is-secondary-page
+  :is(
+    .media-view > .artifact-empty,
+    .history-list > .artifact-empty,
+    .artworks-view > .artifact-empty
+  )
+  span {
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .page-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3, 12px);
+  min-height: 56px;
+  padding-block: var(--space-3, 12px);
+  border-block-start: 1px solid var(--studio-route-divider);
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .page-controls button {
+  padding-inline: var(--space-3, 12px);
+  border: 1px solid var(--studio-route-divider-strong);
+  font: inherit;
+  cursor: pointer;
+  min-height: var(--control-md, 40px);
+  border-color: var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--secondary-ink);
+  background: var(--surface-elevated);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Material library                                                           */
+/* -------------------------------------------------------------------------- */
+
+.app-shell.is-secondary-page .media-view .asset-grid {
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(min(238px, 100%), 1fr)
+  );
+  align-items: start;
+  gap: var(--space-8, 32px) var(--space-4, 16px);
+  margin-block-start: var(--space-6, 24px);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  :is(.asset-item, .asset-upload) {
+  display: grid;
+  padding: 0;
+  min-width: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink);
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-item:not(.asset-item-live) {
+  display: grid;
+  align-content: start;
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-item-live {
+  display: grid;
+  grid-template-rows: auto auto auto;
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  :is(.asset-item img, .asset-live-preview) {
+  width: 100%;
+  min-height: 0;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border: 1px solid var(--studio-route-divider);
+  border-radius: var(--studio-route-media-radius);
+  color: var(--accent);
+  background: var(--studio-route-muted-surface);
+  box-shadow: none;
+  object-fit: cover;
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-live-preview {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--space-2, 8px);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-live-preview span {
+  color: var(--quiet);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption, 12px);
+  font-weight: var(--weight-semibold, 600);
+  letter-spacing: 0.08em;
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-item:hover
+  :is(img, .asset-live-preview) {
+  border-color: var(--accent);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-item > span {
+  display: grid;
+  gap: 3px;
+  padding: var(--space-3, 12px) 0 var(--space-2, 8px);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-item strong {
+  color: var(--ink);
+  font-size: var(--text-body, 14px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  :is(.asset-item small, .asset-upload span) {
+  color: var(--quiet);
+  font-size: var(--text-caption, 12px);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-actions {
+  display: flex;
+  gap: 4px;
+  padding-block-start: var(--space-1, 4px);
+  border: 0;
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-actions button {
+  min-width: 0;
+  min-height: var(--control-sm, 32px);
+  flex: 1 1 0;
+  padding-inline: var(--space-2, 8px);
+  border: 1px solid var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--secondary-ink);
+  background: var(--surface-elevated);
+  font-size: var(--text-caption, 12px);
+  font-weight: var(--weight-medium, 500);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-actions button:last-child {
+  border-inline-end: 1px solid var(--studio-route-divider-strong);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-actions button.is-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-upload {
+  place-items: center;
+  align-content: center;
+  min-height: 0;
+  aspect-ratio: 16 / 10;
+  gap: var(--space-2, 8px);
+  border: 1px dashed var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-media-radius);
+  color: var(--accent);
+  background: var(--studio-route-muted-surface);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-upload:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.app-shell.is-secondary-page
+  .media-view
+  .asset-upload strong {
+  color: var(--secondary-ink);
+  font-size: var(--text-body-sm, 13px);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Task history                                                               */
+/* -------------------------------------------------------------------------- */
+
+.app-shell.is-secondary-page .history-list {
+  margin-block-start: var(--space-6, 24px);
+  border-block-start: 1px solid var(--studio-route-divider-strong);
+}
+
+.app-shell.is-secondary-page .task-history-row {
+  padding-block: var(--space-4, 16px);
+  border-block-end: 1px solid var(--studio-route-divider);
+  background: transparent;
+}
+
+.app-shell.is-secondary-page .task-history-row > header {
+  display: grid;
+  align-items: center;
+}
+
+.app-shell.is-secondary-page .task-history-row > header {
+  grid-template-columns: 36px minmax(180px, 1fr) auto 96px;
+  gap: var(--space-3, 12px);
+}
+
+.app-shell.is-secondary-page .task-row-state {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-color: var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--accent);
+  background: transparent;
+}
+
+.app-shell.is-secondary-page
+  .task-row-state:is(.is-failed, .is-cancelled, .is-timed-out) {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--studio-route-divider));
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.app-shell.is-secondary-page
+  .task-row-state:is(.is-reconciliation-required, .is-unknown) {
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--studio-route-divider));
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.app-shell.is-secondary-page .task-row-title {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.app-shell.is-secondary-page .task-row-title strong {
+  color: var(--ink);
+  font-size: var(--text-body, 14px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-secondary-page .task-row-title small {
+  color: var(--quiet);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption, 12px);
+}
+
+.app-shell.is-secondary-page :is(.status-success, .status-error) {
+  justify-content: flex-start;
+  color: var(--accent);
+  font-size: var(--text-body-sm, 13px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-secondary-page .status-error {
+  color: var(--danger);
+}
+
+.app-shell.is-secondary-page .status-warning {
+  justify-content: flex-start;
+  color: var(--warning);
+  font-size: var(--text-body-sm, 13px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-secondary-page .history-cost {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-body-sm, 13px);
+  font-weight: var(--weight-semibold, 600);
+  text-align: end;
+}
+
+.app-shell.is-secondary-page .task-audit-grid {
+  display: grid;
+  grid-template-columns:
+    minmax(90px, 0.75fr)
+    minmax(90px, 0.75fr)
+    minmax(120px, 1fr)
+    minmax(230px, 2fr);
+  gap: var(--space-3, 12px);
+  margin: var(--space-3, 12px) 0 0 48px;
+}
+
+.app-shell.is-secondary-page .task-audit-grid > div {
+  min-width: 0;
+}
+
+.app-shell.is-secondary-page .task-audit-grid :is(dt, dd) {
+  margin: 0;
+}
+
+.app-shell.is-secondary-page :is(.task-audit-grid, .artwork-copy) dt {
+  color: var(--quiet);
+  font-size: var(--text-caption, 12px);
+}
+
+.app-shell.is-secondary-page :is(.task-audit-grid, .artwork-copy) dd {
+  color: var(--secondary-ink);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .task-history-row footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  min-height: var(--control-sm, 32px);
+  margin: var(--space-2, 8px) 0 0 48px;
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .task-history-row footer .text-button {
+  padding: 0;
+  margin-inline-start: auto;
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  font: inherit;
+  font-weight: var(--weight-semibold, 600);
+  cursor: pointer;
+}
+
+.app-shell.is-secondary-page .download-state {
+  min-height: 24px;
+  padding-inline: 7px;
+  border-color: var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--quiet);
+  background: transparent;
+  font-size: var(--text-caption, 12px);
+}
+
+.app-shell.is-secondary-page .download-state.is-complete {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--studio-route-divider));
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.app-shell.is-secondary-page .download-state.is-issued {
+  border-color: color-mix(in srgb, var(--warning) 38%, var(--studio-route-divider));
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.app-shell.is-secondary-page .history-skeleton > span {
+  min-height: 82px;
+  border-block-end-color: var(--studio-route-divider);
+}
+
+.app-shell.is-secondary-page .history-skeleton i {
+  background: var(--studio-route-muted-surface);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Archived works                                                             */
+/* -------------------------------------------------------------------------- */
+
+.app-shell.is-secondary-page .artwork-grid {
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(min(330px, 100%), 1fr)
+  );
+  align-items: start;
+  gap: var(--space-10, 40px) var(--space-5, 20px);
+  margin-block-start: var(--space-6, 24px);
+  background: transparent;
+}
+
+.app-shell.is-secondary-page .artwork-item {
+  display: grid;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.app-shell.is-secondary-page .artwork-media {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border: 1px solid var(--studio-route-divider);
+  border-radius: var(--studio-route-media-radius);
+  background: var(--studio-route-muted-surface);
+}
+
+.app-shell.is-secondary-page .artwork-media :is(img, video) {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.app-shell.is-secondary-page .artwork-media img {
+  object-fit: cover;
+  background: var(--studio-route-muted-surface);
+}
+
+.app-shell.is-secondary-page .artwork-media video {
+  object-fit: contain;
+  background: var(--studio-route-muted-surface);
+}
+
+.app-shell.is-secondary-page .artwork-media > button {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  gap: var(--space-2, 8px);
+  border: 0;
+  color: var(--accent);
+  background: var(--studio-route-muted-surface);
+  font: inherit;
+  cursor: pointer;
+}
+
+.app-shell.is-secondary-page .artwork-media > button:hover:not(:disabled) {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.app-shell.is-secondary-page .artwork-media > button strong {
+  color: var(--secondary-ink);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .artwork-access-unavailable {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  color: var(--quiet);
+  text-align: center;
+}
+
+.app-shell.is-secondary-page .artwork-access-unavailable strong {
+  color: var(--secondary-ink);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .artwork-access-unavailable span {
+  font-size: var(--text-caption, 12px);
+}
+
+.app-shell.is-secondary-page .artwork-copy {
+  display: grid;
+  padding: var(--space-3, 12px) 0 0;
+}
+
+.app-shell.is-secondary-page .artwork-copy > header,
+.app-shell.is-secondary-page .artwork-copy footer {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3, 12px);
+}
+
+.app-shell.is-secondary-page .artwork-copy dl {
+  display: grid;
+  margin: 0;
+}
+
+.app-shell.is-secondary-page .artwork-copy dl > div {
+  min-width: 0;
+}
+
+.app-shell.is-secondary-page .artwork-copy :is(dt, dd) {
+  margin: 0;
+}
+
+.app-shell.is-secondary-page .artwork-copy > header {
+  align-items: flex-start;
+}
+
+.app-shell.is-secondary-page .artwork-copy header strong {
+  color: var(--ink);
+  font-size: var(--text-body, 14px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-secondary-page
+  :is(.artwork-copy header small, .artwork-copy > p) {
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .artwork-copy > p {
+  min-height: 42px;
+  margin-block: var(--space-3, 12px);
+  line-height: var(--leading-body, 1.6);
+}
+
+.app-shell.is-secondary-page .artwork-copy dl {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2, 8px) var(--space-4, 16px);
+  margin-block-end: var(--space-2, 8px);
+}
+
+.app-shell.is-secondary-page .download-detail {
+  min-height: 24px;
+  color: var(--quiet);
+  font-size: var(--text-caption, 12px);
+}
+
+.app-shell.is-secondary-page .artwork-copy footer {
+  gap: var(--space-2, 8px);
+  padding-block-start: var(--space-3, 12px);
+  border-block-start-color: var(--studio-route-divider);
+}
+
+.app-shell.is-secondary-page .artwork-copy footer .text-button {
+  min-height: var(--control-sm, 32px);
+  padding-inline: 0;
+  color: var(--secondary-ink);
+}
+
+.app-shell.is-secondary-page .artwork-copy .download-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--control-sm, 32px);
+  padding-inline: var(--space-3, 12px);
+  border: 1px solid var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--secondary-ink);
+  background: var(--surface-elevated);
+  font: inherit;
+  cursor: pointer;
+}
+
+.app-shell.is-secondary-page .artwork-followup-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px var(--space-2, 8px);
+  padding-block-start: var(--space-2, 8px);
+  border: 0;
+}
+
+.app-shell.is-secondary-page .artwork-followup-actions button {
+  min-height: var(--control-sm, 32px);
+  padding-inline: var(--space-2, 8px);
+  border: 0;
+  border-radius: var(--studio-route-control-radius);
+  color: var(--secondary-ink);
+  background: transparent;
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page
+  .artwork-followup-actions
+  button:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Account settings                                                           */
+/* -------------------------------------------------------------------------- */
+
+.app-shell.is-secondary-page .settings-view {
+  max-width: var(--shell-content-standard, 1440px);
+}
+
+.app-shell.is-secondary-page .settings-list {
+  width: min(900px, 100%);
+  max-width: none;
+  margin-block-start: var(--space-6, 24px);
+  border-block-start: 1px solid var(--studio-route-divider-strong);
+}
+
+.app-shell.is-secondary-page .setting-row {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8, 32px);
+  padding-block: var(--space-4, 16px);
+  border-block-end: 1px solid var(--studio-route-divider);
+}
+
+.app-shell.is-secondary-page .setting-row > span {
+  display: grid;
+  gap: 3px;
+}
+
+.app-shell.is-secondary-page .setting-row strong {
+  color: var(--ink);
+  font-size: var(--text-body, 14px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-secondary-page .setting-row small {
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+  line-height: var(--leading-body, 1.6);
+}
+
+.app-shell.is-secondary-page .setting-row input[type="checkbox"] {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--studio-route-divider-strong);
+  border-radius: var(--radius-pill, 999px);
+  appearance: none;
+  background: var(--studio-route-muted-surface);
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.app-shell.is-secondary-page .setting-fixed-state {
+  display: inline-flex;
+  min-height: var(--control-md, 40px);
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding-inline: var(--space-3, 12px);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--studio-route-divider));
+  border-radius: var(--studio-route-control-radius);
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: var(--text-body-sm, 13px);
+  font-weight: var(--weight-semibold, 600);
+  white-space: nowrap;
+}
+
+.app-shell.is-secondary-page .settings-storage-note {
+  width: min(900px, 100%);
+  margin-block-start: var(--space-4, 16px);
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+  line-height: var(--leading-body, 1.6);
+}
+
+.app-shell.is-secondary-page .capability-unavailable-view {
+  max-width: var(--shell-content-standard, 1440px);
+}
+
+.app-shell.is-secondary-page .capability-unavailable-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-4, 16px);
+  width: min(760px, 100%);
+  margin-block-start: var(--space-8, 32px);
+  padding-block: var(--space-5, 20px);
+  border-block: 1px solid var(--studio-route-divider);
+  color: var(--quiet);
+}
+
+.app-shell.is-secondary-page .capability-unavailable-panel > svg {
+  color: var(--accent);
+}
+
+.app-shell.is-secondary-page .capability-unavailable-panel strong {
+  color: var(--ink);
+  font-size: var(--text-body, 14px);
+}
+
+.app-shell.is-secondary-page .capability-unavailable-panel p {
+  margin-block-start: var(--space-2, 8px);
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+  line-height: var(--leading-body, 1.6);
+}
+
+.app-shell.is-secondary-page
+  .setting-row
+  input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface-elevated);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent);
+  transition: transform 140ms ease;
+}
+
+.app-shell.is-secondary-page
+  .setting-row
+  input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.app-shell.is-secondary-page
+  .setting-row
+  input[type="checkbox"]:checked::before {
+  transform: translateX(20px);
+}
+
+.app-shell.is-secondary-page
+  .setting-row
+  input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Account center                                                             */
+/* -------------------------------------------------------------------------- */
+
+.app-shell.is-secondary-page .account-center {
+  max-width: 1240px;
+}
+
+.app-shell.is-secondary-page .account-center-heading {
+  max-width: 100%;
+}
+
+.app-shell.is-secondary-page .account-state {
+  display: flex;
+  min-height: 240px;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--text-muted);
+}
+
+.app-shell.is-secondary-page .account-state h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-heading-md);
+}
+
+.app-shell.is-secondary-page .account-state p {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-body-sm);
+}
+
+.app-shell.is-secondary-page .account-banner {
+  display: flex;
+  min-height: var(--control-lg);
+  align-items: center;
+  gap: var(--space-2);
+  margin-block-start: var(--space-5);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--warning);
+  background: var(--warning-soft);
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .account-banner.is-error {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.app-shell.is-secondary-page .account-banner.is-success {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.app-shell.is-secondary-page .account-sections {
+  margin-block-start: var(--space-6);
+  border-block-start: 1px solid var(--line-strong);
+}
+
+.app-shell.is-secondary-page .account-section {
+  display: grid;
+  grid-template-columns: minmax(240px, .8fr) minmax(0, 1.65fr);
+  gap: var(--space-8);
+  padding-block: var(--space-8);
+  border-block-end: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .account-section > header {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-content: start;
+  gap: var(--space-3);
+}
+
+.app-shell.is-secondary-page .account-section > header > span,
+.app-shell.is-secondary-page .account-device-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.app-shell.is-secondary-page .account-section h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-heading-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.app-shell.is-secondary-page .account-section header p {
+  max-width: 34ch;
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .account-section > :not(header) {
+  grid-column: 2;
+}
+
+.app-shell.is-secondary-page .account-profile-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.app-shell.is-secondary-page .account-profile-form > label,
+.app-shell.is-secondary-page .account-deactivate-confirm > label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: var(--text-body-sm);
+  font-weight: var(--weight-medium);
+}
+
+.app-shell.is-secondary-page .account-center :is(input, select, textarea) {
+  width: 100%;
+  min-height: var(--control-md);
+  padding-inline: var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  font-size: var(--text-body-sm);
+}
+
+.app-shell.is-secondary-page .account-center input:read-only,
+.app-shell.is-secondary-page .account-center input:disabled {
+  color: var(--text-muted);
+  background: var(--surface-soft);
+}
+
+.app-shell.is-secondary-page .account-form-meta {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+}
+
+.app-shell.is-secondary-page .account-form-meta .is-verified {
+  color: var(--success);
+}
+
+.app-shell.is-secondary-page
+  :is(.account-primary-button, .account-quiet-button, .account-danger-quiet, .account-danger-button) {
+  display: inline-flex;
+  min-height: var(--control-md);
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding-inline: var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  background: var(--surface);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.app-shell.is-secondary-page .account-primary-button {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+
+.app-shell.is-secondary-page .account-danger-quiet {
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
+  color: var(--danger);
+}
+
+.app-shell.is-secondary-page .account-danger-button {
+  border-color: var(--danger);
+  color: var(--accent-ink);
+  background: var(--danger);
+}
+
+.app-shell.is-secondary-page
+  :is(.account-primary-button, .account-quiet-button, .account-danger-quiet, .account-danger-button):disabled {
+  color: var(--text-muted);
+  border-color: var(--line);
+  background: var(--surface-soft);
+  cursor: not-allowed;
+  opacity: .68;
+}
+
+.app-shell.is-secondary-page .identity-provider-row,
+.app-shell.is-secondary-page .account-toggle-row {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+}
+
+.app-shell.is-secondary-page .identity-provider-row > div,
+.app-shell.is-secondary-page .account-toggle-row > span {
+  display: grid;
+  gap: 4px;
+}
+
+.app-shell.is-secondary-page .identity-provider-row strong,
+.app-shell.is-secondary-page .account-toggle-row strong {
+  color: var(--text);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.app-shell.is-secondary-page .identity-provider-row small,
+.app-shell.is-secondary-page .account-toggle-row small {
+  color: var(--text-muted);
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .account-session-list {
+  border-block-start: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .account-session-list article {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 84px;
+  padding-block: var(--space-3);
+  border-block-end: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .account-session-list article > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.app-shell.is-secondary-page .account-session-list strong {
+  color: var(--text);
+  font-size: var(--text-body-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.app-shell.is-secondary-page .account-session-list small {
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+}
+
+.app-shell.is-secondary-page .account-empty {
+  min-height: 88px;
+  padding-block: var(--space-5);
+  border-block: 1px solid var(--line);
+  color: var(--text-muted);
+  font-size: var(--text-body-sm);
+}
+
+.app-shell.is-secondary-page .account-load-more {
+  margin-block-start: var(--space-3);
+}
+
+.app-shell.is-secondary-page .account-section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-block-start: var(--space-4);
+}
+
+.app-shell.is-secondary-page .account-toggle-row input[type="checkbox"] {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  flex: 0 0 46px;
+  margin: 0;
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-soft);
+  cursor: pointer;
+}
+
+.app-shell.is-secondary-page .account-toggle-row input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: 0 1px 3px var(--panel-shadow);
+  transition: transform var(--duration-base) var(--ease-out);
+}
+
+.app-shell.is-secondary-page .account-toggle-row input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.app-shell.is-secondary-page .account-toggle-row input[type="checkbox"]:checked::before {
+  transform: translateX(20px);
+}
+
+.app-shell.is-secondary-page .account-section.is-danger-zone {
+  border-block-end-color: color-mix(in srgb, var(--danger) 32%, var(--line));
+}
+
+.app-shell.is-secondary-page .account-section.is-danger-zone > header > span {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.app-shell.is-secondary-page .account-deactivate-confirm {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  color: var(--text-soft);
+  background: var(--danger-soft);
+  font-size: var(--text-body-sm);
+}
+
+.app-shell.is-secondary-page .account-deactivate-confirm > p {
+  margin: 0;
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .account-deactivate-confirm > div:last-child,
+.app-shell.is-secondary-page .account-handoff-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.app-shell.is-secondary-page .account-inline-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--text-caption);
+}
+
+.app-shell.is-secondary-page .is-spinning {
+  animation: studio-spin 800ms linear infinite;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Publishing                                                                 */
+/* -------------------------------------------------------------------------- */
+
+.app-shell.is-secondary-page .publication-center {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-heading {
+  align-items: flex-end;
+  padding-block-end: var(--space-6);
+  border-block-end: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-heading > div:first-child {
+  min-width: 0;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-heading-actions,
+.app-shell.is-secondary-page .publication-center .publication-jobs > header,
+.app-shell.is-secondary-page .publication-center .publication-connections > header,
+.app-shell.is-secondary-page .publication-center .publication-job > header,
+.app-shell.is-secondary-page .publication-center .publication-job footer,
+.app-shell.is-secondary-page .publication-center .publication-dialog > header,
+.app-shell.is-secondary-page .publication-center .publication-details > header,
+.app-shell.is-secondary-page .publication-center .publication-reconcile > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-heading-actions {
+  flex: 0 0 auto;
+}
+
+.app-shell.is-secondary-page .publication-center button,
+.app-shell.is-secondary-page .publication-center .publication-mode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-soft);
+  background: var(--surface);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  font-weight: var(--weight-medium);
+}
+
+.app-shell.is-secondary-page .publication-center button {
+  cursor: pointer;
+}
+
+.app-shell.is-secondary-page .publication-center button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.app-shell.is-secondary-page .publication-center button:disabled {
+  color: var(--text-muted);
+  background: var(--surface-soft);
+  cursor: not-allowed;
+  opacity: .65;
+}
+
+.app-shell.is-secondary-page .publication-center :is(button, input, select, textarea, [role="dialog"]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-mode {
+  padding-inline: var(--space-3);
+  white-space: nowrap;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-mode.is-test,
+.app-shell.is-secondary-page .publication-center .publication-mock-badge {
+  border-color: color-mix(in srgb, var(--warning) 28%, var(--line));
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-test-banner,
+.app-shell.is-secondary-page .publication-center .publication-disabled-banner,
+.app-shell.is-secondary-page .publication-center .publication-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--info) 22%, var(--line));
+  color: var(--info);
+  background: var(--info-soft);
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-test-banner, .publication-disabled-banner) > svg {
+  flex: 0 0 auto;
+  margin-block-start: 2px;
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-test-banner, .publication-disabled-banner) > span {
+  display: grid;
+  gap: 2px;
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-test-banner, .publication-disabled-banner) strong {
+  color: currentColor;
+  font-size: var(--text-body-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-test-banner, .publication-disabled-banner) small {
+  color: var(--text-soft);
+  font-size: var(--text-caption);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-disabled-banner {
+  border-color: color-mix(in srgb, var(--warning) 28%, var(--line));
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-notice {
+  align-items: center;
+  border-color: color-mix(in srgb, var(--success) 24%, var(--line));
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-layout {
+  display: grid;
+  min-width: 0;
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-jobs, .publication-connections) {
+  min-width: 0;
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-jobs, .publication-connections) > header {
+  gap: var(--space-3);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-jobs, .publication-connections) > header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-jobs, .publication-connections) > header h2 {
+  margin: 0;
+  line-height: var(--leading-heading);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-jobs, .publication-connections) > header > div > span {
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-jobs > header label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+}
+
+.app-shell.is-secondary-page .publication-center :is(input, select, textarea) {
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  font-size: var(--text-body-sm);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job-list,
+.app-shell.is-secondary-page .publication-center .publication-connection-list {
+  display: grid;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-pagination {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-block: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-pagination button {
+  min-height: var(--control-sm);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-control);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job > header {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  gap: var(--space-3);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job-icon,
+.app-shell.is-secondary-page .publication-center .publication-connection-list article > span {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job-title {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job-title :is(strong, small) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-status, .publication-mock-badge) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-inline: 8px;
+  border: 1px solid var(--line);
+  color: var(--text-muted);
+  background: var(--surface-soft);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-status.is-success {
+  border-color: color-mix(in srgb, var(--success) 24%, var(--line));
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-status.is-warning, .publication-status.is-scheduled, .publication-status.is-progress) {
+  border-color: color-mix(in srgb, var(--warning) 24%, var(--line));
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-status.is-danger {
+  border-color: color-mix(in srgb, var(--danger) 24%, var(--line));
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job > p {
+  margin: var(--space-3) 0 0 48px;
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-inline-warning {
+  display: block;
+  margin: var(--space-2) 0 0 48px;
+  color: var(--warning);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job footer {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  margin-inline-start: 48px;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job footer button,
+.app-shell.is-secondary-page .publication-center .publication-connections > header > button,
+.app-shell.is-secondary-page .publication-center .publication-connection-list button {
+  padding-inline: var(--space-3);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job footer button.is-positive {
+  border-color: color-mix(in srgb, var(--success) 40%, var(--line));
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-job footer button.is-danger, .publication-connection-list button.is-confirm) {
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--line));
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job footer button.is-reconcile {
+  border-color: color-mix(in srgb, var(--warning) 38%, var(--line));
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-empty {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-empty > svg {
+  color: var(--accent);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-empty.is-error > svg,
+.app-shell.is-secondary-page .publication-center .publication-form-error > svg,
+.app-shell.is-secondary-page .publication-center .publication-unknown-warning > svg {
+  color: var(--danger);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-loading {
+  display: grid;
+  gap: var(--space-2);
+  min-height: 164px;
+  align-content: center;
+  padding-block: var(--space-6);
+  border-block-end: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-loading > span {
+  display: block;
+  width: 100%;
+  height: 12px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-soft);
+  animation: publication-pulse 1.4s ease-in-out infinite alternate;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-loading > span:nth-child(2) {
+  width: 76%;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-loading > span:nth-child(3) {
+  width: 48%;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-loading small {
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+}
+
+@keyframes publication-pulse {
+  from { opacity: .45; }
+  to { opacity: 1; }
+}
+
+.app-shell.is-secondary-page .publication-center .publication-account-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-muted);
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-account-note > svg {
+  flex: 0 0 auto;
+  margin-block-start: 2px;
+  color: var(--accent);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-account-note.is-development,
+.app-shell.is-secondary-page .publication-center .publication-account-note.is-development > svg {
+  color: var(--warning);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-oauth-providers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-block: var(--space-3);
+  border-block-end: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-oauth-providers > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: var(--text-body-sm);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-oauth-providers > span.is-error {
+  color: var(--danger);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-oauth-providers > button {
+  min-height: var(--control-sm);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-control);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-test-connection-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  padding-block: var(--space-3);
+  border-block-end: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-test-connection-form label, .publication-dialog label, .publication-reconcile label) {
+  display: grid;
+  gap: 6px;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-test-connection-form label > span,
+.app-shell.is-secondary-page .publication-center .publication-dialog label > span,
+.app-shell.is-secondary-page .publication-center .publication-reconcile label > span,
+.app-shell.is-secondary-page .publication-center .publication-dialog legend {
+  color: var(--text-soft);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-test-connection-form input {
+  min-width: 0;
+  min-height: var(--control-md);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-control);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-test-connection-form button {
+  min-height: var(--control-md);
+  align-self: end;
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-control);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-connection-list article {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  border-block-end: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-connection-list article > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-connection-list :is(strong, small) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-dialog-backdrop {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  overflow-y: auto;
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog, .publication-details, .publication-reconcile) {
+  display: flex;
+  width: min(760px, 100%);
+  max-height: calc(100dvh - 40px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-details {
+  width: min(640px, 100%);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-reconcile {
+  width: min(600px, 100%);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog, .publication-details, .publication-reconcile) > header {
+  flex: 0 0 auto;
+  gap: var(--space-4);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog, .publication-details, .publication-reconcile) > header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog, .publication-details, .publication-reconcile) > header span {
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog, .publication-details, .publication-reconcile) > header h2 {
+  margin: 0;
+  line-height: var(--leading-heading);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog, .publication-details, .publication-reconcile) > header button {
+  width: var(--control-md);
+  min-width: var(--control-md);
+  min-height: var(--control-md);
+  padding: 0;
+  border-radius: var(--radius-control);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-dialog > header p {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog form, .publication-reconcile form) {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+  overscroll-behavior-y: contain;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-dialog fieldset {
+  min-width: 0;
+  padding: 0;
+  margin: 0 0 var(--space-4);
+  border: 0;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-dialog legend {
+  margin-block-end: var(--space-2);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-choice {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-choice:hover,
+.app-shell.is-secondary-page .publication-center .publication-artwork-choice:focus-within {
+  border-color: var(--accent);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-choice.is-selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-select {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 82px;
+  padding: var(--space-2);
+  cursor: pointer;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-choice input {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-thumb {
+  display: grid;
+  width: 88px;
+  height: 58px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--stage-surface);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-thumb :is(img, video) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-select > span:nth-of-type(2) {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-choice :is(strong, small) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-choice strong {
+  color: var(--text);
+  font-size: var(--text-body-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-choice small,
+.app-shell.is-secondary-page .publication-center .publication-dialog label > small {
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-select > svg {
+  color: var(--accent);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-artwork-preview-button {
+  position: absolute;
+  inset: auto var(--space-2) var(--space-2) auto;
+  min-height: 26px;
+  padding-inline: 8px;
+  border-radius: var(--radius-control);
+  font-size: var(--text-caption);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-form-grid,
+.app-shell.is-secondary-page .publication-center .publication-reconcile-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-block-end: var(--space-4);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog input, .publication-dialog select, .publication-reconcile input, .publication-reconcile select) {
+  width: 100%;
+  min-height: var(--control-md);
+  padding-inline: var(--space-3);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog textarea, .publication-reconcile textarea) {
+  width: 100%;
+  min-height: 96px;
+  padding: var(--space-3);
+  resize: vertical;
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog input, .publication-dialog textarea, .publication-test-connection-form input, .publication-reconcile input, .publication-reconcile textarea)::placeholder {
+  color: var(--text-muted);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-form-error, .publication-unknown-warning) {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--line));
+  border-radius: var(--radius-control);
+  color: var(--danger);
+  background: var(--danger-soft);
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog form, .publication-reconcile form) > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-block-start: var(--space-4);
+  border-block-start: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog form, .publication-reconcile form) > footer button {
+  min-height: var(--control-md);
+  padding-inline: var(--space-4);
+  border-radius: var(--radius-control);
+}
+
+.app-shell.is-secondary-page .publication-center :is(.publication-dialog form, .publication-reconcile form) > footer button.is-primary {
+  border-color: var(--accent);
+  color: var(--surface);
+  background: var(--accent);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-details > :is(.publication-status, .publication-details-caption, dl, .publication-unknown-warning, a) {
+  margin-inline: var(--space-5);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-details > .publication-status {
+  align-self: flex-start;
+  margin-block-start: var(--space-5);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-details-caption {
+  margin-block: var(--space-4);
+  color: var(--text-soft);
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-details dl {
+  display: grid;
+  gap: 0;
+  margin-block-end: var(--space-4);
+  border-block-start: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-details dl > div {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  border-block-end: 1px solid var(--line);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-details dt {
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-size: var(--text-body-sm);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-details > a {
+  display: inline-flex;
+  min-height: var(--control-md);
+  align-items: center;
+  justify-content: center;
+  margin-block-end: var(--space-5);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  color: var(--accent);
+  font-size: var(--text-body-sm);
+  text-decoration: none;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-reconcile-warning {
+  display: flex;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4) var(--space-5);
+  border-block-end: 1px solid color-mix(in srgb, var(--warning) 24%, var(--line));
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-reconcile-warning > svg {
+  flex: 0 0 auto;
+  margin-block-start: 2px;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-reconcile-warning > span {
+  display: grid;
+  gap: 2px;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-reconcile-warning strong {
+  font-size: var(--text-body-sm);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-reconcile-warning small {
+  color: var(--text-soft);
+  font-size: var(--text-caption);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-heading-actions {
+  gap: var(--space-2, 8px);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(.publication-mode, .publication-primary-button) {
+  min-height: var(--control-md, 40px);
+  border-radius: var(--studio-route-control-radius);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-mode {
+  border-color: var(--studio-route-divider-strong);
+  color: var(--quiet);
+  background: var(--studio-route-muted-surface);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-primary-button {
+  padding-inline: var(--space-4, 16px);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 350px);
+  gap: var(--space-8, 32px);
+  padding-block-start: var(--space-6, 24px);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(.publication-jobs, .publication-connections) {
+  border-block-start: 1px solid var(--studio-route-divider-strong);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-connections {
+  padding-inline-start: var(--space-8, 32px);
+  border-inline-start: 1px solid var(--studio-route-divider);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(.publication-jobs, .publication-connections)
+  > header {
+  min-height: 58px;
+  padding-block: var(--space-2, 8px);
+  border-block-end: 1px solid var(--studio-route-divider);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(.publication-jobs, .publication-connections)
+  h2 {
+  color: var(--ink);
+  font-size: var(--text-heading-sm, 18px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-jobs select {
+  height: var(--control-md, 40px);
+  border-radius: var(--studio-route-control-radius);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job {
+  padding-block: var(--space-4, 16px);
+  border-block-end: 1px solid var(--studio-route-divider);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job-icon,
+.app-shell.is-secondary-page
+  .publication-center
+  .publication-connection-list
+  article
+  > span {
+  width: 36px;
+  height: 36px;
+  border-color: var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-control-radius);
+  color: var(--accent);
+  background: transparent;
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  .publication-job-title strong {
+  color: var(--ink);
+  font-size: var(--text-body, 14px);
+  font-weight: var(--weight-semibold, 600);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(
+    .publication-job-title small,
+    .publication-job > p,
+    .publication-connection-list small
+  ) {
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(.publication-status, .publication-mock-badge) {
+  min-height: 24px;
+  border-radius: var(--studio-route-control-radius);
+  font-size: var(--text-caption, 12px);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-job footer {
+  gap: var(--space-2, 8px);
+  margin-block-start: var(--space-3, 12px);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(
+    .publication-job footer button,
+    .publication-connections > header > button,
+    .publication-connection-list button
+  ) {
+  min-height: var(--control-sm, 32px);
+  border-radius: var(--studio-route-control-radius);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-empty {
+  min-height: 164px;
+  place-items: start;
+  align-content: center;
+  padding: var(--space-6, 24px) 0;
+  border-block-end: 1px solid var(--studio-route-divider);
+  color: var(--quiet);
+  background: transparent;
+  text-align: start;
+}
+
+.app-shell.is-secondary-page .publication-center .publication-empty strong {
+  color: var(--ink);
+  font-size: var(--text-body, 14px);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-empty span {
+  color: var(--quiet);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-account-note {
+  padding-block: var(--space-3, 12px);
+  border-block-end-color: var(--studio-route-divider);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  .publication-connection-list article {
+  min-height: 72px;
+  border-block-end-color: var(--studio-route-divider);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  .publication-connection-list strong {
+  color: var(--ink);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(.publication-test-banner, .publication-disabled-banner, .publication-notice) {
+  border-radius: var(--studio-route-control-radius);
+  font-size: var(--text-body-sm, 13px);
+}
+
+.app-shell.is-secondary-page .publication-center .publication-dialog-backdrop {
+  background: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(.publication-dialog, .publication-details, .publication-reconcile) {
+  border-color: var(--studio-route-divider-strong);
+  border-radius: var(--studio-route-overlay-radius);
+  background: var(--surface-elevated);
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--ink) 18%, transparent);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(.publication-dialog, .publication-details, .publication-reconcile)
+  > header {
+  padding: var(--space-5, 20px);
+  border-block-end-color: var(--studio-route-divider);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(.publication-dialog, .publication-details, .publication-reconcile)
+  > header
+  h2 {
+  color: var(--ink);
+  font-size: var(--text-heading-md, 22px);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  :is(
+    .publication-dialog input,
+    .publication-dialog select,
+    .publication-reconcile input,
+    .publication-reconcile select,
+    .publication-dialog textarea,
+    .publication-reconcile textarea
+  ) {
+  border-radius: var(--studio-route-control-radius);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  .publication-artwork-choice {
+  border-color: var(--studio-route-divider);
+  border-radius: var(--studio-route-control-radius);
+}
+
+.app-shell.is-secondary-page
+  .publication-center
+  .publication-artwork-thumb {
+  border-color: var(--studio-route-divider);
+  border-radius: var(--studio-route-control-radius);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Responsive route contracts                                                 */
+/* -------------------------------------------------------------------------- */
+
+@media (max-width: 1240px) {
+  .app-shell.is-creation-hub .creation-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.is-creation-hub .creation-toolbar-right {
+    justify-content: flex-start;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-layout {
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: var(--space-6, 24px);
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-connections {
+    padding-inline-start: var(--space-6, 24px);
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell[data-theme] > .topbar .personal-balance {
+    display: none;
+  }
+  :is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+    :is(.creation-hub-titlebar, .secondary-heading, .publication-heading) {
+    align-items: stretch;
+    gap: var(--space-4, 16px);
+  }
+
+  .app-shell.is-creation-hub .creation-search,
+  .app-shell.is-secondary-page .search-field {
+    width: 100%;
+  }
+
+  .app-shell.is-creation-hub .creation-search input {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+
+  .app-shell.is-secondary-page .history-toolbar {
+    width: 100%;
+    align-items: end;
+    flex-wrap: wrap;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-connections {
+    padding-inline-start: 0;
+    border-inline-start: 0;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-dialog-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+
+  .app-shell.is-secondary-page .publication-center :is(.publication-dialog, .publication-details, .publication-reconcile) {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell.is-secondary-page
+    :is(
+      .account-center,
+      .account-sections,
+      .account-section,
+      .account-section > *,
+      .account-profile-form,
+      .account-profile-form > *,
+      .identity-provider-row,
+      .account-session-list,
+      .account-deactivate-confirm
+    ) {
+    min-width: 0;
+  }
+
+  .app-shell.is-secondary-page .account-center {
+    padding-block-end: calc(var(--control-lg, 44px) + var(--space-8, 32px));
+    scroll-padding-block-end: calc(var(--control-lg, 44px) + var(--space-8, 32px));
+  }
+
+  .app-shell.is-secondary-page .account-section {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-5);
+    padding-block: var(--space-6);
+  }
+
+  .app-shell.is-secondary-page .account-section > :not(header) {
+    grid-column: 1;
+  }
+
+  .app-shell.is-secondary-page .account-section header p {
+    max-width: none;
+  }
+
+  .app-shell.is-secondary-page .account-profile-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell.is-secondary-page .account-form-meta,
+  .app-shell.is-secondary-page .identity-provider-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .app-shell.is-secondary-page .identity-provider-row {
+    min-height: 0;
+  }
+
+  .app-shell.is-secondary-page .account-form-meta > button,
+  .app-shell.is-secondary-page .identity-provider-row > :is(a, button) {
+    width: 100%;
+  }
+
+  .app-shell.is-secondary-page .account-session-list article {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .app-shell.is-secondary-page .account-session-list article > button {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .app-shell.is-secondary-page .account-center :is(input, select, textarea),
+  .app-shell.is-secondary-page
+    :is(.account-primary-button, .account-quiet-button, .account-danger-quiet, .account-danger-button) {
+    min-height: var(--control-lg, 44px);
+  }
+
+  .app-shell.is-creation-hub
+    :is(.creation-toolbar-left, .creation-toolbar-right) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .app-shell.is-creation-hub
+    :is(.creation-toolbar-left, .creation-toolbar-right)
+    > * {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .app-shell.is-creation-hub .creation-layout-switch button {
+    width: 100%;
+  }
+
+  .app-shell.is-creation-hub
+    .creation-task-grid:is(.is-grid, .is-compact) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .app-shell.is-secondary-page .task-history-row > header {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+  }
+
+  .app-shell.is-secondary-page .history-cost {
+    grid-column: 2 / -1;
+    text-align: start;
+  }
+
+  .app-shell.is-secondary-page .task-audit-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-inline-start: 48px;
+  }
+
+  .app-shell.is-secondary-page .task-history-row footer {
+    flex-wrap: wrap;
+    margin-inline-start: 48px;
+  }
+
+  .app-shell.is-secondary-page .task-history-row footer .text-button {
+    margin-inline-start: 0;
+  }
+}
+
+@media (max-width: 620px) {
+  :is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+    :is(.creation-hub-heading, .secondary-heading, .publication-heading)
+    h1 {
+    font-size: 1.625rem;
+  }
+
+  .app-shell.is-creation-hub .creation-media-tabs {
+    gap: var(--space-5, 20px);
+  }
+
+  .app-shell.is-creation-hub
+    :is(.creation-search input, .creation-search button, .creation-media-tabs button, .creation-toolbar button, .creation-select, .creation-layout-switch, .creation-pagination button) {
+    min-height: var(--control-lg, 44px);
+  }
+
+  .app-shell.is-creation-hub .creation-search button {
+    width: var(--control-lg, 44px);
+  }
+
+  .app-shell.is-creation-hub .creation-layout-switch {
+    height: var(--control-lg, 44px);
+  }
+
+  .app-shell.is-creation-hub .creation-layout-switch button {
+    height: 36px;
+  }
+
+  .app-shell.is-creation-hub
+    .creation-task-grid:is(.is-grid, .is-compact) {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.is-creation-hub .creation-task-card.is-list {
+    grid-template-columns: 108px minmax(0, 1fr);
+    gap: var(--space-3, 12px);
+  }
+
+  .app-shell.is-creation-hub
+    .creation-task-card.is-list
+    .creation-task-open {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .app-shell.is-secondary-page
+    .media-view
+    .asset-grid,
+  .app-shell.is-secondary-page .artwork-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.is-secondary-page
+    .media-view
+    .asset-actions button,
+  .app-shell.is-secondary-page
+    :is(.history-toolbar select, .page-controls button),
+  .app-shell.is-secondary-page
+    .publication-center
+    :is(
+      .publication-primary-button,
+      .publication-jobs select,
+      .publication-job footer button,
+      .publication-connections > header > button,
+      .publication-connection-list button
+    ) {
+    min-height: var(--control-lg, 44px);
+  }
+
+  .app-shell.is-secondary-page .history-toolbar {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.is-secondary-page .history-toolbar > * {
+    width: 100%;
+  }
+
+  .app-shell.is-secondary-page .history-toolbar select {
+    width: 100%;
+  }
+
+  .app-shell.is-secondary-page .task-history-row > header {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "state title cost"
+      "state status status";
+    align-items: start;
+  }
+
+  .app-shell.is-secondary-page .task-history-row > header .task-row-state {
+    grid-area: state;
+  }
+
+  .app-shell.is-secondary-page .task-history-row > header .task-row-title {
+    grid-area: title;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .app-shell.is-secondary-page
+    .task-history-row
+    > header
+    :is(.status-success, .status-error, .status-warning) {
+    grid-area: status;
+  }
+
+  .app-shell.is-secondary-page .task-history-row > header .history-cost {
+    grid-area: cost;
+    align-self: start;
+    text-align: end;
+  }
+
+  .app-shell.is-secondary-page .task-audit-grid {
+    grid-template-columns: 1fr;
+    margin-inline-start: 46px;
+  }
+
+  .app-shell.is-secondary-page .task-history-row footer {
+    margin-inline-start: 46px;
+  }
+
+  .app-shell.is-secondary-page .artwork-copy dl {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.is-secondary-page .setting-row {
+    min-height: 84px;
+    gap: var(--space-4, 16px);
+  }
+
+  .app-shell.is-secondary-page
+    .publication-center
+    .publication-heading-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.is-secondary-page
+    .publication-center
+    .publication-heading-actions
+    > * {
+    width: 100%;
+  }
+
+  .app-shell.is-secondary-page
+    .publication-center
+    :is(.publication-dialog, .publication-details, .publication-reconcile) {
+    border-radius: var(--studio-route-overlay-radius)
+      var(--studio-route-overlay-radius) 0 0;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-heading {
+    align-items: stretch;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-jobs > header,
+  .app-shell.is-secondary-page .publication-center .publication-connections > header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-jobs > header label,
+  .app-shell.is-secondary-page .publication-center .publication-jobs > header select,
+  .app-shell.is-secondary-page .publication-center .publication-connections > header > button {
+    width: 100%;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-job > header {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-job-badges {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-job > p,
+  .app-shell.is-secondary-page .publication-center .publication-inline-warning,
+  .app-shell.is-secondary-page .publication-center .publication-job footer {
+    margin-inline-start: 48px;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-test-connection-form,
+  .app-shell.is-secondary-page .publication-center .publication-form-grid,
+  .app-shell.is-secondary-page .publication-center .publication-reconcile-fields,
+  .app-shell.is-secondary-page .publication-center .publication-artwork-list {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-test-connection-form button {
+    width: 100%;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-artwork-select {
+    grid-template-columns: 76px minmax(0, 1fr) auto;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-artwork-thumb {
+    width: 76px;
+  }
+
+  .app-shell.is-secondary-page .publication-center .publication-details dl > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .app-shell.is-secondary-page .publication-center :is(.publication-dialog form, .publication-reconcile form) {
+    padding: var(--space-4);
+  }
+
+  .app-shell.is-secondary-page .publication-center :is(.publication-dialog, .publication-details, .publication-reconcile) > header,
+  .app-shell.is-secondary-page .publication-center .publication-reconcile-warning {
+    padding-inline: var(--space-4);
+  }
+}
+
+/* Route sheets load after the shared control layer, so the phone contract must
+ * be restated here for controls whose desktop presentation is intentionally
+ * compact. This changes hit areas only; no action or route is removed. */
+@media (max-width: 900px) {
+  .app-shell.is-creation-hub .creation-task-open {
+    min-width: var(--control-lg, 44px);
+    min-height: var(--control-lg, 44px);
+  }
+
+  .app-shell.is-secondary-page .scope-control {
+    height: auto;
+    min-height: var(--control-lg, 44px);
+    padding: 0;
+  }
+
+  .app-shell.is-secondary-page .scope-control button,
+  .app-shell.is-secondary-page .artwork-copy footer .text-button,
+  .app-shell.is-secondary-page .artwork-copy .download-button,
+  .app-shell.is-secondary-page .artwork-followup-actions button,
+  .app-shell.is-secondary-page .task-history-row footer .text-button {
+    min-height: var(--control-lg, 44px);
+  }
+}
+
+@media (max-width: 390px) {
+  .app-shell.is-creation-hub
+    :is(.creation-toolbar-left, .creation-toolbar-right) {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.is-secondary-page .task-audit-grid,
+  .app-shell.is-secondary-page .task-history-row footer {
+    margin-inline-start: 0;
+  }
+}
+
+@media (max-width: 340px) {
+  .app-shell.is-secondary-page .task-history-row > header {
+    grid-template-columns: 34px minmax(0, 1fr);
+    grid-template-areas:
+      "state title"
+      "state status"
+      "state cost";
+  }
+
+  .app-shell.is-secondary-page .task-history-row > header .history-cost {
+    text-align: start;
+  }
+
+  .app-shell.is-secondary-page .setting-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.app-shell.is-secondary-page, .app-shell.is-creation-hub)
+    :is(
+      .creation-task-preview img,
+      .creation-task-preview video,
+      .setting-row input[type="checkbox"],
+      .setting-row input[type="checkbox"]::before
+    ) {
+    transition: none;
+  }
+}

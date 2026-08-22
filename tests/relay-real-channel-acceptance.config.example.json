@@ -1,0 +1,76 @@
+{
+  "schema_version": 2,
+  "environment": "relay-real-channel-staging",
+  "mode": "text_to_video",
+  "platform": {
+    "base_url": "https://platform-staging.example.com",
+    "download_gateway_base_url": "https://downloads-staging.example.com",
+    "company_id": "11111111-1111-4111-8111-111111111111",
+    "user_id": "22222222-2222-4222-8222-222222222222",
+    "bearer_token_env": "REAL_CHANNEL_PLATFORM_BEARER_TOKEN",
+    "use_non_production_identity_headers": false,
+    "database_dsn_env": "REAL_CHANNEL_PLATFORM_DATABASE_URL",
+    "external_download_completion_id": "44444444-4444-4444-8444-444444444444",
+    "external_download_completion_source": "edge_gateway",
+    "external_download_proof_path": "relay-real-channel-download-proof.json",
+    "external_download_proof_expected_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "external_download_proof_signature_path": "relay-real-channel-download-proof.signature.json",
+    "external_download_proof_public_key_env": "DOWNLOAD_EDGE_PROOF_PUBLIC_KEY_BASE64",
+    "external_download_proof_public_key_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "task": {
+      "existing_task_id": "",
+      "model_id": "33333333-3333-4333-8333-333333333333",
+      "expected_capability_version": 1,
+      "request_payload": {
+        "mode": "text_to_video",
+        "prompt": "A single paper boat moving slowly across a quiet pond, natural daylight, no text or logos.",
+        "assets": [],
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "output_count": 1,
+        "face_enabled": false,
+        "metadata": {
+          "acceptance": "real-channel"
+        }
+      }
+    }
+  },
+  "provider": {
+    "name": "kling",
+    "access_key_env": "KLING_ACCESS_KEY",
+    "secret_key_env": "KLING_SECRET_KEY",
+    "bill_evidence_path": "relay-real-channel-provider-bill.json",
+    "bill_evidence_expected_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "source_document_path": "private/provider-bill-or-contract-export.bin",
+    "source_document_expected_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "approval_payload_path": "relay-real-channel-provider-bill-approval.json",
+    "approval_payload_expected_sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "approval_signature_path": "relay-real-channel-provider-bill-approval.signature.json",
+    "approval_public_key_env": "PROVIDER_BILL_APPROVAL_PUBLIC_KEY_BASE64",
+    "approval_public_key_fingerprint": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "storage": {
+    "endpoint_env": "HUAWEI_OBS_ENDPOINT",
+    "bucket_env": "HUAWEI_OBS_BUCKET",
+    "access_key_env": "HUAWEI_OBS_ACCESS_KEY_ID",
+    "secret_key_env": "HUAWEI_OBS_SECRET_ACCESS_KEY",
+    "security_token_env": "HUAWEI_OBS_SECURITY_TOKEN"
+  },
+  "runtime": {
+    "relay_database_dsn_env": "REAL_CHANNEL_RELAY_DATABASE_URL",
+    "relay_base_url": "https://relay-staging.example.com",
+    "relay_runtime_identity_token_env": "REAL_CHANNEL_RELAY_RUNTIME_IDENTITY_TOKEN",
+    "expected_upstream_git_revision": "0ab02020603d22e5613bc4cf46bfab06f8567769",
+    "expected_source_git_revision": "9999999999999999999999999999999999999999",
+    "expected_source_snapshot_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "expected_source_snapshot_file_count": 321,
+    "expected_image_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "output_directory": "../artifacts/relay-real-channel-acceptance",
+    "create_checkpoint_path": "../artifacts/create-run-id/create_checkpoint.json",
+    "create_checkpoint_expected_sha256": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "poll_interval_seconds": 5,
+    "timeout_seconds": 1800,
+    "allow_loopback_http": false
+  }
+}

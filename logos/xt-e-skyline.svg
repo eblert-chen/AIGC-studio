@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 170" role="img" aria-label="旭天 Logo E 天际弧光">
+  <path d="M40 118 A70 70 0 0 1 180 118" fill="none" stroke="#EDEFF2" stroke-width="6" stroke-linecap="round" opacity="0.28"/>
+  <path d="M60 118 A50 50 0 0 1 160 118" fill="none" stroke="#EDEFF2" stroke-width="6" stroke-linecap="round" opacity="0.5"/>
+  <path d="M80 118 A30 30 0 0 1 140 118" fill="none" stroke="#F2C94C" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="110" cy="70" r="14" fill="#F2C94C"/>
+  <line x1="30" y1="120" x2="190" y2="120" stroke="#EDEFF2" stroke-width="6" stroke-linecap="round" opacity="0.85"/>
+</svg>

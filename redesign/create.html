@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>创作 · 视频工作台</title>
+<link rel="stylesheet" href="./tokens.css" />
+<style>
+  /* ===== 创作工作台专属 ===== */
+  .studio { display: flex; align-items: flex-start; gap: 0; flex: 1; min-height: 0; }
+
+  /* 左：创作器 dock —— 参与布局，不遮挡内容 */
+  .composer-dock {
+    width: 348px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--line);
+    background: var(--surface);
+    height: calc(100vh - var(--topbar-h));
+    position: sticky;
+    top: var(--topbar-h);
+    overflow-y: auto;
+    padding: 22px 20px 28px;
+  }
+  .dock-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 20px; }
+  .dock-title .t-title { font-size: 19px; }
+  .dock-title .t-caption { letter-spacing: 0.06em; }
+
+  .field { margin-bottom: 18px; }
+  .field-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: var(--fs-small);
+    font-weight: 600;
+    color: var(--ink-soft);
+    margin-bottom: 8px;
+  }
+  .field-label .hint { font-size: var(--fs-caption); font-weight: 400; color: var(--ink-muted); }
+
+  .model-pick { display: flex; flex-direction: column; gap: 8px; }
+  .model-opt {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 13px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    transition: border 0.12s, background 0.12s;
+    text-align: left;
+    width: 100%;
+  }
+  .model-opt:hover { border-color: var(--line-strong); }
+  .model-opt.on { border-color: var(--accent); background: var(--accent-soft); }
+  .model-opt .m-name { font-size: 14px; font-weight: 600; }
+  .model-opt .m-desc { font-size: 12px; color: var(--ink-muted); margin-top: 1px; }
+  .model-opt .m-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); margin-left: auto; flex-shrink: 0; }
+  .model-opt.on .m-dot { background: var(--accent); }
+
+  .prompt-box {
+    width: 100%;
+    min-height: 96px;
+    resize: vertical;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--bg);
+    padding: 11px 13px;
+    font-size: 14px;
+    line-height: 1.55;
+    outline: none;
+    transition: border 0.12s;
+  }
+  .prompt-box:focus { border-color: var(--accent); }
+
+  .seg { display: flex; background: var(--surface-soft); border-radius: var(--r-sm); padding: 3px; gap: 2px; }
+  .seg button {
+    flex: 1;
+    padding: 7px 4px;
+    font-size: 12.5px;
+    font-weight: 500;
+    border-radius: 4px;
+    color: var(--ink-muted);
+    transition: background 0.12s, color 0.12s;
+  }
+  .seg button.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .seg button:disabled { opacity: 0.35; cursor: not-allowed; text-decoration: line-through; }
+
+  .switch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+  }
+  .switch-row .s-desc { font-size: 12px; color: var(--ink-muted); margin-top: 1px; }
+  .switch {
+    width: 38px; height: 22px;
+    border-radius: var(--r-pill);
+    background: var(--line-strong);
+    position: relative;
+    transition: background 0.15s;
+    flex-shrink: 0;
+  }
+  .switch::after {
+    content: "";
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.15s;
+  }
+  .switch.on { background: var(--accent); }
+  .switch.on::after { transform: translateX(16px); }
+  .switch.disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .cost-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin: 20px 0 14px;
+    padding: 12px 14px;
+    border-radius: var(--r-sm);
+    background: var(--surface-soft);
+  }
+  .cost-row .c-label { font-size: var(--fs-small); color: var(--ink-soft); }
+  .cost-row .c-value { font-family: var(--font-display); font-size: 22px; font-weight: 600; color: var(--accent); }
+  .cost-row .c-value small { font-size: 12px; color: var(--ink-muted); font-family: var(--font-body); font-weight: 400; margin-left: 4px; }
+
+  .dock-submit { width: 100%; padding: 12px; font-size: 15px; border-radius: var(--r-sm); }
+  .dock-note { text-align: center; margin-top: 10px; }
+
+  /* 右：任务区 */
+  .tasks-pane { flex: 1; min-width: 0; padding: 24px 32px 60px; }
+  .tasks-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+  .tasks-head .t-title { font-size: 20px; }
+
+  .filter-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 22px; }
+  .chip {
+    padding: 6px 14px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--line);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-soft);
+    background: var(--surface);
+    transition: all 0.12s;
+  }
+  .chip:hover { border-color: var(--line-strong); }
+  .chip.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .chip .n { font-variant-numeric: tabular-nums; opacity: 0.65; margin-left: 4px; }
+
+  .task-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 16px; }
+  .task-card { overflow: hidden; transition: border 0.12s, box-shadow 0.15s; }
+  .task-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-pop); }
+  .task-thumb { position: relative; aspect-ratio: 16/9; background: var(--surface-soft); overflow: hidden; }
+  .task-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .task-thumb .badge { position: absolute; top: 10px; left: 10px; }
+  .task-thumb .dur {
+    position: absolute; bottom: 10px; right: 10px;
+    padding: 2px 7px; border-radius: 4px;
+    background: rgba(15,13,10,0.6); color: #fdfbf7;
+    font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+  }
+  .task-body { padding: 13px 15px 15px; }
+  .task-title { font-size: 14px; font-weight: 600; line-height: 1.45; margin-bottom: 5px; }
+  .task-meta { font-size: 12px; color: var(--ink-muted); display: flex; gap: 8px; align-items: center; }
+  .task-meta .sep { opacity: 0.4; }
+
+  /* 进行中：进度条 */
+  .progress { height: 3px; border-radius: 2px; background: var(--surface-soft); margin-top: 11px; overflow: hidden; }
+  .progress i { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.4s; }
+  .task-progress-line { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-muted); margin-top: 8px; }
+  .task-progress-line .pct { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* 失败卡 */
+  .task-fail-reason {
+    margin-top: 10px;
+    padding: 9px 11px;
+    border-radius: var(--r-sm);
+    background: var(--danger-soft);
+    color: var(--danger);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .task-fail-reason strong { font-weight: 600; }
+
+  /* 排队占位 */
+  .task-queued-thumb {
+    display: grid;
+    place-items: center;
+    color: var(--ink-muted);
+  }
+  .task-queued-thumb svg { width: 26px; height: 26px; opacity: 0.5; }
+
+  @media (max-width: 1100px) {
+    .studio { flex-direction: column; }
+    .composer-dock { width: 100%; height: auto; position: static; border-right: none; border-bottom: 1px solid var(--line); }
+    .tasks-pane { padding: 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ===== 左侧导航（与首页一致） ===== -->
+  <nav class="side-nav">
+    <a class="brand" href="./home.html">
+      <span class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round">
+          <path d="M4 17h16"/><path d="M7 17a5 5 0 0 1 10 0"/><path d="M12 6v3"/><path d="M6.5 8.5l1.8 1.8"/><path d="M17.5 8.5l-1.8 1.8"/>
+        </svg>
+      </span>
+      <span><span class="brand-name">旭天</span><br /><span class="brand-sub">视频工作台</span></span>
+    </a>
+    <div class="nav-group">
+      <div class="nav-label">创作</div>
+      <a class="nav-item" href="./home.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+        <span>首页</span>
+      </a>
+      <a class="nav-item active" href="./create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 12h18"/></svg>
+        <span>创作</span>
+      </a>
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg>
+        <span>素材</span>
+      </a>
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
+        <span>作品</span>
+      </a>
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        <span>发布</span>
+      </a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">管理</div>
+      <a class="nav-item" href="./console.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+        <span>运营控制台</span>
+      </a>
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 1 0-14 0 7 7 0 0 0 14 0z"/></svg>
+        <span>设置</span>
+      </a>
+    </div>
+    <div class="nav-spacer"></div>
+    <div class="nav-foot"><div class="t-caption">演示模式 · 数据来自本地样例</div></div>
+  </nav>
+
+  <!-- ===== 主列 ===== -->
+  <div class="main-col">
+    <header class="topbar">
+      <span class="topbar-title">创作工作台</span>
+      <div class="topbar-right">
+        <button class="skin-toggle" id="skinToggle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
+          <span id="skinLabel">深色</span>
+        </button>
+        <span class="avatar">旭</span>
+      </div>
+    </header>
+
+    <div class="studio">
+      <!-- ===== 创作器 dock ===== -->
+      <aside class="composer-dock">
+        <div class="dock-title">
+          <span class="t-title">新建生成</span>
+          <span class="t-caption">DRAFT · 自动保存</span>
+        </div>
+
+        <div class="field">
+          <div class="field-label">模型 <span class="hint">能力实时校验</span></div>
+          <div class="model-pick" id="modelPick">
+            <button class="model-opt on" data-model="cinemox">
+              <span><span class="m-name">CinemoX Pro 2.1</span><span class="m-desc">电影质感 · 支持 1080p / 15s / 音频</span></span>
+              <span class="m-dot"></span>
+            </button>
+            <button class="model-opt" data-model="rush">
+              <span><span class="m-name">Rush Video 1.6</span><span class="m-desc">快速出片 · 最高 720p / 8s</span></span>
+              <span class="m-dot"></span>
+            </button>
+            <button class="model-opt" data-model="frameflow">
+              <span><span class="m-name">FrameFlow Lite</span><span class="m-desc">轻量图片 · 不支持音频与人脸</span></span>
+              <span class="m-dot"></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">提示词 <span class="hint">支持中文</span></div>
+          <textarea class="prompt-box" id="promptBox" placeholder="晨光里的雪山，镜头从云海中缓慢推近，冷色调…"></textarea>
+        </div>
+
+        <div class="field">
+          <div class="field-label">分辨率</div>
+          <div class="seg" id="segRes">
+            <button data-v="540p">540p</button>
+            <button data-v="720p" class="on">720p</button>
+            <button data-v="1080p">1080p</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">时长</div>
+          <div class="seg" id="segDur">
+            <button data-v="5">5s</button>
+            <button data-v="8" class="on">8s</button>
+            <button data-v="15">15s</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">画幅</div>
+          <div class="seg" id="segRatio">
+            <button data-v="16:9" class="on">16:9</button>
+            <button data-v="9:16">9:16</button>
+            <button data-v="1:1">1:1</button>
+          </div>
+        </div>
+
+        <div class="field" style="margin-bottom: 4px;">
+          <div class="switch-row">
+            <span>生成音频<span class="s-desc">环境音与配乐</span></span>
+            <button class="switch on" id="swAudio" aria-label="生成音频"></button>
+          </div>
+          <div class="switch-row" style="border-bottom: none;">
+            <span>人脸一致性<span class="s-desc">跨镜头保持面部特征</span></span>
+            <button class="switch" id="swFace" aria-label="人脸一致性"></button>
+          </div>
+        </div>
+
+        <div class="cost-row">
+          <span class="c-label">预估成本</span>
+          <span class="c-value t-num" id="costValue">¥16<small>积分 160</small></span>
+        </div>
+
+        <button class="btn btn-primary dock-submit" id="submitBtn">
+          提交生成
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+        <div class="dock-note t-caption">提交即冻结积分，失败自动退回</div>
+      </aside>
+
+      <!-- ===== 任务区 ===== -->
+      <section class="tasks-pane">
+        <div class="tasks-head">
+          <div>
+            <div class="t-eyebrow" style="margin-bottom: 6px;">Tasks · 任务</div>
+            <div class="t-title">最近生成</div>
+          </div>
+          <div class="tabs" style="border-bottom: none;">
+            <button class="tab active">全部<span class="tab-count">26</span></button>
+            <button class="tab">视频<span class="tab-count">18</span></button>
+            <button class="tab">图片<span class="tab-count">8</span></button>
+          </div>
+        </div>
+
+        <div class="filter-chips">
+          <button class="chip on">全部</button>
+          <button class="chip">生成中<span class="n">2</span></button>
+          <button class="chip">排队<span class="n">1</span></button>
+          <button class="chip">已完成<span class="n">21</span></button>
+          <button class="chip">失败<span class="n">2</span></button>
+        </div>
+
+        <div class="task-grid" id="taskGrid"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+  /* ---- 皮肤切换 ---- */
+  const root = document.documentElement;
+  const saved = localStorage.getItem("xt-skin");
+  if (saved) root.dataset.theme = saved;
+  const label = document.getElementById("skinLabel");
+  const syncLabel = () => (label.textContent = root.dataset.theme === "dark" ? "浅色" : "深色");
+  syncLabel();
+  document.getElementById("skinToggle").addEventListener("click", () => {
+    root.dataset.theme = root.dataset.theme === "dark" ? "" : "dark";
+    localStorage.setItem("xt-skin", root.dataset.theme);
+    syncLabel();
+  });
+
+  /* ---- 模型能力（与 modelCapabilities.js 语义一致） ---- */
+  const CAPS = {
+    cinemox:   { res: ["540p", "720p", "1080p"], dur: [5, 8, 15], ratio: ["16:9", "9:16", "1:1"], audio: true,  face: true,  rate: 3 },
+    rush:      { res: ["540p", "720p"],          dur: [5, 8],      ratio: ["16:9", "9:16"],        audio: true,  face: false, rate: 2 },
+    frameflow: { res: ["540p", "720p", "1080p"], dur: [5],         ratio: ["16:9", "1:1"],         audio: false, face: false, rate: 1 },
+  };
+  let model = "cinemox";
+  const state = { res: "720p", dur: 8, ratio: "16:9", audio: true, face: false };
+
+  function clampState() {
+    const cap = CAPS[model];
+    if (!cap.res.includes(state.res)) state.res = cap.res[cap.res.length - 1];
+    if (!cap.dur.includes(state.dur)) state.dur = cap.dur[cap.dur.length - 1];
+    if (!cap.ratio.includes(state.ratio)) state.ratio = cap.ratio[0];
+    if (!cap.audio) state.audio = false;
+    if (!cap.face) state.face = false;
+  }
+
+  function renderControls() {
+    const cap = CAPS[model];
+    document.querySelectorAll("#segRes button").forEach((b) => {
+      b.disabled = !cap.res.includes(b.dataset.v);
+      b.classList.toggle("on", b.dataset.v === state.res);
+    });
+    document.querySelectorAll("#segDur button").forEach((b) => {
+      b.disabled = !cap.dur.includes(+b.dataset.v);
+      b.classList.toggle("on", +b.dataset.v === state.dur);
+    });
+    document.querySelectorAll("#segRatio button").forEach((b) => {
+      b.disabled = !cap.ratio.includes(b.dataset.v);
+      b.classList.toggle("on", b.dataset.v === state.ratio);
+    });
+    const swA = document.getElementById("swAudio");
+    const swF = document.getElementById("swFace");
+    swA.classList.toggle("on", state.audio);
+    swA.classList.toggle("disabled", !cap.audio);
+    swF.classList.toggle("on", state.face);
+    swF.classList.toggle("disabled", !cap.face);
+
+    const cost = CAPS[model].rate * state.dur * 2;
+    document.getElementById("costValue").innerHTML = `¥${cost}<small>积分 ${cost * 10}</small>`;
+  }
+
+  document.querySelectorAll("#modelPick .model-opt").forEach((b) =>
+    b.addEventListener("click", () => {
+      model = b.dataset.model;
+      document.querySelectorAll("#modelPick .model-opt").forEach((x) => x.classList.toggle("on", x === b));
+      clampState();
+      renderControls();
+    })
+  );
+  const bindSeg = (id, key, isNum) =>
+    document.querySelectorAll(`#${id} button`).forEach((b) =>
+      b.addEventListener("click", () => {
+        if (b.disabled) return;
+        state[key] = isNum ? +b.dataset.v : b.dataset.v;
+        renderControls();
+      })
+    );
+  bindSeg("segRes", "res", false);
+  bindSeg("segDur", "dur", true);
+  bindSeg("segRatio", "ratio", false);
+  document.getElementById("swAudio").addEventListener("click", () => { if (CAPS[model].audio) { state.audio = !state.audio; renderControls(); } });
+  document.getElementById("swFace").addEventListener("click", () => { if (CAPS[model].face) { state.face = !state.face; renderControls(); } });
+  renderControls();
+
+  /* ---- 任务网格 ---- */
+  const tasks = [
+    { st: "running", pct: 62, title: "晨光雪山 · 镜头推近", model: "CinemoX Pro 2.1", dur: "8s", eta: "约 40 秒" },
+    { st: "running", pct: 23, title: "雨后霓虹街道 · 手持跟拍", model: "Rush Video 1.6", dur: "5s", eta: "约 90 秒" },
+    { st: "queued", title: "微缩时装秀 · 移轴环绕", model: "CinemoX Pro 2.1", dur: "15s", pos: "第 2 位" },
+    { st: "done", img: "../public/community/community-hero.png", title: "薄雾山谷的清晨", model: "CinemoX Pro 2.1", dur: "8s" },
+    { st: "done", img: "../public/community/neon-anime-street.png", title: "霓虹街道 · 新海诚色调", model: "Rush Video 1.6", dur: "5s" },
+    { st: "done", img: "../public/media/speaker-water-hero.png", title: "水面音箱 · 慢镜头", model: "CinemoX Pro 2.1", dur: "8s" },
+    { st: "fail", title: "极地冰原 · 长曝光", model: "Rush Video 1.6", dur: "8s", reason: "上游渠道超时（ETIMEDOUT）", code: "PROVIDER_TIMEOUT" },
+    { st: "fail", title: "人脸特写 · 多镜头", model: "Rush Video 1.6", dur: "5s", reason: "该模型不支持人脸一致性参数", code: "CAPABILITY_MISMATCH" },
+    { st: "done", img: "../public/community/cyber-fashion-portrait.png", title: "赛博时装 · 霓虹金属", model: "CinemoX Pro 2.1", dur: "8s" },
+  ];
+
+  const badgeOf = { running: '<span class="badge badge-info"><span class="dot"></span>生成中</span>',
+    queued: '<span class="badge badge-neutral"><span class="dot"></span>排队中</span>',
+    done: '<span class="badge badge-success"><span class="dot"></span>已完成</span>',
+    fail: '<span class="badge badge-danger"><span class="dot"></span>失败</span>' };
+
+  document.getElementById("taskGrid").innerHTML = tasks
+    .map((t) => {
+      let thumb = "";
+      if (t.st === "done") thumb = `<div class="task-thumb"><img src="${t.img}" alt="${t.title}" />${badgeOf.done}<span class="dur">${t.dur}</span></div>`;
+      else if (t.st === "queued") thumb = `<div class="task-thumb task-queued-thumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>${badgeOf.queued}</div>`;
+      else thumb = `<div class="task-thumb task-queued-thumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/></svg>${badgeOf[t.st]}</div>`;
+
+      let extra = "";
+      if (t.st === "running") extra = `<div class="progress"><i style="width:${t.pct}%"></i></div><div class="task-progress-line"><span>剩余 ${t.eta}</span><span class="pct">${t.pct}%</span></div>`;
+      if (t.st === "fail") extra = `<div class="task-fail-reason"><strong>${t.code}</strong> · ${t.reason}<br/>积分已自动退回</div>`;
+
+      return `<article class="card task-card">${thumb}<div class="task-body">
+        <div class="task-title">${t.title}</div>
+        <div class="task-meta"><span>${t.model}</span><span class="sep">·</span><span class="t-num">${t.dur}</span></div>
+        ${extra}</div></article>`;
+    })
+    .join("");
+
+  /* 模拟进度推进 */
+  setInterval(() => {
+    document.querySelectorAll(".progress i").forEach((el) => {
+      const w = Math.min(96, parseInt(el.style.width) + 1);
+      el.style.width = w + "%";
+      const pct = el.closest(".task-body")?.querySelector(".pct");
+      if (pct) pct.textContent = w + "%";
+    });
+  }, 1200);
+</script>
+</body>
+</html>

@@ -1,0 +1,70 @@
+{
+  "video.standard.t2v": [
+    {
+      "route_id": "aliyun-wan27-t2v-staging",
+      "provider_name": "aliyun-bailian",
+      "account_id": "replace-with-aliyun-account-id",
+      "channel_id": 0,
+      "native_channel_type": 0,
+      "key_index": 0,
+      "key_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+      "channel_class": "official",
+      "upstream_model": "wan2.7-t2v-2026-06-12",
+      "rpm_limit": 0,
+      "active_task_limit": 0,
+      "capabilities": {
+        "schema_version": 1,
+        "modes": {
+          "text_to_video": {
+            "input_media_types": [],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 5000,
+              "max_images": 0,
+              "max_videos": 0,
+              "max_audio": 0,
+              "duration_seconds": [5, 10, 15],
+              "aspect_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
+              "resolutions": ["720p", "1080p"],
+              "output_counts": [1]
+            }
+          }
+        }
+      }
+    },
+    {
+      "route_id": "volcengine-ark-seedance20-staging",
+      "provider_name": "volcengine-ark",
+      "account_id": "replace-with-volcengine-account-id",
+      "channel_id": 0,
+      "native_channel_type": 0,
+      "key_index": 0,
+      "key_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+      "channel_class": "official",
+      "upstream_model": "doubao-seedance-2-0-260128",
+      "rpm_limit": 0,
+      "active_task_limit": 0,
+      "capabilities": {
+        "schema_version": 1,
+        "modes": {
+          "text_to_video": {
+            "input_media_types": [],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 5000,
+              "max_images": 0,
+              "max_videos": 0,
+              "max_audio": 0,
+              "duration_seconds": [5, 10, 15],
+              "aspect_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
+              "resolutions": ["720p", "1080p"],
+              "output_counts": [1]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

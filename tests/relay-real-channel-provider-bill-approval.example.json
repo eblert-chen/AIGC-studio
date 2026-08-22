@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "kind": "relay_real_channel_provider_bill_approval",
+  "checkpoint_sha256": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "bill_evidence_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "source_document_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "provider_name": "kling",
+  "platform_task_id": "55555555-5555-4555-8555-555555555555",
+  "relay_job_id": "66666666-6666-4666-8666-666666666666",
+  "provider_task_reference": "replace-with-provider-task-from-create-checkpoint",
+  "provider_bill_reference": "replace-with-provider-invoice-or-export-row-reference",
+  "channel_id": 17,
+  "amount_cents": 125,
+  "contract_currency": "CNY",
+  "cost_disposition": "billed",
+  "decision": "approved",
+  "approver_subject": "finance-reviewer@example.com",
+  "approver_role": "provider-cost-approver",
+  "approved_at_utc": "2026-08-07T01:05:00Z",
+  "expires_at_utc": "2026-08-08T01:05:00Z",
+  "nonce": "77777777-7777-4777-8777-777777777777"
+}

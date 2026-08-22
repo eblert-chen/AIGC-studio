@@ -1,0 +1,26 @@
+/*
+ * Application stylesheet entry point.
+ *
+ * The application ships one explicit design-system cascade. Retired route
+ * styles remain in the repository only as migration evidence and are not
+ * loaded by the browser.
+ */
+@layer system.tokens, system.foundation, system.controls, system.shells, system.routes;
+
+@import "./tokens.css" layer(system.tokens);
+@import "./foundation.css" layer(system.foundation);
+@import "./controls.css" layer(system.controls);
+@import "./shells.css" layer(system.shells);
+@import "./chrome.css" layer(system.shells);
+
+@import "./studio-routes.css" layer(system.routes);
+@import "./management-routes.css" layer(system.routes);
+@import "./operations-routes.css" layer(system.routes);
+@import "./showcase-route.css" layer(system.routes);
+@import "./composer.css" layer(system.routes);
+@import "./home.css" layer(system.routes);
+@import "./mobile-studio.css" layer(system.routes);
+@import "./mobile-management.css" layer(system.routes);
+@import "./mobile-operations.css" layer(system.routes);
+@import "./branding.css" layer(system.routes);
+@import "./auth.css" layer(system.routes);

@@ -1,0 +1,22 @@
+[Unit]
+Description=AI Video closed-pilot ngrok tunnel
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ngrok
+Group=ngrok
+Environment=HOME=/var/lib/ngrok
+ExecStart=/usr/local/bin/ngrok http 127.0.0.1:8080 --config /etc/ngrok/ngrok.yml --traffic-policy-file /etc/ngrok/pilot-policy.yml --log stdout
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ngrok
+
+[Install]
+WantedBy=multi-user.target

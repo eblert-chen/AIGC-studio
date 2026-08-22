@@ -1,0 +1,150 @@
+# Local-source frontend backend. The repository-level
+# scripts/prepare-relay-local-db-secrets.ps1 renders ignored development files.
+
+x-new-api-dev-build: &new-api-dev-build
+  context: .
+  dockerfile: Dockerfile.dev
+  args:
+    RELAY_BUILD_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+    RELAY_BUILD_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:-1111111111111111111111111111111111111111}
+    RELAY_BUILD_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:-sha256:1111111111111111111111111111111111111111111111111111111111111111}
+    RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:-1}
+    RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:-sha256:1111111111111111111111111111111111111111111111111111111111111111}
+
+x-new-api-dev-role-environment: &new-api-dev-role-environment
+  APP_ENV: development
+  DEPLOYMENT_ENV: development
+  NODE_TYPE: master
+  RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "true"
+  RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "false"
+  RELAY_DATABASE_SECRET_FILES_REQUIRED: "false"
+  RELAY_SCHEMA_OWNER_DATABASE_ROLE: relay_schema_owner
+  RELAY_MIGRATION_DATABASE_ROLE: relay_schema_migrator
+  RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+  RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:-1111111111111111111111111111111111111111}
+  RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:-sha256:1111111111111111111111111111111111111111111111111111111111111111}
+  RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:-1}
+
+services:
+  relay-new-api-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: new_api
+      POSTGRES_PASSWORD: ${NEW_API_POSTGRES_PASSWORD:-local-new-api-postgres-password-x}
+      POSTGRES_DB: new_api
+    volumes: [dev_pg_data:/var/lib/postgresql/data]
+    networks: [dev-network]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U new_api -d new_api"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    networks: [dev-network]
+    restart: unless-stopped
+
+  relay-new-api-db-role-pre:
+    build: *new-api-dev-build
+    image: new-api-dev:local
+    entrypoint: ["/new-api", "relay-provision-database-roles"]
+    environment:
+      <<: *new-api-dev-role-environment
+      SQL_DSN_FILE: /run/secrets/relay-role-admin-dsn
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: relay_schema_owner
+      RELAY_MIGRATION_DATABASE_ROLE: relay_schema_migrator
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+      RELAY_MIGRATION_DATABASE_PASSWORD_FILE: /run/secrets/relay-migration-password
+      RELAY_RUNTIME_DATABASE_PASSWORD_FILE: /run/secrets/relay-runtime-password
+      RELAY_DOWNLOAD_EDGE_DATABASE_PASSWORD_FILE: /run/secrets/relay-download-edge-password
+    volumes:
+      - ../../deploy/secrets/relay-local-role-admin-dsn:/run/secrets/relay-role-admin-dsn:ro
+      - ../../deploy/secrets/relay-local-migration-db-password:/run/secrets/relay-migration-password:ro
+      - ../../deploy/secrets/relay-local-runtime-db-password:/run/secrets/relay-runtime-password:ro
+      - ../../deploy/secrets/relay-local-download-edge-db-password:/run/secrets/relay-download-edge-password:ro
+    networks: [dev-network]
+    depends_on:
+      relay-new-api-postgres: {condition: service_healthy}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    restart: "no"
+
+  relay-new-api-migrate:
+    build: *new-api-dev-build
+    image: new-api-dev:local
+    entrypoint: ["/new-api", "relay-migrate"]
+    environment:
+      <<: *new-api-dev-role-environment
+      SQL_DSN_FILE: /run/secrets/relay-migration-sql-dsn
+      RELAY_PROVIDER_CREDENTIAL_KEYRING_JSON: '${NEW_API_RELAY_LOCAL_PROVIDER_CREDENTIAL_KEYRING_JSON:-{"schema_version":1,"active_key_id":"local-v1","keys":{"local-v1":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}}}'
+    volumes:
+      - ../../deploy/secrets/relay-local-migration-sql-dsn:/run/secrets/relay-migration-sql-dsn:ro
+    networks: [dev-network]
+    depends_on:
+      relay-new-api-db-role-pre: {condition: service_completed_successfully}
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    restart: "no"
+
+  relay-new-api-db-role-post:
+    build: *new-api-dev-build
+    image: new-api-dev:local
+    entrypoint: ["/new-api", "relay-provision-edge-login"]
+    environment:
+      <<: *new-api-dev-role-environment
+      SQL_DSN_FILE: /run/secrets/relay-role-admin-dsn
+      RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED: "true"
+      RELAY_SCHEMA_OWNER_DATABASE_ROLE: relay_schema_owner
+      RELAY_MIGRATION_DATABASE_ROLE: relay_schema_migrator
+      RELAY_RUNTIME_DATABASE_ROLE: relay_runtime
+    volumes:
+      - ../../deploy/secrets/relay-local-role-admin-dsn:/run/secrets/relay-role-admin-dsn:ro
+    networks: [dev-network]
+    depends_on:
+      relay-new-api-migrate: {condition: service_completed_successfully}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    restart: "no"
+
+  new-api:
+    build: *new-api-dev-build
+    image: new-api-dev:local
+    ports: ["3000:3000"]
+    volumes:
+      - dev_data:/data
+      - ../../deploy/secrets/relay-local-runtime-sql-dsn:/run/secrets/relay-runtime-sql-dsn:ro
+    environment:
+      <<: *new-api-dev-role-environment
+      SQL_DSN_FILE: /run/secrets/relay-runtime-sql-dsn
+      REDIS_CONN_STRING: redis://redis
+      TZ: Asia/Shanghai
+      BATCH_UPDATE_ENABLED: "false"
+      RELAY_CODEX_CREDENTIAL_AUTO_REFRESH_ENABLED: "false"
+      RELAY_NATIVE_PAID_COMPAT_ENABLED: "false"
+      SESSION_COOKIE_SECURE: "false"
+      RELAY_PROVIDER_CREDENTIAL_KEYRING_JSON: '${NEW_API_RELAY_LOCAL_PROVIDER_CREDENTIAL_KEYRING_JSON:-{"schema_version":1,"active_key_id":"local-v1","keys":{"local-v1":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}}}'
+    depends_on:
+      redis: {condition: service_started}
+      relay-new-api-migrate: {condition: service_completed_successfully}
+      relay-new-api-db-role-post: {condition: service_completed_successfully}
+    networks: [dev-network]
+    restart: unless-stopped
+
+volumes:
+  dev_data:
+  dev_pg_data:
+
+networks:
+  dev-network:
+    driver: bridge

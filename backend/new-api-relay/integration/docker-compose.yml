@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relay_it
+      POSTGRES_PASSWORD: relay-it-postgres-password
+      POSTGRES_DB: relay_it
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay_it -d relay_it"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--appendfsync",
+        "everysec",
+        "--requirepass",
+        "relay-it-redis-password",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli --no-auth-warning -a relay-it-redis-password ping | grep -q PONG",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - redis-data:/data
+
+  go-race:
+    image: golang:1.25.1-bookworm
+    working_dir: /src
+    environment:
+      GOTOOLCHAIN: local
+      GOWORK: "off"
+      CGO_ENABLED: "1"
+      GOEXPERIMENT: greenteagc
+      TEST_POSTGRES_DSN: postgresql://relay_it:relay-it-postgres-password@postgres:5432/relay_it?sslmode=disable
+      TEST_REDIS_URL: redis://:relay-it-redis-password@redis:6379/0
+      TEST_RELAY_SCHEMA: relay_it
+      TEST_REDIS_NAMESPACE: relay_it
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ..:/src
+      - go-module-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    command:
+      [
+        "sh",
+        "-c",
+        "gcc --version >/dev/null && /usr/local/go/bin/go test -tags=integration -race -shuffle=on -count=1 -timeout=15m ./integration/platformrelay",
+      ]
+
+volumes:
+  postgres-data:
+  redis-data:
+  go-module-cache:
+  go-build-cache:

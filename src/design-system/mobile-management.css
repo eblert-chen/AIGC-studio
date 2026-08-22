@@ -1,0 +1,384 @@
+/* Daylight Conform Desk — management recomposition for phones. */
+
+.control-mobile-commandbar { display: none; }
+.control-filter-disclosure { display: contents; }
+.control-filter-disclosure > summary { display: none; }
+.control-filter-disclosure:not([open]) > .control-filterbar { display: grid; }
+
+@media (max-width: 720px) {
+  .control-shell {
+    --management-chrome: 64px;
+    --management-mobile-nav: 52px;
+    --management-gutter: 16px;
+    --management-section-gap: 24px;
+    height: 100dvh;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: var(--management-chrome) var(--management-mobile-nav) minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .control-shell > .control-topbar {
+    z-index: 30;
+    height: var(--management-chrome);
+    min-height: var(--management-chrome);
+    grid-column: 1;
+    grid-row: 1;
+    padding: 0 12px;
+    overflow: visible;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .control-shell > .control-topbar > :not(.control-mobile-commandbar) { display: none; }
+
+  .control-shell .control-mobile-commandbar {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .control-shell .control-mobile-home,
+  .control-shell .control-mobile-command-menu > summary {
+    display: grid;
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    color: var(--text-soft);
+    background: var(--surface);
+  }
+
+  .control-shell .control-mobile-home { color: var(--accent-strong); background: var(--accent-soft); }
+  .control-shell .control-mobile-home.is-static { pointer-events: none; }
+  .control-shell .control-mobile-home .brand-logo { width: 28px; height: 28px; }
+  .control-shell .control-mobile-heading { display: grid; min-width: 0; gap: 1px; }
+  .control-shell .control-mobile-heading :is(small, strong) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .control-shell .control-mobile-heading small { color: var(--text-muted); font-size: 12px; line-height: 1.25; }
+  .control-shell .control-mobile-heading strong { color: var(--text); font-size: 15px; font-weight: var(--weight-bold); line-height: 1.3; letter-spacing: -0.02em; }
+  .control-shell .control-mobile-command-menu { position: relative; min-width: 0; }
+  .control-shell .control-mobile-command-menu > summary { cursor: pointer; list-style: none; }
+  .control-shell .control-mobile-command-menu > summary::-webkit-details-marker { display: none; }
+  .control-shell .control-mobile-command-menu > summary span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .control-shell .control-mobile-command-menu[open] > summary { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); }
+  .control-shell .control-mobile-command-panel {
+    position: absolute;
+    z-index: 42;
+    top: calc(100% + 9px);
+    right: 0;
+    display: grid;
+    width: min(332px, calc(100vw - 24px));
+    max-height: calc(100dvh - 82px);
+    padding: 6px 14px 12px;
+    overflow: auto;
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    color: var(--text-soft);
+    background: var(--surface);
+    box-shadow: var(--shadow-menu);
+  }
+  .control-shell .control-mobile-command-panel > section {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: 72px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    padding-block: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .control-shell .control-mobile-command-panel > section > span { color: var(--text-muted); font-size: 12px; font-weight: var(--weight-semibold); }
+  .control-shell .control-mobile-command-panel :is(.surface-switch, .skin-switcher, .demo-account-switcher, .control-company-context-switcher) { width: 100%; min-width: 0; max-width: none; margin: 0; }
+  .control-shell .control-mobile-command-panel .surface-switch { display: grid; height: 52px; min-height: 52px; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; padding: 3px; }
+  .control-shell .control-mobile-command-panel .surface-switch button { width: 100%; min-width: 0; min-height: 44px; padding-inline: 6px; }
+  .control-shell .control-mobile-command-panel :is(.skin-switcher, .demo-account-switcher) { min-height: 44px; }
+  .control-shell .control-mobile-command-panel :is(.skin-switcher, .demo-account-switcher, .control-company-context-switcher) select { width: 100%; min-width: 0; min-height: 44px; padding-inline: 10px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--text); background: var(--surface); font-size: 13px; text-overflow: ellipsis; }
+  .control-shell .control-mobile-command-panel .demo-account-switcher > span { display: none; }
+  .control-shell .control-mobile-account > div { display: grid; min-width: 0; gap: 3px; }
+  .control-shell .control-mobile-account > div :is(strong, small) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .control-shell .control-mobile-account > div strong { color: var(--text); font-size: 13px; }
+  .control-shell .control-mobile-account > div small { color: var(--text-muted); font-size: 12px; }
+  .control-shell .control-mobile-account > div button,
+  .control-shell .control-mobile-command-panel .control-platform-view-switch { width: 100%; min-height: 44px; margin-top: 6px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--text-soft); background: var(--surface); font-size: 13px; }
+  .control-shell .control-mobile-command-panel > .mode-badge { justify-self: end; min-height: 28px; margin-top: 10px; padding-inline: 8px; font-size: 12px; }
+
+  /* A horizontal scope ledger replaces the desktop rail. */
+  .control-shell > .control-sidebar {
+    display: block;
+    min-width: 0;
+    min-height: var(--management-mobile-nav);
+    grid-column: 1;
+    grid-row: 2;
+    padding: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+    scroll-padding-inline: 12px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+  .control-shell .control-sidebar > :not(nav) { display: none; }
+  .control-shell .control-sidebar nav { display: flex; width: max-content; min-width: 100%; height: var(--management-mobile-nav); padding-inline: 8px; overflow: visible; }
+  .control-shell .control-sidebar nav button { display: inline-flex; width: auto; min-width: max-content; min-height: var(--management-mobile-nav); align-items: center; gap: 7px; padding-inline: 11px; border-radius: 0; color: var(--text-muted); background: transparent; }
+  .control-shell .control-sidebar nav button svg { width: 17px; height: 17px; }
+  .control-shell .control-sidebar nav button span { font-size: 13px; }
+  .control-shell .control-sidebar nav button.is-active { color: var(--accent-strong); background: transparent; }
+  .control-shell .control-sidebar nav button.is-active::before { inset: auto 10px 0; width: auto; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
+
+  .control-shell > .control-main { grid-column: 1; grid-row: 3; }
+  .control-shell .control-content { max-width: none; padding: 22px var(--management-gutter) 52px; }
+  .control-shell .control-page-header { min-height: 0; grid-template-columns: minmax(0, 1fr); gap: 14px; padding-bottom: 18px; }
+  .control-shell .control-page-header h1 { font-size: 24px; }
+  .control-shell .control-page-header p { margin-top: 7px; font-size: 13px; line-height: 1.55; }
+  .control-shell .control-page-header > div:first-child > span { margin-top: 6px; font-size: 12px; }
+  .control-shell .control-page-actions { display: grid; width: 100%; max-width: none; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
+  .control-shell .control-page-actions > button { width: 100%; min-height: 44px; }
+
+  .control-shell .control-summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 18px;
+  }
+  .control-shell .control-summary-strip > div { min-height: 88px; padding: 14px 12px 14px 0; border-bottom: 1px solid var(--line); }
+  .control-shell .control-summary-strip > div:nth-child(even) { padding-inline: 12px 0; border-inline-end: 0; }
+  .control-shell .control-summary-strip > div:nth-last-child(-n + 2) { border-bottom: 0; }
+  .control-shell .control-summary-strip dd { font-size: 18px; }
+
+  .control-shell .control-section {
+    overflow: visible;
+    border: 0;
+    border-top: 1px solid var(--line-strong);
+    border-radius: 0;
+  }
+  .control-shell .control-section-title { align-items: start; padding: 13px 0; }
+  .control-shell .control-section-title h2 { font-size: 15px; }
+  .control-shell .control-section-title p { font-size: 12px; }
+  .control-shell .control-section-title > span { padding-top: 2px; }
+
+  .control-filter-disclosure { display: block; margin-top: 18px; border-block: 1px solid var(--line-strong); }
+  .control-filter-disclosure > summary {
+    display: grid;
+    min-height: 52px;
+    grid-template-columns: 20px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    color: var(--text-soft);
+    list-style: none;
+  }
+  .control-filter-disclosure > summary::-webkit-details-marker { display: none; }
+  .control-filter-disclosure > summary > span { display: grid; gap: 1px; }
+  .control-filter-disclosure > summary strong { color: var(--text); font-size: 13px; }
+  .control-filter-disclosure > summary small { color: var(--text-muted); font-size: 12px; }
+  .control-filter-disclosure .is-expanded-copy { display: none; }
+  .control-filter-disclosure[open] .is-collapsed-copy { display: none; }
+  .control-filter-disclosure[open] .is-expanded-copy { display: inline; }
+  .control-filter-disclosure:not([open]) > .control-filterbar { display: none; }
+  .control-filter-disclosure > .control-filterbar,
+  .control-shell .control-filterbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    padding: 14px 0 16px;
+    border: 0;
+  }
+  .control-filter-disclosure > .control-filterbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .control-shell .control-filterbar > button { min-height: 44px; }
+  .control-shell .control-filterbar > span:last-child { grid-column: 1 / -1; }
+  .control-shell .control-filterbar :is(select, input, button) { min-height: var(--control-size-touch, 44px); }
+
+  /* Data tables become two-column evidence records instead of squeezed rows. */
+  .control-shell .control-table-wrap.is-mobile-records { overflow: visible; }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table { display: block; min-width: 0; }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > tbody { display: grid; }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > tbody > tr {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 16px;
+    padding-block: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > tbody > tr:hover > td { background: transparent; }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > tbody > tr > td {
+    display: grid;
+    min-width: 0;
+    min-height: 64px;
+    align-content: start;
+    gap: 3px;
+    padding: 8px 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > tbody > tr > td:has(> small),
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > tbody > tr > td:has(> .control-chip-row) { min-height: 82px; }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > tbody > tr > td:has(> .control-copy-id) { min-height: 86px; }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > tbody > tr > td:has(> strong):has(> .control-copy-id) { min-height: 124px; }
+  .control-shell .control-table-wrap.is-mobile-records td::before {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--text-muted);
+    content: attr(data-label);
+    font-size: 12px;
+    font-weight: var(--weight-semibold);
+  }
+  .control-shell .control-table-wrap.is-mobile-records td:not([data-label])::before { min-height: 17px; }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > tbody > tr > td.is-actions { width: 100%; grid-column: 1 / -1; display: flex; min-height: 84px; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; }
+  .control-shell .control-table-wrap.is-mobile-records > .control-table > tbody > tr > td.is-actions::before { width: 100%; }
+  .control-shell .control-table td.is-actions > button { min-width: 44px; min-height: 44px; margin: 0; padding-inline: 11px; }
+  .control-shell .control-table-wrap.is-mobile-records td.is-actions > button { min-width: var(--control-size-touch, 44px); }
+  .control-shell .control-table-wrap.is-mobile-records td > :is(.control-status, .download-state) { justify-self: start; }
+  .control-shell .control-role-actions > button { min-width: var(--control-size-touch, 44px); min-height: var(--control-size-touch, 44px); }
+  .control-shell .control-table-wrap.is-mobile-records .control-empty { grid-column: 1 / -1; min-height: 100px; place-content: center; }
+  .control-shell .control-copy-id { width: 100%; justify-content: space-between; }
+  .control-shell .control-copy-id button { min-width: 44px; min-height: 44px; }
+  .control-shell .control-copy-id button > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  .control-shell .is-recent-tasks-table td:nth-child(1)::before { content: "任务"; }
+  .control-shell .is-recent-tasks-table td:nth-child(2)::before { content: "创建人"; }
+  .control-shell .is-recent-tasks-table td:nth-child(3)::before { content: "模型"; }
+  .control-shell .is-recent-tasks-table td:nth-child(4)::before { content: "状态"; }
+  .control-shell .is-recent-tasks-table td:nth-child(5)::before { content: "结算"; }
+  .control-shell .is-recent-tasks-table td:nth-child(6)::before { content: "时间"; }
+  .control-shell .is-members-table td:nth-child(1)::before { content: "成员"; }
+  .control-shell .is-members-table td:nth-child(2)::before { content: "角色"; }
+  .control-shell .is-members-table td:nth-child(3)::before { content: "状态"; }
+  .control-shell .is-members-table td:nth-child(4)::before { content: "账号 ID"; }
+  .control-shell .is-members-table td:nth-child(5)::before { content: "操作"; }
+  .control-shell .is-invitations-table td:nth-child(1)::before { content: "受邀人"; }
+  .control-shell .is-invitations-table td:nth-child(2)::before { content: "初始级别"; }
+  .control-shell .is-invitations-table td:nth-child(3)::before { content: "状态"; }
+  .control-shell .is-invitations-table td:nth-child(4)::before { content: "有效期"; }
+  .control-shell .is-invitations-table td:nth-child(5)::before { content: "操作"; }
+  .control-shell .is-company-models-table td:nth-child(1)::before { content: "模型"; }
+  .control-shell .is-company-models-table td:nth-child(2)::before { content: "能力版本"; }
+  .control-shell .is-company-models-table td:nth-child(3)::before { content: "计费方式"; }
+  .control-shell .is-company-models-table td:nth-child(4)::before { content: "公司单价"; }
+  .control-shell .is-company-models-table td:nth-child(5)::before { content: "能力"; }
+  .control-shell .is-report-tasks-table td:nth-child(1)::before { content: "任务"; }
+  .control-shell .is-report-tasks-table td:nth-child(2)::before { content: "员工"; }
+  .control-shell .is-report-tasks-table td:nth-child(3)::before { content: "模型"; }
+  .control-shell .is-report-tasks-table td:nth-child(4)::before { content: "状态"; }
+  .control-shell .is-report-tasks-table td:nth-child(5)::before { content: "报价"; }
+  .control-shell .is-report-tasks-table td:nth-child(6)::before { content: "实际消费"; }
+  .control-shell .is-report-tasks-table td:nth-child(7)::before { content: "创建时间"; }
+  .control-shell .is-report-consumption-table td:nth-child(1)::before { content: "任务"; }
+  .control-shell .is-report-consumption-table td:nth-child(2)::before { content: "员工"; }
+  .control-shell .is-report-consumption-table td:nth-child(3)::before { content: "模型"; }
+  .control-shell .is-report-consumption-table td:nth-child(4)::before { content: "计费方式"; }
+  .control-shell .is-report-consumption-table td:nth-child(5)::before { content: "单价"; }
+  .control-shell .is-report-consumption-table td:nth-child(6)::before { content: "数量"; }
+  .control-shell .is-report-consumption-table td:nth-child(7)::before { content: "金额"; }
+  .control-shell .is-report-consumption-table td:nth-child(8)::before { content: "结算时间"; }
+  .control-shell .is-download-audit-table td:nth-child(1)::before { content: "任务"; }
+  .control-shell .is-download-audit-table td:nth-child(2)::before { content: "产物"; }
+  .control-shell .is-download-audit-table td:nth-child(3)::before { content: "下载人"; }
+  .control-shell .is-download-audit-table td:nth-child(4)::before { content: "状态"; }
+  .control-shell .is-download-audit-table td:nth-child(5)::before { content: "签发时间"; }
+  .control-shell .is-download-audit-table td:nth-child(6)::before { content: "完成时间"; }
+  .control-shell .is-download-audit-table td:nth-child(7)::before { content: "已传输"; }
+  .control-shell .is-recharges-table td:nth-child(1)::before { content: "充值金额"; }
+  .control-shell .is-recharges-table td:nth-child(2)::before { content: "账本备注"; }
+  .control-shell .is-recharges-table td:nth-child(3)::before { content: "记录 ID"; }
+  .control-shell .is-recharges-table td:nth-child(4)::before { content: "充值时间"; }
+  .control-shell .is-wallet-ledger-table td:nth-child(1)::before { content: "类型"; }
+  .control-shell .is-wallet-ledger-table td:nth-child(2)::before { content: "可用变动"; }
+  .control-shell .is-wallet-ledger-table td:nth-child(3)::before { content: "预留变动"; }
+  .control-shell .is-wallet-ledger-table td:nth-child(4)::before { content: "关联任务"; }
+  .control-shell .is-wallet-ledger-table td:nth-child(5)::before { content: "说明"; }
+  .control-shell .is-wallet-ledger-table td:nth-child(6)::before { content: "时间"; }
+  .control-shell .is-global-users-table td:nth-child(1)::before { content: "账号"; }
+  .control-shell .is-global-users-table td:nth-child(2)::before { content: "状态"; }
+  .control-shell .is-global-users-table td:nth-child(3)::before { content: "安全版本"; }
+  .control-shell .is-global-users-table td:nth-child(4)::before { content: "最近登录"; }
+  .control-shell .is-global-users-table td:nth-child(5)::before { content: "更新时间"; }
+  .control-shell .is-global-users-table td:nth-child(6)::before { content: "操作"; }
+
+  .control-shell .model-capability-summary.is-compact { position: static; }
+  .control-shell .model-capability-summary.is-compact > summary { min-height: 44px; }
+  .control-shell .model-capability-details { position: static; width: 100%; margin-top: 8px; border-inline: 0; border-radius: 0; box-shadow: none; }
+  .control-shell .control-pagination { min-height: 60px; }
+  .control-shell .control-pagination button { min-height: 44px; }
+
+  .control-shell .control-role-grid,
+  .control-shell .control-resource-list { grid-template-columns: minmax(0, 1fr); }
+  .control-shell .control-role-grid > article,
+  .control-shell .control-resource-list > article,
+  .control-shell .control-resource-list.is-admin > article { grid-template-columns: 36px minmax(0, 1fr); }
+  .control-shell :is(.control-role-grid, .control-resource-list) article > :is(code, .control-status, button, .control-role-actions) { grid-column: 2; justify-self: start; }
+  .control-shell .control-resource-edit { min-height: 44px; margin: 0; }
+  .control-shell .control-permission-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .control-shell .control-permission-summary > span:nth-child(even) { border-inline-end: 0; }
+  .control-shell .control-permission-summary button { grid-column: 1 / -1; min-height: 44px; margin: 10px 0; }
+  .control-shell .control-permission-row { grid-template-columns: minmax(0, 1fr) 124px; }
+  .control-shell .control-permission-row > span:not(.control-permission-copy) { grid-column: 1; }
+  .control-shell .control-permission-row select { grid-column: 2; grid-row: 1 / span 2; min-height: 44px; }
+
+  .control-shell .control-company-finance-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .control-shell .control-company-finance-strip > div:nth-child(2n) { border-inline-end: 0; }
+  .control-shell .control-company-finance-strip > div:nth-child(-n + 2) { border-bottom: 1px solid var(--line); }
+  .control-shell .control-company-panel-tabs { overflow-x: auto; padding-inline: 10px; scrollbar-width: thin; }
+  .control-shell .control-company-panel-tabs button { min-width: max-content; min-height: 48px; }
+  .control-shell .control-company-panel-body { padding: 14px 16px; }
+  .control-shell .control-entitlement-list > article { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .control-shell .control-entitlement-actions { justify-content: flex-start; flex-wrap: wrap; }
+  .control-shell .control-entitlement-actions button { min-height: 44px; }
+
+  /* Bounded, keyboard-safe bottom sheets. */
+  .control-shell .control-drawer-layer { align-items: flex-end; }
+  .control-shell .control-drawer,
+  .control-shell .control-drawer.is-wide {
+    width: 100%;
+    height: auto;
+    min-height: min(440px, calc(100dvh - 18px));
+    max-height: calc(100dvh - 18px);
+    border: 0;
+    border-top: 1px solid var(--line-strong);
+    border-radius: 14px 14px 0 0;
+  }
+  .control-shell .control-drawer.is-wide { height: min(92dvh, 760px); }
+  .control-shell .control-drawer > header { min-height: 74px; padding: 14px 16px; }
+  .control-shell .control-drawer > header > button { width: 44px; min-width: 44px; min-height: 44px; }
+  .control-shell .control-form { padding: 16px; }
+  .control-shell .control-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .control-shell .control-form :is(input, select, textarea),
+  .control-shell .control-form .control-button { min-height: 44px; font-size: 13px; }
+  .control-shell .control-form > footer { bottom: -16px; margin-inline: -16px; padding: 12px 16px 16px; }
+  .control-shell .control-form > footer > button { flex: 1 1 0; min-height: 44px; }
+
+  .control-shell .control-alert,
+  .control-shell .control-loading { padding-inline: 16px; }
+  .control-shell .control-access-state { min-height: calc(100dvh - 184px); grid-template-columns: minmax(0, 1fr); justify-items: start; }
+  .control-shell .control-toast { right: 16px; bottom: 16px; left: 16px; max-width: none; }
+
+  .control-shell .surface-switch button,
+  .control-shell .control-button,
+  .control-shell .control-section-title > button { min-height: var(--control-size-touch, 44px); }
+}
+
+@media (max-width: 390px) {
+  .control-shell { --management-gutter: 14px; }
+  .control-shell .control-mobile-command-panel { width: calc(100vw - 20px); }
+  .control-shell .control-summary-strip dd { font-size: 17px; }
+  .control-shell .control-filterbar,
+  .control-filter-disclosure > .control-filterbar { grid-template-columns: minmax(0, 1fr); }
+  .control-shell .control-filterbar > span:last-child { grid-column: 1; }
+  .control-shell .control-page-actions { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 330px) {
+  .control-shell { --management-gutter: 12px; }
+  .control-shell .control-mobile-commandbar { gap: 8px; }
+  .control-shell .control-mobile-command-panel > section { grid-template-columns: 62px minmax(0, 1fr); }
+  .control-shell .control-summary-strip { grid-template-columns: minmax(0, 1fr); }
+  .control-shell .control-summary-strip > div,
+  .control-shell .control-summary-strip > div:nth-child(even) { min-height: 72px; padding: 12px 0; border-inline-end: 0; border-bottom: 1px solid var(--line); }
+  .control-shell .control-summary-strip > div:last-child { border-bottom: 0; }
+}

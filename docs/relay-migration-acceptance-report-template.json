@@ -1,0 +1,41 @@
+{
+  "template_only": true,
+  "schema_version": 2,
+  "report_id": "replace-with-generated-uuid",
+  "generated_at_utc": "replace-with-generated-utc",
+  "environment": "replace-with-environment",
+  "environment_class": "staging",
+  "candidate": {
+    "git_revision": "replace-with-committed-extension-fork-revision",
+    "upstream_git_revision": "0ab02020603d22e5613bc4cf46bfab06f8567769",
+    "image_digest": "sha256:replace-with-64-lowercase-hex-characters"
+  },
+  "execution": {
+    "contracts_enabled": false,
+    "faults_enabled": false,
+    "mutating_service_actions_performed": false,
+    "python_relay_changed": false
+  },
+  "gates": {
+    "gate-id": {
+      "id": "gate-id",
+      "status": "PASS|FAIL|BLOCKED",
+      "summary": "generated result",
+      "evidence": [],
+      "evidence_sha256": "sha256:replace-with-64-lowercase-hex-characters"
+    }
+  },
+  "overall": {
+    "status": "PASS|FAIL|BLOCKED",
+    "decision": "NO-GO|OFFLINE_PARITY_PASSED_REQUIRES_EXTERNAL_RELEASE_GATES",
+    "technical_acceptance_passed": false,
+    "active_production_relay": "new-api-v1",
+    "python_relay_artifact_mode": "offline_historical_oracle_only",
+    "python_relay_production_admission_allowed": false,
+    "note": "This template is illustrative only. Offline parity never authorizes production release; external Provider, OBS, IdP, payment, backup/restore, capacity, and signed release evidence remain mandatory."
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "canonical_sha256": "sha256:replace-with-64-lowercase-hex-characters"
+  }
+}

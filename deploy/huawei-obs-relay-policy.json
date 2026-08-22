@@ -1,0 +1,24 @@
+{
+  "Version": "1.1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "obs:bucket:HeadBucket"
+      ],
+      "Resource": [
+        "obs:*:*:bucket:chen-aivideo"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "obs:object:GetObject",
+        "obs:object:PutObject"
+      ],
+      "Resource": [
+        "obs:*:*:object:chen-aivideo/outputs/*"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>旭天 — AI视频创作</title>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#000;
+  --bg-1:#0a0a0a;
+  --bg-2:#111;
+  --bg-3:#1a1a1a;
+  --bg-hover:#222;
+  --text:#fff;
+  --text-2:#a0a0a0;
+  --text-3:#666;
+  --line:#1e1e1e;
+  --line-2:#2a2a2a;
+  --accent:#ff6b35;
+  --accent-soft:rgba(255,107,53,.12);
+  --r:6px;
+  --r-btn:8px;
+  --r-pill:30px;
+  --font:-apple-system,"PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+  --sb:60px;
+  --tb:52px;
+}
+html{-webkit-font-smoothing:antialiased}
+body{font-family:var(--font);font-size:14px;font-weight:400;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}
+::selection{background:rgba(255,107,53,.25)}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,textarea{font-family:inherit;border:none;outline:none;background:none;color:inherit}
+img{display:block;width:100%;height:100%;object-fit:cover}
+
+/* Scrollbar */
+.main::-webkit-scrollbar{width:4px}
+.main::-webkit-scrollbar-track{background:transparent}
+.main::-webkit-scrollbar-thumb{background:#333;border-radius:2px}
+
+/* Shell */
+.app{display:grid;grid-template-columns:var(--sb) 1fr;grid-template-rows:var(--tb) 1fr;height:100vh}
+
+/* Topbar */
+.topbar{grid-column:1/-1;display:flex;align-items:center;gap:16px;padding:0 20px;background:var(--bg-1);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:8px}
+.brand-mark{width:28px;height:28px;border-radius:var(--r);background:var(--accent);display:grid;place-items:center;font-size:14px;font-weight:600;color:#fff}
+.brand-name{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.brand-name span{font-size:11px;font-weight:400;color:var(--text-3);margin-left:4px}
+.search{flex:1;max-width:320px;position:relative}
+.search input{width:100%;height:34px;padding:0 12px 0 34px;border-radius:var(--r-btn);background:var(--bg-2);font-size:13px;color:var(--text-2)}
+.search input::placeholder{color:var(--text-3)}
+.search input:focus{background:var(--bg-3);color:var(--text)}
+.search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);width:14px;height:14px;color:var(--text-3)}
+.tb-actions{display:flex;align-items:center;gap:6px;margin-left:auto}
+.tb-btn{width:34px;height:34px;border-radius:var(--r-btn);display:grid;place-items:center;color:var(--text-2);transition:all .15s;position:relative}
+.tb-btn:hover{background:var(--bg-2);color:var(--text)}
+.tb-btn svg{width:18px;height:18px}
+.tb-btn .dot{position:absolute;top:7px;right:7px;width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.user{display:flex;align-items:center;gap:8px;padding:3px 12px 3px 3px;border-radius:var(--r-pill);background:var(--bg-2);transition:all .15s}
+.user:hover{background:var(--bg-3)}
+.user-avatar{width:26px;height:26px;border-radius:50%;background:#3b5998;display:grid;place-items:center;font-size:11px;font-weight:600}
+.user-name{font-size:12px;font-weight:500}
+
+/* Sidebar */
+.sidebar{grid-column:1;grid-row:2;display:flex;flex-direction:column;align-items:center;gap:2px;padding:12px 0;background:var(--bg-1);border-right:1px solid var(--line)}
+.nav{width:40px;height:40px;border-radius:var(--r-btn);display:grid;place-items:center;color:var(--text-3);transition:all .15s;position:relative}
+.nav svg{width:20px;height:20px}
+.nav:hover{background:var(--bg-2);color:var(--text-2)}
+.nav.active{background:var(--accent-soft);color:var(--accent)}
+.nav::after{content:attr(data-t);position:absolute;left:calc(100% + 6px);top:50%;transform:translateY(-50%);padding:3px 8px;border-radius:4px;background:#333;color:#fff;font-size:11px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s;z-index:99}
+.nav:hover::after{opacity:1}
+.nav-spacer{flex:1}
+
+/* Main */
+.main{grid-column:2;grid-row:2;overflow-y:auto;overflow-x:hidden;scroll-behavior:smooth}
+
+/* Tabs */
+.tabs{display:flex;align-items:center;gap:4px;padding:12px 20px;position:sticky;top:0;background:var(--bg);z-index:50}
+.tab{padding:6px 14px;border-radius:var(--r-pill);font-size:13px;font-weight:500;color:var(--text-3);transition:all .15s;white-space:nowrap}
+.tab:hover{color:var(--text-2);background:var(--bg-2)}
+.tab.active{color:var(--text);background:var(--bg-3)}
+.tab.primary.active{color:var(--accent);background:var(--accent-soft)}
+.tab-sep{width:1px;height:16px;background:var(--line-2);margin:0 4px}
+
+/* Feed */
+.feed{padding:0 20px 160px;columns:4;column-gap:12px}
+@media(max-width:1400px){.feed{columns:3}}
+@media(max-width:1000px){.feed{columns:2}}
+@media(max-width:640px){.feed{columns:1}}
+
+.card{break-inside:avoid;margin-bottom:12px;border-radius:var(--r);overflow:hidden;position:relative;background:var(--bg-2);cursor:pointer;transition:transform .2s}
+.card:hover{transform:translateY(-2px)}
+.card-img{position:relative;overflow:hidden}
+.card-img img{transition:transform .4s}
+.card:hover .card-img img{transform:scale(1.03)}
+.card-badge{position:absolute;top:8px;right:8px;display:flex;align-items:center;gap:3px;padding:2px 7px;border-radius:var(--r-pill);background:rgba(0,0,0,.6);backdrop-filter:blur(4px);font-size:10px;font-weight:500;color:#fff}
+.card-badge svg{width:8px;height:8px}
+.card-ovl{position:absolute;inset:0;background:linear-gradient(180deg,transparent 55%,rgba(0,0,0,.85));opacity:0;transition:opacity .2s;display:flex;align-items:flex-end;padding:10px}
+.card:hover .card-ovl{opacity:1}
+.card-info{flex:1;min-width:0}
+.card-cat{font-size:10px;font-weight:500;color:var(--accent);margin-bottom:1px}
+.card-title{font-size:13px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-meta{font-size:10px;color:var(--text-3);margin-top:2px}
+.card-btn{padding:5px 10px;border-radius:var(--r-btn);background:var(--accent);font-size:11px;font-weight:600;color:#fff;white-space:nowrap;opacity:0;transform:translateY(4px);transition:all .2s}
+.card:hover .card-btn{opacity:1;transform:translateY(0)}
+
+/* Hero card (first item, spans 2 cols) */
+.hero-card{break-inside:avoid;margin-bottom:12px;border-radius:var(--r);overflow:hidden;position:relative;height:200px;cursor:pointer}
+.hero-card img{transition:transform .5s}
+.hero-card:hover img{transform:scale(1.02)}
+.hero-card-ovl{position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.8) 0%,rgba(0,0,0,.3) 60%,transparent)}
+.hero-card-content{position:absolute;left:0;top:0;bottom:0;display:flex;flex-direction:column;justify-content:center;padding:0 24px;max-width:420px}
+.hero-tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;color:var(--accent);margin-bottom:6px}
+.hero-tag::before{content:'';width:4px;height:4px;border-radius:50%;background:var(--accent)}
+.hero-title{font-size:22px;font-weight:600;letter-spacing:-.02em;color:#fff;line-height:1.2;margin-bottom:4px}
+.hero-desc{font-size:12px;font-weight:400;color:var(--text-2);line-height:1.4}
+.hero-btn{margin-top:10px;padding:7px 16px;border-radius:var(--r-btn);background:var(--accent);font-size:12px;font-weight:600;color:#fff;align-self:flex-start;transition:all .15s}
+.hero-btn:hover{background:#f4531a}
+
+/* Composer */
+.composer{position:fixed;bottom:12px;left:calc(var(--sb) + 50%);transform:translateX(-50%);width:min(620px,calc(100vw - var(--sb) - 32px));background:var(--bg-1);border:1px solid var(--line-2);border-radius:12px;z-index:200;overflow:hidden;transition:border-color .15s}
+.composer:hover{border-color:#383838}
+.comp-top{display:flex;align-items:center;gap:0;padding:8px 10px 0}
+.comp-tab{padding:5px 10px;border-radius:var(--r-btn) var(--r-btn) 0 0;font-size:12px;font-weight:500;color:var(--text-3);transition:all .15s;display:flex;align-items:center;gap:4px}
+.comp-tab svg{width:13px;height:13px}
+.comp-tab:hover{color:var(--text-2)}
+.comp-tab.active{color:var(--text);background:var(--bg-2)}
+.comp-mode{margin-left:auto;display:flex;gap:0;padding:2px;background:var(--bg-2);border-radius:var(--r-btn);margin-bottom:2px}
+.comp-mode button{padding:3px 10px;border-radius:5px;font-size:11px;font-weight:500;color:var(--text-3);transition:all .15s}
+.comp-mode button:hover{color:var(--text-2)}
+.comp-mode button.active{color:var(--text);background:var(--bg-3)}
+.comp-body{padding:8px 12px;display:flex;gap:8px;background:var(--bg-2)}
+.comp-attach{width:38px;height:38px;border-radius:var(--r-btn);border:1px dashed var(--line-2);display:grid;place-items:center;color:var(--text-3);transition:all .15s;flex-shrink:0}
+.comp-attach:hover{border-color:var(--accent);color:var(--accent)}
+.comp-attach svg{width:16px;height:16px}
+.comp-input{flex:1}
+.comp-input textarea{width:100%;font-size:13px;line-height:1.5;resize:none;height:38px;background:transparent;color:var(--text)}
+.comp-input textarea::placeholder{color:var(--text-3)}
+.comp-bottom{display:flex;align-items:center;gap:8px;padding:0 12px 8px;background:var(--bg-2)}
+.comp-model{display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:var(--r-btn);background:var(--bg-1);font-size:11px;font-weight:500;color:var(--text-2);transition:all .15s}
+.comp-model:hover{background:var(--bg-3)}
+.comp-model svg{width:12px;height:12px;color:var(--text-3)}
+.comp-cost{font-size:11px;color:var(--text-3)}
+.comp-cost b{color:var(--accent);font-weight:600}
+.comp-go{margin-left:auto;padding:7px 18px;border-radius:var(--r-btn);background:var(--accent);font-size:12px;font-weight:600;color:#fff;display:flex;align-items:center;gap:5px;transition:all .15s}
+.comp-go:hover{background:#f4531a}
+.comp-go svg{width:13px;height:13px}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">旭</div>
+      <div class="brand-name">旭天<span>Xutian</span></div>
+    </div>
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input placeholder="搜索灵感、模板、创作者…">
+    </div>
+    <div class="tb-actions">
+      <button class="tb-btn"><span class="dot"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button>
+      <button class="user">
+        <div class="user-avatar">陈</div>
+        <span class="user-name">陈默</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <button class="nav active" data-t="首页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg></button>
+    <button class="nav" data-t="创作"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg></button>
+    <button class="nav" data-t="素材"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></button>
+    <button class="nav" data-t="作品"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></button>
+    <button class="nav" data-t="发布"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>
+    <button class="nav" data-t="历史"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></button>
+    <div class="nav-spacer"></div>
+    <button class="nav" data-t="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+    <div class="tabs">
+      <button class="tab primary active">视频</button>
+      <button class="tab primary">模板</button>
+      <button class="tab primary">挑战</button>
+      <div class="tab-sep"></div>
+      <button class="tab active">全部</button>
+      <button class="tab">广告魔法</button>
+      <button class="tab">电影叙事</button>
+      <button class="tab">风格艺术</button>
+      <button class="tab">动漫剧场</button>
+      <button class="tab">数字人</button>
+      <button class="tab">商品展示</button>
+    </div>
+
+    <div class="feed">
+      <!-- Hero card -->
+      <div class="hero-card">
+        <img src="https://picsum.photos/seed/xt-sunrise-cinema-001/800/400" alt="">
+        <div class="hero-card-ovl"></div>
+        <div class="hero-card-content">
+          <div class="hero-tag">本周精选</div>
+          <div class="hero-title">让创意如旭日升空</div>
+          <div class="hero-desc">用 AI 将灵感转化为电影级视觉叙事</div>
+          <button class="hero-btn">开始创作 →</button>
+        </div>
+      </div>
+
+      <!-- Cards -->
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-fashion-cyber-002/400/560" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">风格艺术</div><div class="card-title">冷光未来时装</div><div class="card-meta">2.3k · 5s · 9:16</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-rain-neon-003/400/300" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">电影叙事</div><div class="card-title">雨夜街头</div><div class="card-meta">1.8k · 12s · 1:1</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-water-product-004/400/500" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">广告魔法</div><div class="card-title">水幕产品力量</div><div class="card-meta">3.1k · 8s · 16:9</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-interior-quiet-005/400/320" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">电影叙事</div><div class="card-title">室内静谧叙事</div><div class="card-meta">956 · 10s · 16:9</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-outdoor-waterproof-006/400/540" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">广告魔法</div><div class="card-title">一镜到底防水</div><div class="card-meta">4.2k · 6s · 9:16</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-city-rhythm-007/400/420" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">风格艺术</div><div class="card-title">城市生活节奏</div><div class="card-meta">1.5k · 7s · 1:1</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-glacier-vast-008/400/260" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">风格艺术</div><div class="card-title">冰原尺度感</div><div class="card-meta">2.8k · 8s · 21:9</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-miniature-fashion-009/400/520" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">风格艺术</div><div class="card-title">微缩时装片场</div><div class="card-meta">1.2k · 6s · 9:16</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-blue-silver-portrait-010/400/460" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">风格艺术</div><div class="card-title">蓝银妆容特写</div><div class="card-meta">3.5k · 4s · 4:5</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-golden-desert-011/400/340" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">风格艺术</div><div class="card-title">金色时刻沙漠</div><div class="card-meta">2.1k · 10s · 16:9</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-neon-portrait-night-012/400/580" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">风格艺术</div><div class="card-title">霓虹人像</div><div class="card-meta">5.6k · 5s · 9:16</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-img"><img src="https://picsum.photos/seed/xt-liquid-abstract-013/400/400" alt=""></div>
+        <div class="card-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>视频</div>
+        <div class="card-ovl">
+          <div class="card-info"><div class="card-cat">风格艺术</div><div class="card-title">液态抽象</div><div class="card-meta">987 · 8s · 1:1</div></div>
+          <button class="card-btn">做同款</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Composer -->
+  <div class="composer">
+    <div class="comp-top">
+      <button class="comp-tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7z"/><rect x="2" y="3" width="20" height="18" rx="2"/></svg>视频</button>
+      <button class="comp-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>图片</button>
+      <button class="comp-tab">文生视频</button>
+      <button class="comp-tab">图生视频</button>
+      <button class="comp-tab">视频重绘</button>
+      <div class="comp-mode"><button class="active">快速</button><button>精细</button></div>
+    </div>
+    <div class="comp-body">
+      <div class="comp-attach"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></div>
+      <div class="comp-input"><textarea placeholder="描述你想要的画面…" rows="1"></textarea></div>
+    </div>
+    <div class="comp-bottom">
+      <div class="comp-model"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4-6.2-4.5-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>CinemoX Pro 2.1</div>
+      <div class="comp-cost">消耗 <b>45</b> 积分</div>
+      <button class="comp-go">开始生成 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg></button>
+    </div>
+  </div>
+
+</div>
+<script>
+document.querySelectorAll('.tabs').forEach(t=>t.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{const g=b.parentElement;t.querySelectorAll('.tab').forEach(x=>{if(x.parentElement===g)x.classList.remove('active')});b.classList.add('active')})));
+document.querySelectorAll('.comp-tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.comp-tab').forEach(x=>x.classList.remove('active'));t.classList.add('active')}));
+document.querySelectorAll('.comp-mode button').forEach(b=>b.addEventListener('click',()=>{b.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('active'));b.classList.add('active')}));
+document.querySelectorAll('.nav').forEach(n=>n.addEventListener('click',()=>{document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active'));n.classList.add('active')}));
+</script>
+</body>
+</html>

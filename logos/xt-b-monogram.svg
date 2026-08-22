@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 160" role="img" aria-label="旭天 Logo B XT 字母标">
+  <path d="M40 36 L94 112" fill="none" stroke="#EDEFF2" stroke-width="16" stroke-linecap="round"/>
+  <path d="M94 36 L40 112" fill="none" stroke="#EDEFF2" stroke-width="16" stroke-linecap="round"/>
+  <path d="M112 44 L184 44" fill="none" stroke="#EDEFF2" stroke-width="16" stroke-linecap="round"/>
+  <path d="M148 44 L148 116" fill="none" stroke="#EDEFF2" stroke-width="16" stroke-linecap="round"/>
+  <circle cx="103" cy="26" r="11" fill="#F2C94C"/>
+</svg>
