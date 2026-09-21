@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { managementSource as source } from "./management-source.mjs";
 
-const source = await readFile(
-  new URL("../src/ManagementConsole.jsx", import.meta.url),
-  "utf8",
-);
 
 test("management loads abort their predecessor and only the current generation commits", () => {
   assert.match(source, /const loadRequestGenerationRef = useRef\(0\)/);

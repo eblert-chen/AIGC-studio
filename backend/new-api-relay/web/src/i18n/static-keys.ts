@@ -26,6 +26,7 @@ export const STATIC_I18N_KEYS = [
   'Rankings',
   'Docs',
   'About',
+  'Back to Platform',
 
   // Sidebar views (drill-in workspaces)
   'System Settings',

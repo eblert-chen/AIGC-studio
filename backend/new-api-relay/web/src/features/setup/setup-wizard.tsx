@@ -25,6 +25,7 @@ import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
 import { LanguageSwitcher } from '@/components/language-switcher'
+import { SystemBrandLockup } from '@/components/layout/components/system-brand-lockup'
 import { LoadingState } from '@/components/loading-state'
 import {
   Card,
@@ -285,24 +286,20 @@ export function SetupWizard() {
       </div>
       <div className='container mx-auto flex max-w-5xl flex-col gap-8 px-4 sm:px-6'>
         <div className='flex flex-col items-center gap-3'>
-          <div className='relative h-12 w-12'>
-            {systemConfigLoading ? (
-              <Skeleton className='absolute inset-0 rounded-full' />
-            ) : (
-              <img
-                src={logo}
-                alt={t('System logo')}
-                className='h-12 w-12 rounded-full object-cover shadow-sm'
-              />
-            )}
-          </div>
           {systemConfigLoading ? (
-            <Skeleton className='h-7 w-40' />
+            <Skeleton className='h-14 w-44 rounded-lg' />
           ) : (
-            <h1 className='text-2xl font-semibold tracking-tight'>
-              {t('Initialize')} {systemName}
-            </h1>
+            <SystemBrandLockup
+              systemName={systemName}
+              logo={logo}
+              variant='wordmark'
+              imageClassName='h-14 max-w-[12rem]'
+              nameClassName='text-xl font-semibold'
+            />
           )}
+          <h1 className='text-2xl font-semibold tracking-tight'>
+            {t('Initialize')} {systemName}
+          </h1>
           <p className='text-muted-foreground text-center text-sm sm:text-base'>
             {t(
               'Follow the guided steps to prepare your workspace before the first login.'

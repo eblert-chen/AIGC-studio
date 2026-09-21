@@ -9,12 +9,14 @@ import re
 from typing import Any, Iterable, Sequence
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select, true
+from sqlalchemy import BigInteger, Integer, String, and_, func, literal, or_, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import (
+    BillingUnit,
     Company,
+    CompanyPointLedgerEntry,
     DownloadCompletion,
     DownloadCompletionSource,
     DownloadGatewayRegistrationAttempt,
@@ -24,6 +26,7 @@ from ..models import (
     LedgerEntry,
     LedgerKind,
     ModelDefinition,
+    PointLedgerKind,
     TaskArtifact,
     TaskStatus,
     User,
@@ -699,8 +702,12 @@ class ReportService:
                 GenerationTask.model_id,
                 ModelDefinition.display_name.label("model_display_name"),
                 GenerationTask.status,
+                GenerationTask.billing_unit,
+                GenerationTask.billing_version,
                 GenerationTask.quote_cents,
+                GenerationTask.quote_points,
                 GenerationTask.actual_cost_cents,
+                GenerationTask.actual_cost_points,
                 GenerationTask.request_payload,
                 GenerationTask.created_at,
                 GenerationTask.updated_at,
@@ -736,7 +743,7 @@ class ReportService:
         status: TaskStatus | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
-    ) -> tuple[int, int, list[dict[str, Any]]]:
+    ) -> tuple[int, int, int, list[dict[str, Any]], set[tuple[str, int]]]:
         statement = cls._task_statement(
             company_id=company_id,
             employee_user_id=employee_user_id,
@@ -755,6 +762,24 @@ class ReportService:
             )
             or 0
         )
+        total_actual_cost_points = int(
+            session.scalar(
+                select(func.coalesce(func.sum(filtered.c.actual_cost_points), 0))
+            )
+            or 0
+        )
+        unit_versions = {
+            (
+                unit.value if isinstance(unit, BillingUnit) else str(unit),
+                int(version),
+            )
+            for unit, version in session.execute(
+                select(
+                    filtered.c.billing_unit,
+                    filtered.c.billing_version,
+                ).distinct()
+            ).all()
+        }
         rows = session.execute(
             statement.order_by(
                 GenerationTask.created_at.desc(), GenerationTask.id.desc()
@@ -762,7 +787,13 @@ class ReportService:
             .offset((page - 1) * page_size)
             .limit(page_size)
         ).mappings()
-        return total, total_actual_cost, [dict(row) for row in rows]
+        return (
+            total,
+            total_actual_cost,
+            total_actual_cost_points,
+            [dict(row) for row in rows],
+            unit_versions,
+        )
 
     @staticmethod
     def _consumption_statement(
@@ -775,56 +806,84 @@ class ReportService:
         start_time: datetime | None = None,
         end_time: datetime | None = None,
     ):
-        statement = (
-            select(
-                LedgerEntry.id.label("ledger_entry_id"),
-                GenerationTask.company_id.label("company_id"),
-                Company.name.label("company_name"),
-                GenerationTask.id.label("task_id"),
-                GenerationTask.user_id.label("employee_user_id"),
-                User.display_name.label("employee_display_name"),
-                User.email.label("employee_email"),
-                GenerationTask.model_id,
-                ModelDefinition.display_name.label("model_display_name"),
-                GenerationTask.status.label("task_status"),
-                GenerationTask.pricing_snapshot,
-                LedgerEntry.amount_cents,
-                LedgerEntry.created_at.label("consumed_at"),
-            )
-            .join(GenerationTask, GenerationTask.id == LedgerEntry.task_id)
-            .join(Company, Company.id == GenerationTask.company_id)
-            .join(User, User.id == GenerationTask.user_id)
-            .join(ModelDefinition, ModelDefinition.id == GenerationTask.model_id)
-            .where(LedgerEntry.kind == LedgerKind.SETTLE)
-        )
-        if company_id:
-            statement = statement.where(LedgerEntry.company_id == company_id)
-        if employee_user_id:
-            statement = statement.where(
-                GenerationTask.user_id == employee_user_id
-            )
-        if employee_query:
-            normalized_query = employee_query.strip().lower()
-            if normalized_query:
-                statement = statement.where(
-                    or_(
-                        func.lower(User.display_name).contains(
-                            normalized_query, autoescape=True
-                        ),
-                        func.lower(User.email).contains(
-                            normalized_query, autoescape=True
-                        ),
-                    )
+        def build(ledger_model, *, points: bool):
+            statement = (
+                select(
+                    ledger_model.id.label("ledger_entry_id"),
+                    GenerationTask.company_id.label("company_id"),
+                    Company.name.label("company_name"),
+                    GenerationTask.id.label("task_id"),
+                    GenerationTask.user_id.label("employee_user_id"),
+                    User.display_name.label("employee_display_name"),
+                    User.email.label("employee_email"),
+                    GenerationTask.model_id,
+                    ModelDefinition.display_name.label("model_display_name"),
+                    GenerationTask.status.label("task_status"),
+                    literal(
+                        BillingUnit.POINT.value
+                        if points
+                        else BillingUnit.CNY_CENT.value,
+                        type_=String(16),
+                    ).label("billing_unit"),
+                    literal(2 if points else 1, type_=Integer()).label(
+                        "billing_version"
+                    ),
+                    GenerationTask.pricing_snapshot,
+                    (
+                        literal(None, type_=BigInteger())
+                        if points
+                        else ledger_model.amount_cents
+                    ).label("amount_cents"),
+                    (
+                        ledger_model.amount_points
+                        if points
+                        else literal(None, type_=BigInteger())
+                    ).label("amount_points"),
+                    ledger_model.created_at.label("consumed_at"),
                 )
-        if model_id:
-            statement = statement.where(GenerationTask.model_id == model_id)
-        if status:
-            statement = statement.where(GenerationTask.status == status)
-        if start_time:
-            statement = statement.where(LedgerEntry.created_at >= start_time)
-        if end_time:
-            statement = statement.where(LedgerEntry.created_at < end_time)
-        return statement
+                .join(GenerationTask, GenerationTask.id == ledger_model.task_id)
+                .join(Company, Company.id == GenerationTask.company_id)
+                .join(User, User.id == GenerationTask.user_id)
+                .join(ModelDefinition, ModelDefinition.id == GenerationTask.model_id)
+                .where(
+                    ledger_model.kind
+                    == (PointLedgerKind.SETTLE if points else LedgerKind.SETTLE)
+                )
+            )
+            if company_id:
+                statement = statement.where(ledger_model.company_id == company_id)
+            if employee_user_id:
+                statement = statement.where(
+                    GenerationTask.user_id == employee_user_id
+                )
+            if employee_query:
+                normalized_query = employee_query.strip().lower()
+                if normalized_query:
+                    statement = statement.where(
+                        or_(
+                            func.lower(User.display_name).contains(
+                                normalized_query, autoescape=True
+                            ),
+                            func.lower(User.email).contains(
+                                normalized_query, autoescape=True
+                            ),
+                        )
+                    )
+            if model_id:
+                statement = statement.where(GenerationTask.model_id == model_id)
+            if status:
+                statement = statement.where(GenerationTask.status == status)
+            if start_time:
+                statement = statement.where(ledger_model.created_at >= start_time)
+            if end_time:
+                statement = statement.where(ledger_model.created_at < end_time)
+            return statement
+
+        combined = build(LedgerEntry, points=False).union_all(
+            build(CompanyPointLedgerEntry, points=True)
+        )
+        combined_rows = combined.subquery("combined_consumption")
+        return select(combined_rows)
 
     @staticmethod
     def _consumption_row(item: dict[str, Any]) -> dict[str, Any]:
@@ -837,9 +896,13 @@ class ReportService:
             else None
         )
         unit_price = pricing_snapshot.get("unit_price_cents")
+        unit_price_points = pricing_snapshot.get("unit_price_points")
         quantity = pricing_snapshot.get("quantity")
         result["unit_price_cents"] = (
             unit_price if isinstance(unit_price, int) else None
+        )
+        result["unit_price_points"] = (
+            unit_price_points if isinstance(unit_price_points, int) else None
         )
         result["quantity"] = quantity if isinstance(quantity, int) else None
         return result
@@ -858,7 +921,7 @@ class ReportService:
         status: TaskStatus | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
-    ) -> tuple[int, int, list[dict[str, Any]]]:
+    ) -> tuple[int, int, int, list[dict[str, Any]], set[tuple[str, int]]]:
         statement = cls._consumption_statement(
             company_id=company_id,
             employee_user_id=employee_user_id,
@@ -874,6 +937,9 @@ class ReportService:
                 func.count().label("report_total"),
                 func.coalesce(func.sum(filtered.c.amount_cents), 0).label(
                     "report_total_amount_cents"
+                ),
+                func.coalesce(func.sum(filtered.c.amount_points), 0).label(
+                    "report_total_amount_points"
                 ),
             )
             .select_from(filtered)
@@ -897,10 +963,13 @@ class ReportService:
             ).mappings()
         )
         if not result_rows:
-            return 0, 0, []
+            return 0, 0, 0, [], set()
         total = int(result_rows[0]["report_total"] or 0)
         total_amount = int(
             result_rows[0]["report_total_amount_cents"] or 0
+        )
+        total_amount_points = int(
+            result_rows[0]["report_total_amount_points"] or 0
         )
         items = [
             cls._consumption_row(
@@ -912,7 +981,16 @@ class ReportService:
             for row in result_rows
             if row["ledger_entry_id"] is not None
         ]
-        return total, total_amount, items
+        unit_versions = {
+            (str(unit), int(version))
+            for unit, version in session.execute(
+                select(
+                    filtered.c.billing_unit,
+                    filtered.c.billing_version,
+                ).distinct()
+            ).all()
+        }
+        return total, total_amount, total_amount_points, items, unit_versions
 
     @classmethod
     def task_export(cls, session: Session, **filters: Any) -> str:
@@ -937,8 +1015,12 @@ class ReportService:
                 "模型ID",
                 "模型名称",
                 "状态",
+                "计费单位",
+                "计费版本",
                 "报价（分）",
+                "报价（积分）",
                 "实际消费（分）",
+                "实际消费（积分）",
                 "请求参数",
                 "创建时间",
                 "更新时间",
@@ -952,8 +1034,16 @@ class ReportService:
                     row["model_id"],
                     row["model_display_name"],
                     row["status"].value,
+                    (
+                        row["billing_unit"].value
+                        if isinstance(row["billing_unit"], BillingUnit)
+                        else row["billing_unit"]
+                    ),
+                    row["billing_version"],
                     row["quote_cents"],
+                    row["quote_points"],
                     row["actual_cost_cents"],
+                    row["actual_cost_points"],
                     json.dumps(
                         row["request_payload"],
                         ensure_ascii=False,
@@ -969,8 +1059,11 @@ class ReportService:
 
     @classmethod
     def consumption_export(cls, session: Session, **filters: Any) -> str:
-        statement = cls._consumption_statement(**filters).order_by(
-            LedgerEntry.created_at.desc(), LedgerEntry.id.desc()
+        filtered = cls._consumption_statement(**filters).subquery(
+            "export_consumption"
+        )
+        statement = select(filtered).order_by(
+            filtered.c.consumed_at.desc(), filtered.c.ledger_entry_id.desc()
         )
         rows = [
             cls._consumption_row(dict(row))
@@ -996,10 +1089,14 @@ class ReportService:
                 "模型ID",
                 "模型名称",
                 "任务状态",
+                "计费单位",
+                "计费版本",
                 "计费方式",
                 "单价（分）",
+                "单价（积分）",
                 "计费数量",
                 "消费金额（分）",
+                "消费积分",
                 "消费时间",
             ),
             (
@@ -1014,10 +1111,14 @@ class ReportService:
                     row["model_id"],
                     row["model_display_name"],
                     row["task_status"].value,
+                    row["billing_unit"],
+                    row["billing_version"],
                     row["pricing_mode"],
                     row["unit_price_cents"],
+                    row["unit_price_points"],
                     row["quantity"],
                     row["amount_cents"],
+                    row["amount_points"],
                     row["consumed_at"],
                 )
                 for row in rows

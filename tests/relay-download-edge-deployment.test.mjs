@@ -135,7 +135,8 @@ test("gives the public edge a dedicated least-privilege environment and database
   assert.doesNotMatch(commandSource, /common\.IsMasterNode\s*=\s*true/);
   assert.match(runbook, /exact `relay_download_edge`\s*PostgreSQL role/);
   assert.match(runbook, /never runs AutoMigrate/);
-  assert.match(commandSource, /VerifyRelayDownloadEdgeDatabaseRole/);
+  assert.match(commandSource, /AttestRelayDownloadEdgeDatabaseRole/);
+  assert.match(commandSource, /NewProtectedPlatformDownloadEdgeGateway/);
   assert.match(privilegeManifest, /relayDownloadEdgeDatabasePrivilegeManifestForVersion/);
   assert.match(privilegeManifest, /relay_schema_state[\s\S]+relay_schema_migrations/);
   assert.match(privilegeManifest, /platform_download_edge_tickets[\s\S]+claim_token[\s\S]+updated_at/);

@@ -3,7 +3,11 @@ import test from "node:test";
 
 import {
   buildCapabilityRequestPayload,
+  capabilitySummary,
   capabilityControlVisibility,
+  capabilityMediaLimits,
+  capabilitySpecificationFields,
+  modeUsesDuration,
   reconcileGenerationDraft,
   resolveEffectiveCapabilities,
   toCanonicalGenerationConfig,
@@ -18,7 +22,11 @@ function canonicalMode({
   supportsFace = true,
 } = {}) {
   return {
-    input_media_types: ["audio", "image", "video"],
+    input_media_types: [
+      ...(maxAudio > 0 ? ["audio"] : []),
+      ...(maxImages > 0 ? ["image"] : []),
+      ...(maxVideos > 0 ? ["video"] : []),
+    ],
     supports_face: supportsFace,
     required_resource_keys: [],
     limits: {
@@ -37,6 +45,90 @@ function canonicalMode({
 function canonicalDocument(modes) {
   return { schema_version: 1, modes };
 }
+
+test("an explicit malformed effective declaration never restores raw model permissions", () => {
+  for (const effective of [undefined, null, "broken", [], {}, { modes: [] }, { modes: null },
+    { modes: { text_to_video: canonicalMode() } },
+    { schema_version: null, modes: { text_to_video: canonicalMode() } },
+    { schema_version: 99, modes: {} }]) {
+    const normalized = resolveEffectiveCapabilities({
+      effective_capabilities: effective,
+      capabilities: { generation: canonicalDocument({ text_to_video: canonicalMode() }) },
+    });
+    assert.deepEqual(normalized.modes, {}, `invalid effective: ${JSON.stringify(effective)}`);
+  }
+  assert.deepEqual(Object.keys(resolveEffectiveCapabilities({
+    capabilities: { generation: canonicalDocument({ text_to_video: canonicalMode() }) },
+  }).modes), ["text_to_video"], "only absent effective fields retain legacy editor compatibility");
+});
+
+test("personal v1 discovery accepts its explicit empty conditional map without enabling face", () => {
+  const mode = {
+    ...canonicalMode({ maxImages: 0, maxVideos: 0, maxAudio: 0, supportsFace: false }),
+    conditional_required_resource_keys: {},
+  };
+  const normalized = resolveEffectiveCapabilities({
+    effective_capabilities: canonicalDocument({ text_to_video: mode }),
+  });
+  assert.deepEqual(Object.keys(normalized.modes), ["text_to_video"]);
+  assert.deepEqual(capabilityControlVisibility(normalized.modes.text_to_video), {
+    image: false, video: false, audio: false, face: false,
+  });
+  for (const value of [null, [], "", { face_enabled: ["face.library"] }]) {
+    assert.deepEqual(resolveEffectiveCapabilities({
+      effective_capabilities: canonicalDocument({
+        text_to_video: { ...mode, conditional_required_resource_keys: value },
+      }),
+    }).modes, {});
+  }
+});
+
+test("effective capability fields cannot be coerced, defaulted or widened into valid inputs", () => {
+  const mutations = [
+    (mode) => { mode.input_media_types = null; },
+    (mode) => { mode.input_media_types = [true]; },
+    (mode) => { mode.input_media_types = ["image", "image"]; },
+    (mode) => { mode.input_media_types = ["Image"]; },
+    (mode) => { mode.input_media_types = [" image"]; },
+    (mode) => { mode.input_media_types = ["document"]; },
+    (mode) => { delete mode.supports_face; },
+    (mode) => { mode.supports_face = "false"; },
+    ...["max_images", "max_videos", "max_audio", "max_prompt_length"].flatMap((key) => (
+      [true, "1", null, undefined, -1, 0.5, 10_001].map((value) => (mode) => { mode.limits[key] = value; })
+    )),
+    ...["duration_seconds", "output_counts"].flatMap((key) => (
+      [[true], ["1"], [], [1, null], [0], [3601]].map((value) => (mode) => { mode.limits[key] = value; })
+    )),
+    ...["aspect_ratios", "resolutions"].flatMap((key) => (
+      [[123], [{}], [""], [" "], [], null].map((value) => (mode) => { mode.limits[key] = value; })
+    )),
+    ...["bogus", "0:9", "10000:1", "16:9\n", " 16:9", "1:1.5"].map((value) => (mode) => { mode.limits.aspect_ratios = [value]; }),
+    ...["720 p", "720p\n", " 720p", "x".repeat(33), "-720p"].map((value) => (mode) => { mode.limits.resolutions = [value]; }),
+  ];
+  for (const mutate of mutations) {
+    const mode = canonicalMode();
+    mutate(mode);
+    const normalized = resolveEffectiveCapabilities({
+      effective_capabilities: canonicalDocument({ text_to_video: mode }),
+    });
+    assert.deepEqual(normalized.modes, {}, JSON.stringify(mode));
+  }
+});
+
+test("visible media limits and fixed specification summaries use only the selected mode", () => {
+  const mode = canonicalMode({ maxImages: 6, maxVideos: 0, maxAudio: 3, supportsFace: false, outputCounts: [1] });
+  mode.limits.resolutions = ["720p"];
+  const capability = resolveEffectiveCapabilities({
+    effective_capabilities: canonicalDocument({ image_to_video: mode }),
+  }).modes.image_to_video;
+  assert.deepEqual(capabilityMediaLimits(capability), { image: 6, video: 0, audio: 3 });
+  const fields = capabilitySpecificationFields(capability, "image_to_video");
+  assert.deepEqual(fields.filter((field) => field.values.length === 1).map((field) => field.key), ["resolution", "outputCount"]);
+  assert.deepEqual(fields.filter((field) => field.values.length > 1).map((field) => field.key), ["aspectRatio", "duration"]);
+  assert.equal(capabilitySpecificationFields(capability, "text_to_image").some((field) => field.key === "duration"), false);
+  assert.deepEqual(capabilityMediaLimits(null), { image: 0, video: 0, audio: 0 });
+  assert.deepEqual(capabilitySpecificationFields(null, "text_to_video"), []);
+});
 
 test("keeps canonical 9+3+3 and 4+3+3 media limits without truncation", async (t) => {
   for (const [label, maxImages] of [
@@ -83,6 +175,47 @@ test("preserves the duration 3600 and output-count 16 contract limits", () => {
 
   assert.deepEqual(effective.modes.text_to_video.limits.durations, [3600]);
   assert.deepEqual(effective.modes.text_to_video.limits.outputCounts, [16]);
+});
+
+test("keeps the text-to-image duration sentinel in requests without presenting it as media duration", () => {
+  const effective = resolveEffectiveCapabilities({
+    effective_capabilities: canonicalDocument({
+      text_to_image: {
+        input_media_types: [],
+        supports_face: false,
+        required_resource_keys: [],
+        limits: {
+          max_prompt_length: 1_000,
+          max_images: 0,
+          max_videos: 0,
+          max_audio: 0,
+          duration_seconds: [1],
+          aspect_ratios: ["1:1"],
+          resolutions: ["2048x2048"],
+          output_counts: [1],
+        },
+      },
+    }),
+  });
+  const built = buildCapabilityRequestPayload(effective, "text_to_image", {
+    prompt: "a clean product photograph",
+    duration: 1,
+    aspectRatio: "1:1",
+    resolution: "2048x2048",
+    outputCount: 1,
+    faceEnabled: false,
+    files: { image: [], video: [], audio: [] },
+  });
+
+  assert.equal(built.ok, true);
+  assert.equal(built.payload.duration_seconds, 1);
+  assert.equal(modeUsesDuration("text_to_image"), false);
+  assert.equal(modeUsesDuration("text_to_video"), true);
+  const [summary] = capabilitySummary(effective);
+  assert.match(summary.detail, /1:1/);
+  assert.match(summary.detail, /2048x2048/);
+  assert.match(summary.detail, /1 个产物/);
+  assert.doesNotMatch(summary.detail, /1 秒/);
 });
 
 test("prefers effective capabilities over legacy raw capabilities and overrides", () => {
@@ -133,6 +266,167 @@ test("round-trips a canonical generation document exactly", () => {
   assert.deepEqual(toCanonicalGenerationConfig(normalized.modes), canonical);
 });
 
+test("round-trips conditional face resources as capability schema v2", () => {
+  const document = {
+    schema_version: 2,
+    modes: {
+      text_to_video: {
+        ...canonicalMode({ supportsFace: true }),
+        required_resource_keys: [],
+        conditional_required_resource_keys: {
+          face_enabled: ["face.library"],
+        },
+      },
+    },
+  };
+  const effective = resolveEffectiveCapabilities({
+    effective_capabilities: document,
+  });
+
+  assert.deepEqual(
+    effective.modes.text_to_video.conditionalRequiredResourceKeys,
+    { faceEnabled: ["face.library"] },
+  );
+  assert.deepEqual(toCanonicalGenerationConfig(effective.modes), document);
+});
+
+test("capability schema versions fail closed around conditional resources", () => {
+  const conditionalMode = {
+    ...canonicalMode({ supportsFace: true }),
+    conditional_required_resource_keys: {
+      face_enabled: ["face.library"],
+    },
+  };
+
+  const v1WithV2Field = resolveEffectiveCapabilities({
+    effective_capabilities: canonicalDocument({
+      text_to_video: conditionalMode,
+    }),
+  });
+  assert.deepEqual(v1WithV2Field.modes, {});
+
+  const unknownVersion = resolveEffectiveCapabilities({
+    effective_capabilities: {
+      schema_version: 3,
+      modes: { text_to_video: canonicalMode() },
+    },
+  });
+  assert.deepEqual(unknownVersion.modes, {});
+
+  const contradictory = resolveEffectiveCapabilities({
+    effective_capabilities: {
+      schema_version: 2,
+      modes: {
+        text_to_video: {
+          ...conditionalMode,
+          required_resource_keys: ["face.library"],
+        },
+      },
+    },
+  });
+  assert.deepEqual(contradictory.modes, {});
+});
+
+test("malformed conditional resource declarations fail closed", () => {
+  const invalidDeclarations = [
+    "broken",
+    null,
+    [],
+    { face_enabled: [] },
+    { face_enabled: ["face.library", "face.library"] },
+    { face_enabled: [7] },
+    { face_enabled: [" face.library"] },
+    { unsupported_option: ["face.library"] },
+  ];
+
+  for (const conditionalRequiredResourceKeys of invalidDeclarations) {
+    const normalized = resolveEffectiveCapabilities({
+      effective_capabilities: {
+        schema_version: 2,
+        modes: {
+          text_to_video: {
+            ...canonicalMode({ supportsFace: true }),
+            conditional_required_resource_keys: conditionalRequiredResourceKeys,
+          },
+        },
+      },
+    });
+    assert.deepEqual(
+      normalized.modes,
+      {},
+      `expected ${JSON.stringify(conditionalRequiredResourceKeys)} to fail closed`,
+    );
+  }
+});
+
+test("malformed unconditional resource declarations fail closed", () => {
+  for (const requiredResourceKeys of [
+    "face.library",
+    ["face.library", "face.library"],
+    [5],
+    [" face.library"],
+  ]) {
+    const normalized = resolveEffectiveCapabilities({
+      effective_capabilities: {
+        schema_version: 2,
+        modes: {
+          text_to_video: {
+            ...canonicalMode(),
+            required_resource_keys: requiredResourceKeys,
+          },
+        },
+      },
+    });
+    assert.deepEqual(normalized.modes, {});
+  }
+});
+
+test("schema v2 supports mixed modes whose default path has no conditional resources", () => {
+  const document = {
+    schema_version: 2,
+    modes: {
+      text_to_video: {
+        ...canonicalMode({ supportsFace: true }),
+        conditional_required_resource_keys: {
+          face_enabled: ["face.library"],
+        },
+      },
+      text_to_image: {
+        input_media_types: [],
+        supports_face: false,
+        required_resource_keys: [],
+        limits: {
+          max_prompt_length: 1_000,
+          max_images: 0,
+          max_videos: 0,
+          max_audio: 0,
+          duration_seconds: [1],
+          aspect_ratios: ["1:1"],
+          resolutions: ["2048x2048"],
+          output_counts: [1],
+        },
+      },
+    },
+  };
+
+  const normalized = resolveEffectiveCapabilities({
+    effective_capabilities: document,
+  });
+  const canonical = toCanonicalGenerationConfig(normalized.modes);
+  assert.equal(canonical.schema_version, 2);
+  assert.equal(
+    Object.hasOwn(
+      canonical.modes.text_to_image,
+      "conditional_required_resource_keys",
+    ),
+    false,
+  );
+  assert.deepEqual(Object.keys(normalized.modes).sort(), [
+    "text_to_image",
+    "text_to_video",
+  ]);
+});
+
 test("accepts max_audio in a legacy per-mode capability", () => {
   const effective = resolveEffectiveCapabilities({
     capabilities: {
@@ -158,29 +452,41 @@ function assets(mediaType, count) {
 }
 
 test("normalizes malformed effective media declarations fail-closed", async (t) => {
-  await t.test("a positive maximum cannot enable an undeclared media type", () => {
+  await t.test("a positive maximum for an undeclared media type rejects the mode", () => {
     const mode = canonicalMode({ maxImages: 4, maxVideos: 3, maxAudio: 3 });
     mode.input_media_types = ["image"];
     const effective = resolveEffectiveCapabilities({
       effective_capabilities: canonicalDocument({ text_to_video: mode }),
     });
 
-    assert.deepEqual(effective.modes.text_to_video.inputMediaTypes, ["image"]);
-    assert.equal(effective.modes.text_to_video.limits.maxImages, 4);
-    assert.equal(effective.modes.text_to_video.limits.maxVideos, 0);
-    assert.equal(effective.modes.text_to_video.limits.maxAudio, 0);
+    assert.deepEqual(effective.modes, {});
   });
 
-  await t.test("a declared media type with a zero maximum is removed", () => {
+  await t.test("a declared media type with a zero maximum rejects the mode", () => {
     const mode = canonicalMode({ maxImages: 0, maxVideos: 0, maxAudio: 0 });
     mode.input_media_types = ["audio"];
     const effective = resolveEffectiveCapabilities({
       effective_capabilities: canonicalDocument({ text_to_video: mode }),
     });
 
-    assert.deepEqual(effective.modes.text_to_video.inputMediaTypes, []);
-    assert.equal(effective.modes.text_to_video.limits.maxAudio, 0);
+    assert.deepEqual(effective.modes, {});
   });
+
+  for (const inputMediaTypes of [
+    ["image", "image"],
+    ["Image"],
+    ["image "],
+    ["document"],
+  ]) {
+    await t.test(`rejects non-canonical media declaration ${JSON.stringify(inputMediaTypes)}`, () => {
+      const mode = canonicalMode({ maxImages: 1, maxVideos: 0, maxAudio: 0 });
+      mode.input_media_types = inputMediaTypes;
+      const effective = resolveEffectiveCapabilities({
+        effective_capabilities: canonicalDocument({ image_to_video: mode }),
+      });
+      assert.deepEqual(effective.modes, {});
+    });
+  }
 
   for (const [label, mutate] of [
     ["missing required image", (mode) => {
@@ -399,7 +705,6 @@ test("unsupported inputs and face are omitted while supported face is preserved"
       }),
     }),
   });
-  faceCapable.modes.text_to_video.inputMediaTypes = [];
   const faceRequest = buildCapabilityRequestPayload(faceCapable, "text_to_video", {
     ...draft,
     files: { image: [], video: [], audio: [] },

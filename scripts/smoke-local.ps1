@@ -9,11 +9,12 @@ param(
     [string]$PlatformAdminUserId = "",
     [string]$MockWebhookSecret = "development-only-secret",
     [string]$FixtureUrl = "https://raw.githubusercontent.com/github/explore/main/topics/python/python.png",
-    [string]$OutputFixtureUrl = "https://media.w3.org/2010/05/sintel/trailer.mp4"
+    [string]$OutputFixtureUrl = "https://media.w3.org/2010/05/sintel/trailer.mp4",
+    [string]$DisposableEnvironmentManifest = "",
+    [switch]$PreflightOnly
 )
 
 $ErrorActionPreference = "Stop"
-Add-Type -AssemblyName System.Net.Http
 
 function Read-DotEnvValue {
     param(
@@ -48,6 +49,54 @@ function Read-DotEnvValue {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$disposableValidatorPath = Join-Path $PSScriptRoot "smoke-disposable-environment.mjs"
+if ([string]::IsNullOrWhiteSpace($DisposableEnvironmentManifest)) {
+    throw (
+        "Refusing to write smoke fixtures without -DisposableEnvironmentManifest. " +
+        "The target must be a short-lived, project-scoped environment whose volumes are destroyed after the run."
+    )
+}
+if (-not (Test-Path -LiteralPath $disposableValidatorPath -PathType Leaf)) {
+    throw "Disposable smoke validator is missing: $disposableValidatorPath"
+}
+$nodeCommand = Get-Command node -CommandType Application -ErrorAction SilentlyContinue
+if ($null -eq $nodeCommand) {
+    throw "Node.js is required to validate the disposable smoke environment before any HTTP request"
+}
+$validationOutput = @(
+    & $nodeCommand.Source `
+        $disposableValidatorPath `
+        validate `
+        --manifest $DisposableEnvironmentManifest `
+        --gateway-base $GatewayBase `
+        --platform-base $PlatformBase `
+        --relay-base $RelayBase 2>&1
+)
+$validationExitCode = $LASTEXITCODE
+if ($validationExitCode -ne 0) {
+    $validationMessage = ($validationOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+    throw "Disposable smoke environment validation failed before any HTTP request: $validationMessage"
+}
+try {
+    $validatedDisposableEnvironment = ($validationOutput -join [Environment]::NewLine) | ConvertFrom-Json
+}
+catch {
+    throw "Disposable smoke validator returned an invalid result before any HTTP request"
+}
+
+if ($PreflightOnly) {
+    @{
+        result = "preflight_passed"
+        disposable_environment_id = $validatedDisposableEnvironment.environment_id
+        compose_project = $validatedDisposableEnvironment.isolation.compose_project
+        cleanup_mode = $validatedDisposableEnvironment.isolation.cleanup_mode
+        cleanup_required = $true
+        remove_volumes = $validatedDisposableEnvironment.isolation.remove_volumes
+    } | ConvertTo-Json
+    return
+}
+
+Add-Type -AssemblyName System.Net.Http
 $dotEnvPath = Join-Path $repoRoot ".env"
 if ([string]::IsNullOrWhiteSpace($RelayClientId)) {
     $RelayClientId = Read-DotEnvValue -Path $dotEnvPath -Name "RELAY_CLIENT_ID"
@@ -731,6 +780,11 @@ if (-not $companySuspendBlocked) {
 
 @{
     result = "passed"
+    disposable_environment_id = $validatedDisposableEnvironment.environment_id
+    compose_project = $validatedDisposableEnvironment.isolation.compose_project
+    cleanup_mode = $validatedDisposableEnvironment.isolation.cleanup_mode
+    cleanup_required = $true
+    remove_volumes = $validatedDisposableEnvironment.isolation.remove_volumes
     admin_created_company_id = $adminCreatedCompany.id
     company_id = $tenant.company_id
     user_id = $tenant.user_id

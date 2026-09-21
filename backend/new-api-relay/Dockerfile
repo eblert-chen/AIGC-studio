@@ -17,11 +17,6 @@ ENV GO111MODULE=on CGO_ENABLED=0 GOWORK=off
 
 ARG TARGETOS
 ARG TARGETARCH
-ARG RELAY_BUILD_UPSTREAM_REVISION=unknown
-ARG RELAY_BUILD_SOURCE_REVISION=unknown
-ARG RELAY_BUILD_SOURCE_SNAPSHOT_SHA256=unknown
-ARG RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT=unknown
-ARG RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256=unknown
 ENV GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64}
 ENV GOEXPERIMENT=greenteagc
 
@@ -33,7 +28,21 @@ ADD go.mod go.sum ./
 ADD relaykit/go.mod ./relaykit/go.mod
 RUN go mod download
 
+ARG RELAY_BUILD_UPSTREAM_REVISION
+ARG RELAY_BUILD_SOURCE_REVISION
+ARG RELAY_BUILD_SOURCE_SNAPSHOT_SHA256
+ARG RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT
+ARG RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256
+
 COPY . .
+RUN printf '%s' "${RELAY_BUILD_UPSTREAM_REVISION}" | grep -Eq '^[0-9a-f]{40}$' \
+    && printf '%s' "${RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256}" | grep -Eq '^sha256:[0-9a-f]{64}$' \
+    && test "${RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256}" != 'sha256:0000000000000000000000000000000000000000000000000000000000000000' \
+    && GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" go run ./cmd/relay-source-snapshot \
+      --root . \
+      --expected-revision "${RELAY_BUILD_SOURCE_REVISION}" \
+      --expected-sha256 "${RELAY_BUILD_SOURCE_SNAPSHOT_SHA256}" \
+      --expected-file-count "${RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT}"
 COPY --from=builder /build/web/dist ./web/dist
 RUN version="$(cat VERSION)" \
     && test "$(wc -l < VERSION)" -eq 1 \
@@ -42,6 +51,11 @@ RUN version="$(cat VERSION)" \
     && printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([+.-][0-9A-Za-z.+-]+)?$'
 RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledUpstreamRevision=${RELAY_BUILD_UPSTREAM_REVISION}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSourceRevision=${RELAY_BUILD_SOURCE_REVISION}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotSHA256=${RELAY_BUILD_SOURCE_SNAPSHOT_SHA256}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotFileCount=${RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledRouteAcceptanceKeysSHA256=${RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256}'" -o new-api
 RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledUpstreamRevision=${RELAY_BUILD_UPSTREAM_REVISION}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSourceRevision=${RELAY_BUILD_SOURCE_REVISION}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotSHA256=${RELAY_BUILD_SOURCE_SNAPSHOT_SHA256}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotFileCount=${RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledRouteAcceptanceKeysSHA256=${RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256}'" -o relay-download-edge ./cmd/relay-download-edge
+# Keep the credential-late one-shot and development route planner in the exact
+# same immutable image as the API. Planning therefore uses the same compiled
+# reviewed model/profile facts, while credentials enter only through a
+# protected runtime file mount.
+RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledUpstreamRevision=${RELAY_BUILD_UPSTREAM_REVISION}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSourceRevision=${RELAY_BUILD_SOURCE_REVISION}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotSHA256=${RELAY_BUILD_SOURCE_SNAPSHOT_SHA256}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledSnapshotFileCount=${RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT}' -X 'github.com/QuantumNous/new-api/service.platformRelayCompiledRouteAcceptanceKeysSHA256=${RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256}'" -o relay-provider-onboarding ./cmd/relay-provider-onboarding
 
 FROM debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a
 
@@ -55,6 +69,7 @@ RUN apt-get update \
 
 COPY --from=builder2 /build/new-api /
 COPY --from=builder2 /build/relay-download-edge /
+COPY --from=builder2 /build/relay-provider-onboarding /
 COPY LICENSE NOTICE THIRD-PARTY-LICENSES.md /licenses/
 EXPOSE 3000
 WORKDIR /data

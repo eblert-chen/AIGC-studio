@@ -25,60 +25,21 @@ import (
 func TestPlatformGenerationTransferPublishesOnlyVerifiedDurableOutput(t *testing.T) {
 	truncate(t)
 	payload := platformArtifactValidMP4Fixture(t)
-	provider := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+	provider := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "video/mp4")
 		_, _ = response.Write(payload)
 	}))
 	defer provider.Close()
-	downloader, sourceURL, _ := artifactTestDownloader(
+	downloader, sourceURL, _ := artifactTLSTestDownloader(
 		t,
 		provider,
 		PlatformArtifactDownloadConfig{MaxBytes: int64(len(payload)) + 1, Timeout: 5 * time.Second},
 		[]net.IPAddr{{IP: net.ParseIP("8.8.8.8")}},
 	)
 
-	tenantID := uuid.NewString()
-	jobID := uuid.NewString()
-	token := uuid.NewString()
-	nativeTaskID, err := model.PlatformGenerationNativeTaskID(jobID)
-	require.NoError(t, err)
-	request := dto.NewPlatformGenerationRequest()
-	request.Model = "verified-video-model"
-	request.Mode = "text_to_video"
-	request.ExpectedCapabilityRevision = "sha256:" + strings.Repeat("a", 64)
-	request.Inputs.Prompt = "safe scene"
-	requestJSON, err := common.Marshal(request)
-	require.NoError(t, err)
-	temporaryJSON, err := common.Marshal(platformNativeTemporaryResult{
-		NativeTaskID: nativeTaskID,
-		ResultURL:    sourceURL,
-	})
-	require.NoError(t, err)
-	job := model.PlatformGenerationJob{
-		ID:                         jobID,
-		TenantID:                   tenantID,
-		SourceClientID:             "platform",
-		RequestID:                  "transfer-request",
-		IdempotencyKey:             "transfer-idempotency",
-		RequestHash:                strings.Repeat("b", 64),
-		RequestJSON:                string(requestJSON),
-		Model:                      request.Model,
-		Mode:                       request.Mode,
-		ExpectedCapabilityRevision: request.ExpectedCapabilityRevision,
-		CapabilityRevision:         request.ExpectedCapabilityRevision,
-		Status:                     model.PlatformGenerationStatusTransferring,
-		Progress:                   95,
-		NativeTaskID:               nativeTaskID,
-		TemporaryResultJSON:        string(temporaryJSON),
-		OutputsJSON:                "[]",
-		ErrorDetailsJSON:           "{}",
-		TransferLeaseToken:         token,
-		TransferLeaseExpiresAt:     time.Now().UTC().Add(time.Minute),
-		ArtifactTransferAttempts:   1,
-		CreatedAt:                  time.Now().UTC(),
-		UpdatedAt:                  time.Now().UTC(),
-	}
-	require.NoError(t, model.DB.Create(&job).Error)
+	job, token, fixture := seedClaimedProtectedSeedanceTransfer(t, sourceURL)
+	jobID := job.ID
+	tenantID := fixture.Job.TenantID
 
 	root := filepath.Join(t.TempDir(), "artifacts")
 	store, err := NewPlatformFilesystemArtifactStore(
@@ -89,7 +50,7 @@ func TestPlatformGenerationTransferPublishesOnlyVerifiedDurableOutput(t *testing
 	require.NoError(t, err)
 	require.NoError(t, transferClaimedPlatformGeneration(context.Background(), job, token, downloader, store))
 
-	persisted, err := model.GetPlatformGenerationJob(jobID, tenantID)
+	persisted, err := model.GetPlatformGenerationJob(jobID, fixture.Job.TenantID)
 	require.NoError(t, err)
 	assert.Equal(t, model.PlatformGenerationStatusSucceeded, persisted.Status)
 	assert.Empty(t, persisted.TemporaryResultJSON)

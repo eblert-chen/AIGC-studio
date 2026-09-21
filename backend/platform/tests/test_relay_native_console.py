@@ -260,7 +260,16 @@ def test_native_console_missing_configuration_fails_closed_without_audit(
         assert session.scalar(select(AuditLog).where(AuditLog.action == ACTION)) is None
 
 
-def test_production_native_console_requires_recent_owner_step_up() -> None:
+@pytest.mark.parametrize(
+    ("path", "mode", "destination_path", "owner_error_code"),
+    [
+        (PATH, "native_break_glass", "/channels", "RELAY_NATIVE_CONSOLE_OWNER_REQUIRED"),
+        ("/api/v1/platform-admin/relay/provider-onboarding/open", "provider_onboarding", "/provider-onboarding", "RELAY_PROVIDER_ONBOARDING_OWNER_REQUIRED"),
+    ],
+)
+def test_production_native_console_requires_recent_owner_step_up(
+    path, mode, destination_path, owner_error_code
+) -> None:
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -358,7 +367,7 @@ def test_production_native_console_requires_recent_owner_step_up() -> None:
     try:
         with TestClient(app, base_url="https://testserver") as client:
             preflight = client.options(
-                PATH,
+                path,
                 headers={
                     "Origin": "https://app.example.com",
                     "Access-Control-Request-Method": "POST",
@@ -387,7 +396,7 @@ def test_production_native_console_requires_recent_owner_step_up() -> None:
                 )
 
             stale = client.post(
-                PATH,
+                path,
                 headers={
                     "Origin": "https://app.example.com",
                     CSRF_HEADER_NAME: raw_csrf[owner_id],
@@ -414,7 +423,7 @@ def test_production_native_console_requires_recent_owner_step_up() -> None:
             client.cookies.set(SESSION_COOKIE_NAME, raw_sessions[delegated_id])
             client.cookies.set(CSRF_COOKIE_NAME, raw_csrf[delegated_id])
             delegated = client.post(
-                PATH,
+                path,
                 headers={
                     "Origin": "https://app.example.com",
                     CSRF_HEADER_NAME: raw_csrf[delegated_id],
@@ -422,9 +431,7 @@ def test_production_native_console_requires_recent_owner_step_up() -> None:
                 json={},
             )
             assert delegated.status_code == 403
-            assert delegated.json()["detail"]["code"] == (
-                "RELAY_NATIVE_CONSOLE_OWNER_REQUIRED"
-            )
+            assert delegated.json()["detail"]["code"] == owner_error_code
 
             with app.state.session_factory.begin() as session:
                 auth_session = session.scalar(
@@ -434,8 +441,18 @@ def test_production_native_console_requires_recent_owner_step_up() -> None:
                 auth_session.auth_time = datetime.now(timezone.utc)
             client.cookies.set(SESSION_COOKIE_NAME, raw_sessions[owner_id])
             client.cookies.set(CSRF_COOKIE_NAME, raw_csrf[owner_id])
+            bad_origin = client.post(
+                path,
+                headers={"Origin": "https://untrusted.example", CSRF_HEADER_NAME: raw_csrf[owner_id]},
+                json={},
+            )
+            assert bad_origin.status_code == 403, bad_origin.text
+            missing_csrf = client.post(
+                path, headers={"Origin": "https://app.example.com"}, json={},
+            )
+            assert missing_csrf.status_code == 403, missing_csrf.text
             opened = client.post(
-                PATH,
+                path,
                 headers={
                     "Origin": "https://app.example.com",
                     CSRF_HEADER_NAME: raw_csrf[owner_id],
@@ -445,8 +462,8 @@ def test_production_native_console_requires_recent_owner_step_up() -> None:
             )
             assert opened.status_code == 200, opened.text
             assert opened.json() == {
-                "url": "https://relay-admin.ops.example/channels",
-                "mode": "native_break_glass",
+                "url": f"https://relay-admin.ops.example{destination_path}",
+                "mode": mode,
             }
     finally:
         engine.dispose()

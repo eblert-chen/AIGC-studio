@@ -18,8 +18,14 @@ from sqlalchemy.pool import NullPool
 
 from platform_api import database_privileges_behavior_v1 as behavior_v1
 from platform_api import database_privileges_behavior_v4 as behavior_v4
+from platform_api import database_privileges_behavior_v8 as behavior_v8
+from platform_api import database_privileges_behavior_v9 as behavior_v9
+from platform_api import database_privileges_behavior_v10 as behavior_v10
 from platform_api import database_privileges_v1 as policy_v1
 from platform_api import database_privileges_v4 as policy_v4
+from platform_api import database_privileges_v8 as policy_v8
+from platform_api import database_privileges_v9 as policy_v9
+from platform_api import database_privileges_v10 as policy_v10
 from platform_api import platform_database_release_proof as release_proof
 from platform_api.platform_secret_receipt import PlatformSecretIsolationContext
 
@@ -78,6 +84,95 @@ def _role_url(database_url: str, username: str, password: str) -> str:
         username=username,
         password=password,
     ).render_as_string(hide_password=False)
+
+
+@pytest.mark.skipif(
+    not os.getenv(TEST_URL_ENV),
+    reason="requires a dedicated PostgreSQL 16 current Platform ACL database",
+)
+def test_postgres16_v10_system_actor_head_catalog_and_acl_are_exact() -> None:
+    database_url = os.environ[TEST_URL_ENV]
+    database_name = make_url(database_url).database or ""
+    if not any(marker in database_name for marker in ("canary", "acl_exact")):
+        pytest.skip("v10 ACL attestation requires an explicit canary database")
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as connection:
+            evidence = behavior_v10.collect_platform_database_evidence(
+                connection,
+                policy=policy_v10,
+            )
+            behavior_v10.validate_platform_database_acl_evidence(
+                evidence,
+                require_head=True,
+                policy=policy_v10,
+            )
+            assert policy_v10.CATALOG_SHA256 != (
+                policy_v10.UNQUALIFIED_CATALOG_SHA256
+            )
+            assert evidence.alembic_heads == (policy_v10.ALEMBIC_HEAD,)
+            assert evidence.catalog_sha256 == policy_v10.CATALOG_SHA256
+            assert not evidence.routine_acl
+            assert connection.scalar(
+                text(
+                    "SELECT has_table_privilege("
+                    "'platform_api', 'company_entitlement_batch_journals', "
+                    "'SELECT,INSERT,UPDATE')"
+                )
+            )
+            assert not connection.scalar(
+                text(
+                    "SELECT has_table_privilege("
+                    "'platform_api', 'company_entitlement_batch_journals', 'DELETE')"
+                )
+            )
+            for process_role, database_role in policy_v10.DATABASE_ROLE_BY_PROCESS.items():
+                if process_role in {"migration", "platform-api"}:
+                    continue
+                assert not connection.scalar(
+                    text(
+                        "SELECT has_table_privilege("
+                        ":role, 'company_entitlement_batch_journals', 'SELECT')"
+                    ),
+                    {"role": database_role},
+                )
+            relay_catalog_role = policy_v10.DATABASE_ROLE_BY_PROCESS[
+                "relay-catalog-sync"
+            ]
+            for table_name, privilege_list in (
+                ("model_definitions", "SELECT,INSERT,UPDATE"),
+                ("model_capabilities", "SELECT,INSERT"),
+                ("audit_logs", "INSERT"),
+            ):
+                assert connection.scalar(
+                    text(
+                        "SELECT has_table_privilege(:role,:table,:privileges)"
+                    ),
+                    {
+                        "role": relay_catalog_role,
+                        "table": table_name,
+                        "privileges": privilege_list,
+                    },
+                )
+            for table_name, privilege in (
+                ("audit_logs", "SELECT"),
+                ("users", "SELECT"),
+                ("company_model_grants", "SELECT"),
+                ("model_capabilities", "UPDATE"),
+            ):
+                assert not connection.scalar(
+                    text(
+                        "SELECT has_table_privilege(:role,:table,:privilege)"
+                    ),
+                    {
+                        "role": relay_catalog_role,
+                        "table": table_name,
+                        "privilege": privilege,
+                    },
+                )
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.skipif(

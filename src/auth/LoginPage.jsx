@@ -1,50 +1,89 @@
-import { ArrowRight, SpinnerGap } from "@phosphor-icons/react";
+import {
+  ArrowClockwise,
+  ArrowRight,
+  SpinnerGap,
+  WarningCircle,
+} from "@phosphor-icons/react";
 import { AuthShell } from "./AuthShell.jsx";
 
 export function LoginPage({
   onLogin,
+  onRetry,
   returnTo = "/",
   error = "",
   loggedOut = false,
   deactivated = false,
   busy = false,
 }) {
-  const eyebrow = deactivated
-    ? "账号已停用"
-    : loggedOut ? "会话已安全结束" : "正式账号登录";
-  const title = deactivated
-    ? "账号访问已停止"
-    : loggedOut ? "已退出旭天 AI VIDEO" : "继续进入创作空间";
-  const description = deactivated
-    ? "当前自然人账号已停用，全部设备会话已经撤销。历史任务、账务与审计记录仍按平台规则保留；如需恢复，请联系平台管理员。"
-    : loggedOut
-      ? "本机工作区草稿和会话状态已清理。再次登录时会重新读取服务端权限。"
-      : "使用已获授权的个人、企业或平台管理员身份继续。登录完成后，系统会安全返回当前页面。";
+  const state = error
+    ? "error"
+    : deactivated
+      ? "deactivated"
+      : loggedOut
+        ? "logged-out"
+        : "ready";
+  const retryingUnavailableService = state === "error";
+  const title = state === "error"
+    ? "账号服务暂不可用"
+    : state === "deactivated"
+      ? "这个账号已停用"
+      : state === "logged-out"
+        ? "已安全退出"
+        : "登录旭天";
+  const description = state === "error"
+    ? "重新检测只会确认连接状态，不会创建会话或进入任何工作区。"
+    : state === "deactivated"
+      ? "当前账号不能再进入工作区，你仍可以使用其他账号登录。"
+      : state === "logged-out"
+        ? "本机已结束当前会话，需要时可以重新进入个人或企业工作区。"
+        : "个人用户和企业成员都从这里进入，下一步由安全身份服务完成验证。";
+  const actionLabel = busy
+    ? "正在打开安全登录"
+    : retryingUnavailableService
+      ? "重新检测账号服务"
+      : state === "deactivated"
+        ? "使用其他账号登录"
+        : state === "logged-out"
+          ? "重新登录"
+          : "继续登录";
+  const actionUnavailable = retryingUnavailableService
+    ? typeof onRetry !== "function"
+    : typeof onLogin !== "function";
 
   return (
     <AuthShell
-      eyebrow={eyebrow}
+      variant="login"
       title={title}
       description={description}
-      tone={error || deactivated ? "warning" : "secure"}
+      tone={retryingUnavailableService || state === "deactivated" ? "warning" : state === "logged-out" ? "success" : "secure"}
       busy={busy}
-      footer="密码、MFA 与通行密钥由正式身份提供方管理，旭天不会在此页面读取或保存它们。"
+      footer="密码与验证码由安全身份服务处理，旭天不会保存。"
     >
-      {error ? <div className="auth-alert" role="alert">{error}</div> : null}
+      {retryingUnavailableService ? (
+        <div className="auth-login-state" role="alert">
+          <WarningCircle size={19} weight="bold" aria-hidden="true" />
+          <span>{error}</span>
+        </div>
+      ) : null}
+      {busy ? <p className="visually-hidden" role="status">正在打开安全登录页面</p> : null}
       <button
         className="auth-primary-action"
         type="button"
-        autoFocus
-        disabled={busy}
-        onClick={() => onLogin({ returnTo, prompt: "login" })}
+        data-action={retryingUnavailableService ? "retry" : "login"}
+        disabled={busy || actionUnavailable}
+        onClick={() => {
+          if (retryingUnavailableService) onRetry?.();
+          else onLogin?.({
+            returnTo,
+            prompt: state === "deactivated" ? "select_account" : "login",
+          });
+        }}
       >
+        <span>{actionLabel}</span>
         {busy ? <SpinnerGap className="is-spinning" size={18} aria-hidden="true" /> : null}
-        {busy ? "正在前往身份提供方" : "使用正式账号登录"}
-        {!busy ? <ArrowRight size={18} aria-hidden="true" /> : null}
+        {!busy && retryingUnavailableService ? <ArrowClockwise size={18} aria-hidden="true" /> : null}
+        {!busy && !retryingUnavailableService ? <ArrowRight size={18} aria-hidden="true" /> : null}
       </button>
-      <p className="auth-secondary-copy">
-        登录后只会显示当前账号被授权的个人空间、企业和管理模块。
-      </p>
     </AuthShell>
   );
 }

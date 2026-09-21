@@ -19,9 +19,10 @@ const (
 )
 
 type UniversalVerifyRequest struct {
-	Method string `json:"method"`
-	Code   string `json:"code,omitempty"`
-	Scope  string `json:"scope"`
+	Method  string                        `json:"method"`
+	Code    string                        `json:"code,omitempty"`
+	Scope   string                        `json:"scope"`
+	Binding *service.SecurityProofBinding `json:"binding,omitempty"`
 }
 
 func UniversalVerify(c *gin.Context) {
@@ -43,6 +44,10 @@ func UniversalVerify(c *gin.Context) {
 		common.ApiError(c, errors.New("不支持的安全验证范围"))
 		return
 	}
+	if err := validateSecurityProofRequestBinding(request.Scope, request.Binding); err != nil {
+		common.ApiError(c, errors.New("安全验证请求绑定无效"))
+		return
+	}
 	if strings.TrimSpace(request.Code) == "" {
 		common.ApiError(c, errors.New("验证码不能为空"))
 		return
@@ -60,7 +65,7 @@ func UniversalVerify(c *gin.Context) {
 		common.ApiError(c, errors.New("验证失败，请检查验证码"))
 		return
 	}
-	proofToken, expiresAt, err := service.IssueSecurityProof(identity, request.Method, []string{request.Scope})
+	proofToken, expiresAt, err := issueSecurityProofForRequest(identity, request.Method, request.Scope, request.Binding)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -80,9 +85,41 @@ func UniversalVerify(c *gin.Context) {
 
 func isAllowedSecurityProofScope(scope string) bool {
 	switch scope {
-	case securityProofScopeChannelKeyRead, securityProofScopePasskeyRegister, securityProofScopePasskeyDelete:
+	case securityProofScopeChannelKeyRead,
+		securityProofScopePasskeyRegister,
+		securityProofScopePasskeyDelete,
+		middleware.SecurityProofScopeProviderCredentialWrite,
+		middleware.SecurityProofScopeProviderDisable,
+		middleware.SecurityProofScopeProviderResume:
 		return true
 	default:
 		return false
 	}
+}
+
+func validateSecurityProofRequestBinding(scope string, binding *service.SecurityProofBinding) error {
+	switch scope {
+	case middleware.SecurityProofScopeProviderCredentialWrite,
+		middleware.SecurityProofScopeProviderDisable,
+		middleware.SecurityProofScopeProviderResume:
+		if binding == nil {
+			return service.ErrProofBinding
+		}
+		return binding.Validate(scope)
+	default:
+		if binding != nil {
+			return service.ErrProofBinding
+		}
+		return nil
+	}
+}
+
+func issueSecurityProofForRequest(identity service.AuthIdentity, method, scope string, binding *service.SecurityProofBinding) (string, int64, error) {
+	if err := validateSecurityProofRequestBinding(scope, binding); err != nil {
+		return "", 0, err
+	}
+	if binding != nil {
+		return service.IssueBoundSecurityProof(identity, method, scope, *binding)
+	}
+	return service.IssueSecurityProof(identity, method, []string{scope})
 }

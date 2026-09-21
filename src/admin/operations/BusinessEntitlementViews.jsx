@@ -49,19 +49,192 @@ import {
   TableScroller,
 } from "./operationsShared.jsx";
 
+function formatOptionalMoneyFromCents(value, fallback = "待核验") {
+  return value == null ? fallback : formatMoneyFromCents(value);
+}
+
+function formatOptionalMoneyYuan(value) {
+  return value == null ? "待核验" : formatMoneyYuan(value);
+}
+
+function formatBillingAmount(row, centsKey, pointsKey, fallback = "待核验") {
+  if (row?.billingUnit === "POINT" && row?.billingVersion === 2) {
+    return row[pointsKey] == null ? fallback : `${formatInteger(row[pointsKey])} 积分`;
+  }
+  if (row?.billingUnit === "CNY_CENT" && row?.billingVersion === 1) {
+    return formatOptionalMoneyFromCents(row[centsKey], fallback);
+  }
+  return fallback;
+}
+
+function formatCompanyConsumption(row) {
+  const value = formatBillingAmount(row, "consumptionCents", "consumptionPoints");
+  return row?.billingUnit === "POINT" ? `消费 ${value}` : `历史结算 ${value}`;
+}
+
+function modelProfitIsComplete(row) {
+  return row.costReconciliationStatus === "complete"
+    && row.revenueReconciliationStatus === "complete"
+    && row.grossProfitCents != null;
+}
+
+function modelProfitValue(row) {
+  return modelProfitIsComplete(row)
+    ? row.grossProfitCents
+    : row.knownGrossProfitCents;
+}
+
+function modelProfitLabel(row) {
+  if (modelProfitIsComplete(row)) return "最终毛利";
+  if (row.revenueReconciliationStatus !== "complete") return "毛利待收入归因";
+  return "已知毛利";
+}
+
+function modelProfitPendingReason(row) {
+  if (row.revenueReconciliationStatus === "unavailable") return "积分收入待归因";
+  if (row.revenueReconciliationStatus === "incomplete") return "结算收入待核验";
+  return "成本未完整";
+}
+
+function ModelRevenueCell({ row }) {
+  if (row.revenueReconciliationStatus === "complete") {
+    return <td>{formatMoneyFromCents(row.revenueCents)}</td>;
+  }
+  const unavailable = row.revenueReconciliationStatus === "unavailable";
+  const count = unavailable ? row.revenueUnavailableTaskCount : row.revenueMissingTaskCount;
+  return (
+    <td className="is-warning">
+      <strong>{unavailable ? "待归因" : "待核验"}</strong>
+      <small>{formatInteger(count)} 个成功任务{unavailable ? "缺少现金收入归因" : "缺少结算收入证据"}</small>
+    </td>
+  );
+}
+
+function UnattributedProviderCostNotice({ summary }) {
+  const value = summary?.unattributedProviderCostCents;
+  if (value == null) {
+    return (
+      <div className="ops-callout is-warning">
+        <WarningCircle size={20} />
+        <div><strong>未归因渠道成本待核验</strong><span>当前数据没有独立于模型行的未归因成本证据；下方模型行不能代表全量渠道成本。</span></div>
+      </div>
+    );
+  }
+  const requiresReconciliation = value !== 0;
+  const Icon = requiresReconciliation ? WarningCircle : CheckCircle;
+  return (
+    <div className={cx("ops-callout", requiresReconciliation && "is-warning")}>
+      <Icon size={20} />
+      <div>
+        <strong>未归因渠道成本：{formatMoneyFromCents(value)}</strong>
+        <span>{requiresReconciliation
+          ? "这部分成本没有任务或模型归属，未计入下方任何模型毛利，必须单独对账。"
+          : "服务端确认当前周期没有脱离任务或模型归属的渠道成本。"}</span>
+      </div>
+    </div>
+  );
+}
+
+function ModelRevenueReconciliationNotice({ summary }) {
+  if (!summary || summary.revenueReconciliationStatus === "complete") return null;
+  const unavailable = summary.revenueReconciliationStatus === "unavailable";
+  const count = unavailable
+    ? summary.revenueUnavailableTaskCount
+    : summary.revenueMissingTaskCount;
+  return (
+    <div className="ops-callout is-warning">
+      <WarningCircle size={20} />
+      <div>
+        <strong>{unavailable ? "积分收入待归因" : "结算收入待核验"}</strong>
+        <span>{formatInteger(count)} 个成功任务{unavailable
+          ? "只有积分消费证据，没有不可变现金收入归因；不会按积分兑换锚点反推收入。"
+          : "缺少结算收入证据；最终毛利和毛利率保持不可用。"}</span>
+      </div>
+    </div>
+  );
+}
+
+function MetricValue({ item }) {
+  if (item.valueKind === "points") {
+    if (item.valuePoints == null || item.settlementCount == null) {
+      return item.unavailableLabel || "待核验";
+    }
+    return `${formatInteger(item.valuePoints)} 积分 · ${formatInteger(item.settlementCount)} 笔`;
+  }
+  if (item.valueKind === "percent" || Object.hasOwn(item, "valuePercent")) {
+    return item.valuePercent == null
+      ? (item.unavailableLabel || "待核验")
+      : formatPercent(item.valuePercent, 2);
+  }
+  return item.valueCents == null
+    ? (item.unavailableLabel || "待核验")
+    : formatMoneyFromCents(item.valueCents);
+}
+
+function OperatingFinanceNotice({ evidence }) {
+  if (!evidence || evidence.financeStatus === "complete") return null;
+  const details = [];
+  if (evidence.revenueReconciliationStatus === "incomplete") {
+    if (evidence.unattributedPointSettlementCount > 0) {
+      details.push(
+        `${formatInteger(evidence.unattributedPointSettlementCount)} 笔有效积分结算（${formatInteger(evidence.settledPoints)} 积分）尚无不可变现金归因`,
+      );
+    }
+    if (evidence.pointSettlementMissingTaskCount > 0) {
+      details.push(`${formatInteger(evidence.pointSettlementMissingTaskCount)} 个成功积分任务缺少结算分录`);
+    }
+    if (evidence.pointSettlementDuplicateTaskCount > 0) {
+      details.push(`${formatInteger(evidence.pointSettlementDuplicateTaskCount)} 个成功积分任务存在重复结算分录`);
+    }
+  }
+  if (evidence.costReconciliationStatus === "incomplete") {
+    details.push("仍有成功任务缺少渠道成本证据");
+  }
+  return (
+    <div className="ops-callout is-warning">
+      <WarningCircle size={20} />
+      <div>
+        <strong>最终毛利尚未闭环</strong>
+        <span>{details.join("；")}。积分只作为消费权益展示，不按兑换锚点折算为现金收入。</span>
+      </div>
+    </div>
+  );
+}
+
+function ModelProfitCell({ row }) {
+  const complete = modelProfitIsComplete(row);
+  return (
+    <td className={complete ? "is-positive" : "is-warning"}>
+      <strong>{formatOptionalMoneyFromCents(modelProfitValue(row))}</strong>
+      <small>{modelProfitLabel(row)}{complete ? "" : ` · ${modelProfitPendingReason(row)}`}</small>
+    </td>
+  );
+}
+
+function ModelGrossMarginValue({ row }) {
+  if (!modelProfitIsComplete(row)) return modelProfitPendingReason(row);
+  return row.grossMargin == null ? "暂无收入基数" : formatPercent(row.grossMargin, 2);
+}
+
+function EvidencePercent({ value, fallback = "待核验", digits = 2 }) {
+  return value == null ? fallback : formatPercent(value, digits);
+}
+
 function MetricStrip({ items }) {
   if (!items.length) return <EmptyState title="没有经营指标" />;
   return (
-    <div className="ops-metric-strip">
-      {items.map((item) => {
+    <div className="ops-metric-strip" role="list" aria-label="平台经营指标账页">
+      {items.map((item, index) => {
         return (
-          <div className="ops-metric" key={item.key}>
-            <span>{item.label}</span>
-            <strong>{item.valuePercent != null ? formatPercent(item.valuePercent, 2) : formatMoneyFromCents(item.valueCents)}</strong>
-            <MetricComparison label="环比" value={item.change} status={item.comparisonStatus} />
-            {Object.hasOwn(item, "yearOverYearChange")
-              ? <MetricComparison label="同比" value={item.yearOverYearChange} status={item.yearOverYearStatus} />
-              : null}
+          <div className={cx("ops-metric", index === 0 && "is-lead")} key={item.key} role="listitem">
+            <div className="ops-metric-heading"><span>{item.label}</span><small>{String(index + 1).padStart(2, "0")}</small></div>
+            <strong><MetricValue item={item} /></strong>
+            <div className="ops-metric-comparisons">
+              <MetricComparison label="环比" value={item.change} status={item.comparisonStatus} />
+              {Object.hasOwn(item, "yearOverYearChange")
+                ? <MetricComparison label="同比" value={item.yearOverYearChange} status={item.yearOverYearStatus} />
+                : null}
+            </div>
           </div>
         );
       })}
@@ -85,18 +258,19 @@ function BusinessTrendChart({ data }) {
   if (!data.length) return <EmptyState title="没有经营趋势数据" />;
   return (
     <>
-      <div className="ops-chart is-business" role="img" aria-label="充值、收入、渠道成本和毛利趋势图">
+      <div className="ops-chart is-business" role="img" aria-label="人工入账、已归因法币收入、渠道成本、最终毛利和已知毛利趋势图">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={data} margin={{ top: 16, right: 18, left: -2, bottom: 0 }}>
             <CartesianGrid stroke="var(--ops-chart-grid)" vertical={false} />
             <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: CHART_COLORS.muted }} interval="preserveStartEnd" minTickGap={24} />
             <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: CHART_COLORS.muted }} tickFormatter={(value) => `${Math.round(value / 10000)}万`} />
-            <Tooltip content={<ChartTooltip valueFormatter={formatMoneyYuan} />} />
+            <Tooltip content={<ChartTooltip valueFormatter={formatOptionalMoneyYuan} />} />
             <Legend iconType="plainline" wrapperStyle={{ fontSize: 12 }} />
-            <Bar dataKey="recharge" name="充值" fill="var(--ops-chart-recharge)" radius={[2, 2, 0, 0]} barSize={14} />
-            <Line type="monotone" dataKey="revenue" name="结算收入" stroke={CHART_COLORS.primary} strokeWidth={2.2} dot={false} />
+            <Bar dataKey="recharge" name="账户人工入账" fill="var(--ops-chart-recharge)" radius={[2, 2, 0, 0]} barSize={14} />
+            <Line type="monotone" dataKey="revenue" name="已归因法币收入" stroke={CHART_COLORS.primary} strokeWidth={2.2} dot={false} />
             <Line type="monotone" dataKey="cost" name="渠道成本" stroke={CHART_COLORS.orange} strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="grossProfit" name="毛利" stroke={CHART_COLORS.blue} strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="grossProfit" name="最终毛利" stroke={CHART_COLORS.blue} strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="knownGrossProfit" name="已知毛利（成本未完整）" stroke={CHART_COLORS.muted} strokeWidth={2} strokeDasharray="5 4" dot={false} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
@@ -105,10 +279,13 @@ function BusinessTrendChart({ data }) {
         rows={data}
         columns={[
           { key: "date", label: "日期" },
-          { key: "recharge", label: "充值", format: formatMoneyYuan },
-          { key: "revenue", label: "结算收入", format: formatMoneyYuan },
-          { key: "cost", label: "渠道成本", format: formatMoneyYuan },
-          { key: "grossProfit", label: "毛利", format: formatMoneyYuan },
+          { key: "recharge", label: "账户人工入账", format: formatOptionalMoneyYuan },
+          { key: "revenue", label: "已归因法币收入", format: formatOptionalMoneyYuan },
+          { key: "settledPoints", label: "积分结算", format: (value) => `${formatInteger(value)} 积分` },
+          { key: "pointSettlementCount", label: "积分结算笔数", format: (value) => `${formatInteger(value)} 笔` },
+          { key: "cost", label: "渠道成本", format: formatOptionalMoneyYuan },
+          { key: "grossProfit", label: "最终毛利", format: formatOptionalMoneyYuan },
+          { key: "knownGrossProfit", label: "已知毛利（成本未完整）", format: formatOptionalMoneyYuan },
         ]}
       />
     </>
@@ -119,18 +296,21 @@ export function OperatingCockpitScreen({ data, onNavigate, onExceptionSelect, on
   const urgent = data.exceptions.filter((item) => item.priority === "P1").slice(0, 4);
   const source = data.sourceStatus || {};
   return (
-    <>
+    <div className="ops-cockpit-canvas">
       {source.readiness === "available"
         ? <DataReadinessStatus readiness={data.dataReadiness} />
         : <DatasetState status={source.readiness} label="生产数据就绪状态" detail={data.sourceErrors?.readiness} onRetry={onRetry} compact />}
       <section className="ops-panel ops-cockpit-metrics">
         {source.operating === "available"
-          ? <MetricStrip items={data.business.metrics} />
+          ? <>
+            <OperatingFinanceNotice evidence={data.business.financeEvidence} />
+            <MetricStrip items={data.business.metrics} />
+          </>
           : <DatasetState status={source.operating} label="经营指标" detail={data.sourceErrors?.operating} onRetry={onRetry} />}
       </section>
       <div className="ops-cockpit-grid">
         <section className="ops-panel">
-          <PanelHeader title="经营趋势" detail="充值现金流、成功结算收入、真实渠道成本与毛利分开统计。" />
+          <PanelHeader title="经营趋势" detail="人工入账、已归因法币收入、积分消费和真实渠道成本分开统计；积分与现金不混算。" />
           {source.operating === "available"
             ? <BusinessTrendChart data={data.business.trend} />
             : <DatasetState status={source.operating} label="经营趋势" detail={data.sourceErrors?.operating} onRetry={onRetry} />}
@@ -155,28 +335,42 @@ export function OperatingCockpitScreen({ data, onNavigate, onExceptionSelect, on
         <section className="ops-panel">
           <PanelHeader title="模型利润" detail="收入、渠道成本、毛利与成本缺失率必须一起看。" action={<button type="button" className="ops-text-button" onClick={() => onNavigate("model-profit")}>完整分析 <ArrowRight size={14} /></button>} />
           {source.profitability === "available" ? (
-            <div className="ops-table-wrap">
-              <table className="ops-table">
-                <thead><tr><th>模型</th><th>调用量</th><th>收入</th><th>渠道成本</th><th>毛利</th><th>毛利率</th><th>成本缺失</th></tr></thead>
-                <tbody>
-                  {data.modelProfitability.slice(0, 5).map((row) => <tr key={row.id} onClick={() => onModelOpen?.(row)} className={onModelOpen ? "is-clickable" : ""}><td>{onModelOpen ? <button className="ops-model-row-link" type="button" aria-label={`查看 ${row.model} 模型利润详情`} onClick={(event) => { event.stopPropagation(); onModelOpen(row); }}>{row.model}</button> : <strong>{row.model}</strong>}</td><td>{formatInteger(row.calls)}</td><td>{formatMoneyFromCents(row.revenueCents)}</td><td>{formatMoneyFromCents(row.costCents)}</td><td className="is-positive">{formatMoneyFromCents(row.grossProfitCents)}</td><td>{formatPercent(row.grossMargin, 2)}</td><td className={row.missingCostRate ? "is-negative" : ""}>{formatPercent(row.missingCostRate)}</td></tr>)}
-                  {!data.modelProfitability.length ? <tr><td colSpan="7"><EmptyState title="当前周期没有模型利润数据" detail="服务端已返回空的模型盈利结果。" /></td></tr> : null}
-                </tbody>
-              </table>
+            <div>
+              <UnattributedProviderCostNotice summary={data.modelProfitabilitySummary} />
+              <ModelRevenueReconciliationNotice summary={data.modelProfitabilitySummary} />
+              <div className="ops-table-wrap">
+                <table className="ops-table">
+                  <thead><tr><th>模型</th><th>调用量</th><th>收入</th><th>渠道成本</th><th>毛利口径</th><th>最终毛利率</th><th>成本缺失</th></tr></thead>
+                  <tbody>
+                    {data.modelProfitability.slice(0, 5).map((row) => (
+                      <tr key={row.id} onClick={() => onModelOpen?.(row)} className={onModelOpen ? "is-clickable" : ""}>
+                        <td>{onModelOpen ? <button className="ops-model-row-link" type="button" aria-label={`查看 ${row.model} 模型利润详情`} onClick={(event) => { event.stopPropagation(); onModelOpen(row); }}>{row.model}</button> : <strong>{row.model}</strong>}</td>
+                        <td>{formatInteger(row.calls)}</td>
+                        <ModelRevenueCell row={row} />
+                        <td>{formatMoneyFromCents(row.costCents)}</td>
+                        <ModelProfitCell row={row} />
+                        <td><ModelGrossMarginValue row={row} /></td>
+                        <td className={row.missingCostCount > 0 ? "is-negative" : ""}><EvidencePercent value={row.missingCostRate} fallback={row.calls === 0 ? "暂无任务" : "待核验"} /></td>
+                      </tr>
+                    ))}
+                    {!data.modelProfitability.length ? <tr><td colSpan="7"><EmptyState title="当前周期没有模型利润数据" detail="服务端已返回空的模型盈利结果。" /></td></tr> : null}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : <DatasetState status={source.profitability} label="模型利润" detail={data.sourceErrors?.profitability} onRetry={onRetry} />}
         </section>
         <section className="ops-panel">
-          <PanelHeader title="企业排名" detail="按成功结算收入排序" action={<button type="button" className="ops-text-button" onClick={() => onNavigate("company-health")}>企业健康 <ArrowRight size={14} /></button>} />
+          <PanelHeader title="企业使用排行" detail="按任务量排序；消费权益按企业当前计费单位展示，不把积分换算为现金收入。" action={<button type="button" className="ops-text-button" onClick={() => onNavigate("company-health")}>企业健康 <ArrowRight size={14} /></button>} />
           {source.dashboard === "available" ? (
             <ol className="ops-ranking-list">
               {data.business.companyRanking.map((row, index) => (
                 <li key={row.id}>
                   <span className="ops-rank-number">{String(index + 1).padStart(2, "0")}</span>
                   {onCompanyOpen
-                    ? <button type="button" onClick={() => onCompanyOpen(row)}><strong>{row.name}</strong><small>{formatInteger(row.taskCount)} 个任务 · 成功率 {formatPercent(row.successRate)}</small></button>
-                    : <span className="ops-ranking-copy"><strong>{row.name}</strong><small>{formatInteger(row.taskCount)} 个任务 · 成功率 {formatPercent(row.successRate)}</small></span>}
-                  <span><strong>{formatMoneyFromCents(row.revenueCents)}</strong><small>余额 {formatMoneyFromCents(row.balanceCents)}</small></span>
+                    ? <button type="button" onClick={() => onCompanyOpen(row)}><strong>{row.name}</strong><small>{row.taskCount == null ? "任务数待核验" : `${formatInteger(row.taskCount)} 个任务`} · {row.successRate == null ? "成功率待核验" : `成功率 ${formatPercent(row.successRate)}`}</small></button>
+                    : <span className="ops-ranking-copy"><strong>{row.name}</strong><small>{row.taskCount == null ? "任务数待核验" : `${formatInteger(row.taskCount)} 个任务`} · {row.successRate == null ? "成功率待核验" : `成功率 ${formatPercent(row.successRate)}`}</small></span>}
+                  <span><strong>{formatCompanyConsumption(row)}</strong><small>余额 {formatBillingAmount(row, "balanceCents", "balancePoints")}</small></span>
                 </li>
               ))}
               {!data.business.companyRanking.length ? <EmptyState title="没有企业排行数据" detail="服务端已确认当前周期没有企业排行记录。" /> : null}
@@ -184,7 +378,7 @@ export function OperatingCockpitScreen({ data, onNavigate, onExceptionSelect, on
           ) : <DatasetState status={source.dashboard} label="企业排名" detail={data.sourceErrors?.dashboard} onRetry={onRetry} />}
         </section>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -193,6 +387,11 @@ export function ModelProfitabilityScreen({ data, onModelOpen, onRetry }) {
   // the row `id` in chart payloads therefore creates duplicate DOM ids when a
   // model is rendered in each revenue/cost/profit series.
   const chartRows = data.modelProfitability.map(({ id: _id, ...row }) => row);
+  for (const row of chartRows) {
+    row.partialGrossProfitCents = row.costReconciliationStatus === "incomplete"
+      ? row.knownGrossProfitCents
+      : null;
+  }
   const sourceStatus = data.sourceStatus?.profitability || "unavailable";
   if (sourceStatus !== "available") {
     return <DatasetState status={sourceStatus} label="模型盈利数据" detail={data.sourceErrors?.profitability} onRetry={onRetry} />;
@@ -200,19 +399,22 @@ export function ModelProfitabilityScreen({ data, onModelOpen, onRetry }) {
   return (
     <>
       <section className="ops-panel">
-        <PanelHeader title="模型收入、成本与毛利" detail="成本缺失不会被静默当作零；缺失比例会与利润口径同时展示。" />
+        <PanelHeader title="模型收入、成本与毛利" detail="最终毛利只在收入归因与渠道成本都完整时成立；积分不反推现金收入。" />
+        <UnattributedProviderCostNotice summary={data.modelProfitabilitySummary} />
+        <ModelRevenueReconciliationNotice summary={data.modelProfitabilitySummary} />
         {data.modelProfitability.length ? (
-          <div className="ops-chart is-business" role="img" aria-label="各模型收入成本毛利对比图">
+          <div className="ops-chart is-business" role="img" aria-label="各模型收入、渠道成本、最终毛利与已知毛利对比图">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartRows} margin={{ top: 16, right: 18, left: 2, bottom: 4 }}>
                 <CartesianGrid stroke="var(--ops-chart-grid)" vertical={false} />
                 <XAxis dataKey="model" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: CHART_COLORS.muted }} tickFormatter={formatModelAxisTick} interval="preserveStartEnd" minTickGap={10} />
                 <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: CHART_COLORS.muted }} tickFormatter={(value) => `${Math.round(value / 1000000)}万`} />
-                <Tooltip content={<ChartTooltip valueFormatter={formatMoneyFromCents} />} />
+                <Tooltip content={<ChartTooltip valueFormatter={formatOptionalMoneyFromCents} />} />
                 <Legend iconType="square" wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="revenueCents" name="收入" fill={CHART_COLORS.primary} radius={[2, 2, 0, 0]} />
                 <Bar dataKey="costCents" name="渠道成本" fill={CHART_COLORS.orange} radius={[2, 2, 0, 0]} />
-                <Bar dataKey="grossProfitCents" name="毛利" fill={CHART_COLORS.blue} radius={[2, 2, 0, 0]} />
+                <Bar dataKey="grossProfitCents" name="最终毛利" fill={CHART_COLORS.blue} radius={[2, 2, 0, 0]} />
+                <Bar dataKey="partialGrossProfitCents" name="已知毛利（成本未完整）" fill={CHART_COLORS.muted} radius={[2, 2, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -222,11 +424,20 @@ export function ModelProfitabilityScreen({ data, onModelOpen, onRetry }) {
         <PanelHeader title="模型盈利明细" detail="点击模型进入目录或定价配置。" />
         <TableScroller hasActions label="模型盈利明细">
           <table className="ops-table">
-            <thead><tr><th>模型</th><th>调用量</th><th>收入</th><th>渠道成本</th><th>毛利</th><th>毛利率</th><th>成功率</th><th>平均耗时</th><th>成本缺失率</th><th>操作</th></tr></thead>
+            <thead><tr><th>模型</th><th>调用量</th><th>收入</th><th>渠道成本</th><th>毛利口径</th><th>最终毛利率</th><th>成功率</th><th>平均耗时</th><th>成本缺失率</th><th>操作</th></tr></thead>
             <tbody>
               {data.modelProfitability.map((row) => (
                 <tr key={row.id}>
-                  <td><strong>{row.model}</strong></td><td>{formatInteger(row.calls)}</td><td>{formatMoneyFromCents(row.revenueCents)}</td><td>{formatMoneyFromCents(row.costCents)}</td><td className="is-positive">{formatMoneyFromCents(row.grossProfitCents)}</td><td>{formatPercent(row.grossMargin, 2)}</td><td className={row.successRate < 90 ? "is-negative" : "is-positive"}>{formatPercent(row.successRate, 2)}</td><td>{formatDurationSeconds(row.avgSeconds)}</td><td className={row.missingCostRate ? "is-negative" : ""}>{formatPercent(row.missingCostRate)}</td><td><button className="ops-table-link" type="button" onClick={() => onModelOpen?.(row)} disabled={!onModelOpen}>{onModelOpen ? "定价与授权" : "只读"}</button></td>
+                  <td><strong>{row.model}</strong></td>
+                  <td>{formatInteger(row.calls)}</td>
+                  <ModelRevenueCell row={row} />
+                  <td>{formatMoneyFromCents(row.costCents)}</td>
+                  <ModelProfitCell row={row} />
+                  <td><ModelGrossMarginValue row={row} /></td>
+                  <td className={row.successRate == null ? "" : row.successRate < 90 ? "is-negative" : "is-positive"}><EvidencePercent value={row.successRate} /></td>
+                  <td>{row.avgSeconds == null ? "待核验" : formatDurationSeconds(row.avgSeconds)}</td>
+                  <td className={row.missingCostCount > 0 ? "is-negative" : ""}><EvidencePercent value={row.missingCostRate} fallback={row.calls === 0 ? "暂无任务" : "待核验"} /></td>
+                  <td><button className="ops-table-link" type="button" onClick={() => onModelOpen?.(row)} disabled={!onModelOpen}>{onModelOpen ? "定价与授权" : "只读"}</button></td>
                 </tr>
               ))}
               {!data.modelProfitability.length ? <tr><td colSpan="10"><EmptyState /></td></tr> : null}
@@ -258,26 +469,27 @@ export function CompanyHealthScreen({ data, onCompanyOpen, onRetry }) {
         </div>
       </section>
       <section className="ops-panel">
-        <PanelHeader title="企业健康清单" detail="余额不足、异常消费、长期预留、失败率、活跃度和权益到期统一进入风险判断。" />
+        <PanelHeader title="企业健康清单" detail="余额、24 小时消费和预留严格按企业当前计费单位展示；积分不折算为现金。" />
         <TableScroller hasActions label="企业健康清单">
           <table className="ops-table">
-            <thead><tr><th>企业</th><th>健康状态</th><th>可用余额</th><th>未活跃</th><th>消费环比</th><th>最长预留</th><th>任务失败率</th><th>到期权益</th><th>风险原因</th>{hasCompanyDetails ? <th>操作</th> : null}</tr></thead>
+            <thead><tr><th>企业</th><th>健康状态</th><th>可用余额</th><th>24h 消费</th><th>未活跃</th><th>消费环比</th><th>预留余额</th><th>任务失败率</th><th>到期权益</th><th>风险原因</th>{hasCompanyDetails ? <th>操作</th> : null}</tr></thead>
             <tbody>
               {data.companyHealth.map((row) => (
                 <tr key={row.id}>
                   <td><strong>{row.name}</strong></td>
                   <td><StatusPill value={row.risk} label={riskLabel(row.risk)} /></td>
-                  <td className={row.balanceCents < 500000 ? "is-negative" : ""}>{formatMoneyFromCents(row.balanceCents)}</td>
-                  <td>{row.daysInactive ? `${row.daysInactive} 天` : "今天活跃"}</td>
-                  <td className={cx(`is-${changeTone(row.consumptionChange)}`)}>{row.consumptionChange > 0 ? "+" : ""}{formatPercent(row.consumptionChange)}</td>
-                  <td className={row.reservationAgeHours >= 168 ? "is-negative" : ""}>{row.reservationAgeHours ? `${row.reservationAgeHours}h` : "—"}</td>
+                  <td className={row.lowBalance ? "is-negative" : ""}>{formatBillingAmount(row, "balanceCents", "balancePoints")}</td>
+                  <td>{formatBillingAmount(row, "spend24hCents", "spend24hPoints")}</td>
+                  <td>{row.daysInactive == null ? "无任务记录" : row.daysInactive > 0 ? `${row.daysInactive} 天` : "今天活跃"}</td>
+                  <td className={row.consumptionChange == null ? "" : cx(`is-${changeTone(row.consumptionChange)}`)}>{row.consumptionChange == null ? "未触发异常阈值" : <>{row.consumptionChange > 0 ? "+" : ""}{formatPercent(row.consumptionChange)}</>}</td>
+                  <td className={row.reservationAgeHours ? "is-negative" : ""}><strong>{formatBillingAmount(row, "reservedCents", "reservedPoints")}</strong><small>{row.reservationAgeHours ? `存在超过 ${row.reservationAgeHours}h 的任务` : "无超时预留证据"}</small></td>
                   <td className={row.failureRate >= 10 ? "is-negative" : ""}>{formatPercent(row.failureRate)}</td>
                   <td>{row.entitlementsExpiring || 0}</td>
                   <td><span className="ops-reason-summary">{row.reasons?.join("；") || "未发现异常"}</span></td>
                   {hasCompanyDetails ? <td><button className="ops-table-link" type="button" onClick={() => onCompanyOpen(row)}>企业全景</button></td> : null}
                 </tr>
               ))}
-              {!data.companyHealth.length ? <tr><td colSpan={hasCompanyDetails ? 10 : 9}><EmptyState title="没有企业健康数据" detail="服务端已确认当前周期没有企业健康记录。" /></td></tr> : null}
+              {!data.companyHealth.length ? <tr><td colSpan={hasCompanyDetails ? 11 : 10}><EmptyState title="没有企业健康数据" detail="服务端已确认当前周期没有企业健康记录。" /></td></tr> : null}
             </tbody>
           </table>
         </TableScroller>
@@ -348,7 +560,7 @@ export function EntitlementMatrixScreen({
               <div className="ops-coverage-row" key={`${item.kind}-${item.id}`}>
                 <span><small>{KIND_LABELS[item.kind] || item.kind}</small><strong>{item.name}</strong></span>
                 <div className="ops-coverage-track" aria-label={`${item.name} 覆盖率 ${item.coverageRate == null ? "暂无基数" : formatPercent(item.coverageRate)}`}><i style={{ width: `${Math.max(0, Math.min(100, item.coverageRate || 0))}%` }} /></div>
-                <strong>{item.coverageRate == null ? "—" : formatPercent(item.coverageRate)}</strong>
+                <strong>{item.coverageRate == null ? "待核验" : formatPercent(item.coverageRate)}</strong>
                 <small>启用 {formatInteger(item.enabledCompanies)} · 停用 {formatInteger(item.disabledCompanies)} · 待生效 {formatInteger(item.scheduledCompanies)} · 过期 {formatInteger(item.expiredCompanies)}</small>
               </div>
             ))}

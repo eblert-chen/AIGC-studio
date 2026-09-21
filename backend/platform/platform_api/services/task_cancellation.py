@@ -15,7 +15,8 @@ from .billing import WalletService
 from .errors import ConflictError, NotFoundError
 from .relay_status import RelayStatusService
 
-_CANCELLATION_REASON = "cancelled by creator before Relay submission"
+_LEGACY_CANCELLATION_REASON = "cancelled by creator before Relay submission"
+_CANCELLATION_REASON = "cancelled by creator after confirming no Relay job was created"
 
 
 @dataclass(frozen=True)
@@ -43,9 +44,19 @@ class GenerationCancellationService:
         return {
             "task_status": task.status.value,
             "reserved_cents": task.reserved_cents,
+            "reserved_points": task.reserved_points,
             "relay_job_id": task.relay_job_id,
             "outbox_status": outbox.status.value,
-            "relay_submit_attempted": outbox.relay_submit_attempted_at is not None,
+            "dispatch_attempt_count": outbox.attempt_count or 0,
+            "dispatch_attempted": (outbox.attempt_count or 0) > 0,
+            # A confirmed non-creation reply can clear the unresolved marker.
+            # Retain the dispatch count and never turn that into a claim that
+            # no POST was attempted. Old rows cannot prove the exact history.
+            "relay_submit_attempted": (
+                True if outbox.relay_submit_attempted_at is not None
+                else None if (outbox.attempt_count or 0) > 0 else False
+            ),
+            "relay_submission_outstanding": outbox.relay_submit_attempted_at is not None,
             "submission_outcome_uncertain": (
                 outbox.submission_outcome_uncertain_at is not None
             ),
@@ -84,8 +95,9 @@ class GenerationCancellationService:
         before_summary = cls._summary(task, outbox)
         if (
             task.status == TaskStatus.CANCELLED
-            and task.failure_reason == _CANCELLATION_REASON
+            and task.failure_reason in {_CANCELLATION_REASON, _LEGACY_CANCELLATION_REASON}
             and task.reserved_cents == 0
+            and task.reserved_points == 0
             and outbox.status == RelayOutboxStatus.CANCELLED
         ):
             return GenerationCancellationResult(

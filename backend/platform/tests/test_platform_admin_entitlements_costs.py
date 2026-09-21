@@ -14,11 +14,21 @@ def test_dynamic_resource_catalog_and_complete_company_entitlements(
 ):
     _, admin_headers = bootstrap_admin(client, "entitlements")
     granted_model_id = seed_model(app, tenant["company_id"])
+    initial_entitlements = client.get(
+        f"/api/v1/platform-admin/companies/{tenant['company_id']}/entitlements",
+        headers=admin_headers,
+    ).json()
+    grant_version = next(
+        item["grant_updated_at"]
+        for item in initial_entitlements["models"]
+        if item["model_id"] == granted_model_id
+    )
     disabled_grant = client.put(
         f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
         headers=admin_headers,
         json={
             "model_id": granted_model_id,
+            "expected_updated_at": grant_version,
             "enabled": False,
             "price_per_second_cents": 80,
             "config_override": {"durations": [5]},
@@ -112,11 +122,22 @@ def test_dynamic_resource_catalog_and_complete_company_entitlements(
         "enabled": False,
         "price_per_second_cents": None,
         "price_per_item_cents": None,
+        "price_per_second_points": None,
+        "price_per_item_points": None,
+        "point_price_candidate_per_second": None,
+        "point_price_candidate_per_item": None,
+        "point_price_candidate_revision": None,
+        "point_price_candidate_created_at": None,
+        "point_price_candidate_version_id": None,
+        "point_price_active_version_id": None,
+        "billing_unit": "CNY_CENT",
+        "billing_version": 1,
         "config_override": {},
         "call_quota": None,
         "concurrency_limit": None,
         "effective_at": None,
         "expires_at": None,
+        "grant_updated_at": None,
     }
     resources = {item["resource_id"]: item for item in body["resources"]}
     assert resources[resource_id]["active"] is False

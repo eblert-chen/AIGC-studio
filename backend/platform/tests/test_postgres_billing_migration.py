@@ -81,6 +81,20 @@ def _artifact_audit_trigger_names(engine, table_name: str) -> set[str]:
         }
 
 
+def _table_trigger_names(engine, table_name: str) -> set[str]:
+    with engine.connect() as connection:
+        return {
+            str(name)
+            for name in connection.scalars(
+                text(
+                    "SELECT tgname FROM pg_trigger "
+                    "WHERE tgrelid = to_regclass(:table_name) AND NOT tgisinternal"
+                ),
+                {"table_name": table_name},
+            )
+        }
+
+
 def _insert_postgres_download_binding(
     connection,
     *,
@@ -237,7 +251,67 @@ def test_postgres_billing_migration_upgrade_downgrade_and_guards(
             "download_gateway_registration_attempts"
         )
         command.upgrade(config, "head")
-        assert _revision(migration_engine) == "0040_showcase_management"
+        assert _revision(migration_engine) == "0051_provider_account_evidence"
+        closure_tables = {
+            "enterprise_dunning_actions",
+            "enterprise_dunning_runs",
+            "finance_reconciliation_run_sources",
+            "payment_dispute_debt_recovery_allocations",
+            "payment_dispute_debt_recovery_reversals",
+            "payment_mandates",
+            "payment_provider_commands",
+            "payment_settlement_batches",
+            "payment_webhook_inbox_events",
+            "provider_cost_statement_batches",
+            "provider_cost_statement_lines",
+        }
+        assert closure_tables <= set(inspect(migration_engine).get_table_names())
+        assert {
+            tuple(foreign_key["constrained_columns"])
+            for foreign_key in inspect(migration_engine).get_foreign_keys(
+                "company_billing_contract_versions"
+            )
+        } >= {("supersedes_version_id",)}
+        assert {
+            tuple(foreign_key["constrained_columns"])
+            for foreign_key in inspect(migration_engine).get_foreign_keys(
+                "personal_point_lots"
+            )
+        } >= {("payment_order_id",)}
+        assert {
+            index["name"]
+            for index in inspect(migration_engine).get_indexes(
+                "payment_dispute_debt_recovery_allocations"
+            )
+        } >= {
+            "ix_dispute_debt_recovery_personal",
+            "ix_dispute_debt_recovery_transaction",
+        }
+        for table_name in {
+            "enterprise_dunning_actions",
+            "finance_reconciliation_run_sources",
+            "payment_dispute_debt_recovery_allocations",
+            "payment_dispute_debt_recovery_reversals",
+            "payment_settlement_batches",
+            "provider_cost_statement_batches",
+            "provider_cost_statement_lines",
+        }:
+            assert _table_trigger_names(migration_engine, table_name) == {
+                f"trg_{table_name}_closure_immutable",
+                f"trg_{table_name}_no_truncate",
+            }
+        assert _table_trigger_names(
+            migration_engine, "finance_reconciliation_runs"
+        ) >= {
+            "trg_finance_reconciliation_run_finalize",
+            "trg_finance_reconciliation_run_no_delete",
+        }
+        assert _table_trigger_names(
+            migration_engine, "company_billing_cycles"
+        ) >= {
+            "trg_company_billing_cycle_no_overlap",
+            "trg_company_billing_cycle_period_immutable",
+        }
         for table_name in ("generation_tasks", "relay_submission_outbox"):
             affinity_columns = {
                 column["name"]: column
@@ -258,6 +332,7 @@ def test_postgres_billing_migration_upgrade_downgrade_and_guards(
         assert _trigger_names(migration_engine) == {
             "trg_ledger_entries_immutable",
             "trg_ledger_entries_no_truncate",
+            "trg_legacy_ledger_block_v2",
         }
         assert _cost_trigger_names(migration_engine) == {
             "trg_channel_cost_entries_immutable",
@@ -760,7 +835,7 @@ def test_postgres_billing_migration_upgrade_downgrade_and_guards(
             "download_gateway_registration_attempts"
         )
         command.upgrade(config, "head")
-        assert _revision(migration_engine) == "0040_showcase_management"
+        assert _revision(migration_engine) == "0051_provider_account_evidence"
         assert inspect(migration_engine).has_table(
             "download_gateway_registration_attempts"
         )
@@ -778,7 +853,7 @@ def test_postgres_billing_migration_upgrade_downgrade_and_guards(
         assert _trigger_names(migration_engine) == {"trg_ledger_entries_immutable"}
 
         command.upgrade(config, "head")
-        assert _revision(migration_engine) == "0040_showcase_management"
+        assert _revision(migration_engine) == "0051_provider_account_evidence"
         assert inspect(migration_engine).has_table(
             "download_gateway_registration_attempts"
         )

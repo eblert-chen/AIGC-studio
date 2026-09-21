@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -39,12 +40,34 @@ type QuotaDataLogParams struct {
 }
 
 func UpdateQuotaData() {
+	UpdateQuotaDataWithContext(context.Background())
+}
+
+func UpdateQuotaDataWithContext(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
 	for {
 		if common.DataExportEnabled {
 			common.SysLog("正在更新数据看板数据...")
 			SaveQuotaDataCache()
 		}
-		time.Sleep(time.Duration(common.DataExportInterval) * time.Minute)
+		interval := time.Duration(common.DataExportInterval) * time.Minute
+		if interval <= 0 {
+			interval = time.Minute
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		case <-timer.C:
+		}
 	}
 }
 

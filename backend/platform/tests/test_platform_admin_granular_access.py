@@ -106,7 +106,7 @@ def _create_role(
     )
 
 
-def test_catalog_has_read_manage_pair_for_every_required_domain():
+def test_catalog_has_pairs_except_for_read_only_task_content_domain():
     expected_domains = {
         "analytics",
         "companies",
@@ -119,28 +119,44 @@ def test_catalog_has_read_manage_pair_for_every_required_domain():
         "asset_exceptions",
         "audit",
         "relay_health",
+        "task_content",
         "admin_access",
     }
     assert {
-        permission.domain
-        for permission in PLATFORM_ADMIN_PERMISSION_BY_CODE.values()
+        permission.domain for permission in PLATFORM_ADMIN_PERMISSION_BY_CODE.values()
     } == expected_domains
-    assert len(PLATFORM_ADMIN_PERMISSION_CODES) == len(expected_domains) * 2
-    for domain in expected_domains:
+    paired_domains = expected_domains - {"task_content"}
+    assert len(PLATFORM_ADMIN_PERMISSION_CODES) == len(paired_domains) * 2 + 1
+    for domain in paired_domains:
         assert f"platform.{domain}.read" in PLATFORM_ADMIN_PERMISSION_CODES
         assert f"platform.{domain}.manage" in PLATFORM_ADMIN_PERMISSION_CODES
+    assert "platform.task_content.read" in PLATFORM_ADMIN_PERMISSION_CODES
+    assert "platform.task_content.manage" not in PLATFORM_ADMIN_PERMISSION_CODES
 
 
 def test_legacy_route_policy_resolves_templates_and_unknown_routes_fail_closed(
     access_session: Session,
 ):
-    assert PlatformAdminAccessService.permission_for_request(
-        method="GET", route_path="/api/v1/platform-admin/companies"
-    ) == "platform.companies.read"
-    assert PlatformAdminAccessService.permission_for_request(
-        method="PUT",
-        route_path="/api/v1/platform-admin/companies/company-1/resources/resource-1",
-    ) == "platform.entitlements.manage"
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="POST",
+            route_path="/api/v1/platform-admin/relay-models/reconcile",
+        )
+        == "platform.models.manage"
+    )
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="GET", route_path="/api/v1/platform-admin/companies"
+        )
+        == "platform.companies.read"
+    )
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="PUT",
+            route_path="/api/v1/platform-admin/companies/company-1/resources/resource-1",
+        )
+        == "platform.entitlements.manage"
+    )
     assert PlatformAdminAccessService.permissions_for_request(
         method="GET",
         route_path="/api/v1/platform-admin/analytics/exceptions",
@@ -149,47 +165,102 @@ def test_legacy_route_policy_resolves_templates_and_unknown_routes_fail_closed(
         "platform.asset_exceptions.read",
         "platform.relay_health.read",
     )
-    assert PlatformAdminAccessService.permission_for_request(
-        method="GET",
-        route_path="/api/v1/platform-admin/analytics/data-readiness",
-    ) == "platform.analytics.read"
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="GET",
+            route_path="/api/v1/platform-admin/analytics/data-readiness",
+        )
+        == "platform.analytics.read"
+    )
     callback_event_id = "b9b2537e-258c-4a98-af8a-6d23bdb135a4"
-    assert PlatformAdminAccessService.permission_for_request(
-        method="GET",
-        route_path=f"/api/v1/platform-admin/relay/callback-dead-letters/{callback_event_id}",
-    ) == "platform.relay_health.read"
-    assert PlatformAdminAccessService.permission_for_request(
-        method="POST",
-        route_path=f"/api/v1/platform-admin/relay/callback-dead-letters/{callback_event_id}/redrive",
-    ) == "platform.relay_health.manage"
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="GET",
+            route_path=f"/api/v1/platform-admin/relay/callback-dead-letters/{callback_event_id}",
+        )
+        == "platform.relay_health.read"
+    )
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="POST",
+            route_path=f"/api/v1/platform-admin/relay/callback-dead-letters/{callback_event_id}/redrive",
+        )
+        == "platform.relay_health.manage"
+    )
     channel_id = "17"
     channel_operation_id = "channel-operation-0001"
-    assert PlatformAdminAccessService.permission_for_request(
-        method="GET",
-        route_path="/api/v1/platform-admin/relay/channels",
-    ) == "platform.relay_health.read"
-    assert PlatformAdminAccessService.permission_for_request(
-        method="GET",
-        route_path=f"/api/v1/platform-admin/relay/channels/{channel_id}",
-    ) == "platform.relay_health.read"
-    assert PlatformAdminAccessService.permission_for_request(
-        method="GET",
-        route_path=(
-            f"/api/v1/platform-admin/relay/channels/{channel_id}/operations/"
-            f"{channel_operation_id}"
-        ),
-    ) == "platform.relay_health.read"
-    assert PlatformAdminAccessService.permission_for_request(
-        method="POST",
-        route_path=f"/api/v1/platform-admin/relay/channels/{channel_id}/test",
-    ) == "platform.relay_health.manage"
-    assert PlatformAdminAccessService.permission_for_request(
-        method="POST",
-        route_path=f"/api/v1/platform-admin/relay/channels/{channel_id}/status",
-    ) == "platform.relay_health.manage"
-    assert PlatformAdminAccessService.permission_for_request(
-        method="POST", route_path="/api/v1/platform-admin/future-unsafe-action"
-    ) is None
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="GET",
+            route_path="/api/v1/platform-admin/relay/channels",
+        )
+        == "platform.relay_health.read"
+    )
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="GET",
+            route_path=f"/api/v1/platform-admin/relay/channels/{channel_id}",
+        )
+        == "platform.relay_health.read"
+    )
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="GET",
+            route_path=(
+                f"/api/v1/platform-admin/relay/channels/{channel_id}/operations/"
+                f"{channel_operation_id}"
+            ),
+        )
+        == "platform.relay_health.read"
+    )
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="POST",
+            route_path=(
+                f"/api/v1/platform-admin/relay/channels/{channel_id}/operations/"
+                f"{channel_operation_id}/reconcile-no-creation"
+            ),
+        )
+        == "platform.relay_health.manage"
+    )
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="POST",
+            route_path=f"/api/v1/platform-admin/relay/channels/{channel_id}/test",
+        )
+        == "platform.relay_health.manage"
+    )
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="POST",
+            route_path=f"/api/v1/platform-admin/relay/channels/{channel_id}/status",
+        )
+        == "platform.relay_health.manage"
+    )
+    provider_result_job_id = "58775bb2-b6d2-4ad3-ab03-2f9d10854ba1"
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="GET",
+            route_path=("/api/v1/platform-admin/relay/provider-result-reconciliation"),
+        )
+        == "platform.relay_health.read"
+    )
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="GET",
+            route_path=(
+                "/api/v1/platform-admin/relay/provider-result-reconciliation/"
+                f"{provider_result_job_id}"
+            ),
+        )
+        == "platform.relay_health.read"
+    )
+    assert (
+        PlatformAdminAccessService.permission_for_request(
+            method="POST", route_path="/api/v1/platform-admin/future-unsafe-action"
+        )
+        is None
+    )
     with pytest.raises(PermissionDeniedError, match="no delegated access policy"):
         PlatformAdminAccessService.authorize_request(
             access_session,
@@ -214,9 +285,7 @@ def test_legacy_route_policy_resolves_templates_and_unknown_routes_fail_closed(
         request_id="assign-partial-exception-reader",
         change_reason="Verify conjunctive exception policy",
     )
-    with pytest.raises(
-        PermissionDeniedError, match="platform.asset_exceptions.read"
-    ):
+    with pytest.raises(PermissionDeniedError, match="platform.asset_exceptions.read"):
         PlatformAdminAccessService.authorize_request(
             access_session,
             user_id=ADMIN_ID,
@@ -225,33 +294,45 @@ def test_legacy_route_policy_resolves_templates_and_unknown_routes_fail_closed(
             route_path="/api/v1/platform-admin/analytics/exceptions",
         )
     # The protected owner boundary does not depend on mutable route policies.
-    assert PlatformAdminAccessService.authorize_request(
-        access_session,
-        user_id=OWNER_ID,
-        platform_owner_user_ids=OWNER_IDS,
-        method="POST",
-        route_path="/api/v1/platform-admin/future-unsafe-action",
-    ) is None
+    assert (
+        PlatformAdminAccessService.authorize_request(
+            access_session,
+            user_id=OWNER_ID,
+            platform_owner_user_ids=OWNER_IDS,
+            method="POST",
+            route_path="/api/v1/platform-admin/future-unsafe-action",
+        )
+        is None
+    )
 
 
 def test_owner_is_immutable_full_access_and_non_owner_starts_fail_closed(
     access_session: Session,
 ):
-    assert PlatformAdminAccessService.effective_permissions(
-        access_session,
-        user_id=OWNER_ID,
-        platform_owner_user_ids=OWNER_IDS,
-    ) == PLATFORM_ADMIN_PERMISSION_CODES
-    assert PlatformAdminAccessService.effective_permissions(
-        access_session,
-        user_id=ADMIN_ID,
-        platform_owner_user_ids=OWNER_IDS,
-    ) == frozenset()
-    assert PlatformAdminAccessService.effective_permissions(
-        access_session,
-        user_id=OTHER_ID,
-        platform_owner_user_ids=OWNER_IDS,
-    ) == frozenset()
+    assert (
+        PlatformAdminAccessService.effective_permissions(
+            access_session,
+            user_id=OWNER_ID,
+            platform_owner_user_ids=OWNER_IDS,
+        )
+        == PLATFORM_ADMIN_PERMISSION_CODES
+    )
+    assert (
+        PlatformAdminAccessService.effective_permissions(
+            access_session,
+            user_id=ADMIN_ID,
+            platform_owner_user_ids=OWNER_IDS,
+        )
+        == frozenset()
+    )
+    assert (
+        PlatformAdminAccessService.effective_permissions(
+            access_session,
+            user_id=OTHER_ID,
+            platform_owner_user_ids=OWNER_IDS,
+        )
+        == frozenset()
+    )
     with pytest.raises(ConflictError, match="owner access is immutable"):
         PlatformAdminAccessService.replace_user_access(
             access_session,
@@ -362,11 +443,14 @@ def test_role_replacement_uses_version_and_deactivation_revokes_inheritance(
     )
     assert updated.lock_version == 2
     assert not updated.active
-    assert PlatformAdminAccessService.effective_permissions(
-        access_session,
-        user_id=ADMIN_ID,
-        platform_owner_user_ids=OWNER_IDS,
-    ) == frozenset()
+    assert (
+        PlatformAdminAccessService.effective_permissions(
+            access_session,
+            user_id=ADMIN_ID,
+            platform_owner_user_ids=OWNER_IDS,
+        )
+        == frozenset()
+    )
     with pytest.raises(ConflictError, match="changed elsewhere"):
         PlatformAdminAccessService.replace_role(
             access_session,
@@ -448,6 +532,7 @@ def test_admin_deactivation_erases_grants_before_reactivation(
         request_id="disable-admin",
         change_reason="Administrator left the team",
     )
+    assert access_session.get(User, ADMIN_ID).account_type.value == "platform_admin"
     PlatformAdminAccessService.set_administrator_status(
         access_session,
         actor_user_id=OWNER_ID,
@@ -466,6 +551,29 @@ def test_admin_deactivation_erases_grants_before_reactivation(
     assert snapshot.lock_version == 0
     assert snapshot.role_ids == ()
     assert snapshot.effective_permissions == frozenset()
+
+
+def test_ordinary_account_cannot_be_promoted_by_admin_status_toggle(
+    access_session: Session,
+):
+    with pytest.raises(
+        ConflictError,
+        match="provisioned platform-administrator account",
+    ):
+        PlatformAdminAccessService.set_administrator_status(
+            access_session,
+            actor_user_id=OWNER_ID,
+            target_user_id=OTHER_ID,
+            enabled=True,
+            expected_is_platform_admin=False,
+            platform_owner_user_ids=OWNER_IDS,
+            request_id="reject-personal-promotion",
+            change_reason="Must use explicit account migration",
+        )
+
+    ordinary = access_session.get(User, OTHER_ID)
+    assert ordinary.account_type.value == "personal"
+    assert ordinary.is_platform_admin is False
 
 
 def _jwt(*, user_id: str, auth_time: int, amr: list[str]) -> str:
@@ -492,8 +600,7 @@ def _jwt(*, user_id: str, auth_time: int, amr: list[str]) -> str:
         secret.encode(), signing_input.encode(), hashlib.sha256
     ).digest()
     return (
-        f"{signing_input}."
-        + base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
+        f"{signing_input}." + base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
     )
 
 
@@ -623,9 +730,7 @@ def test_production_guard_keeps_strong_auth_step_up_and_db_authorization():
             "Origin": "https://app.example.com",
             CSRF_HEADER_NAME: raw_csrf[ADMIN_ID],
         }
-        stale_write = client.post(
-            "/analytics", headers=admin_proof
-        )
+        stale_write = client.post("/analytics", headers=admin_proof)
         assert stale_write.status_code == 403
         assert stale_write.headers["x-auth-required"] == "step-up"
 
@@ -640,13 +745,16 @@ def test_production_guard_keeps_strong_auth_step_up_and_db_authorization():
 
         client.cookies.set(SESSION_COOKIE_NAME, raw_sessions[OWNER_ID])
         client.cookies.set(CSRF_COOKIE_NAME, raw_csrf[OWNER_ID])
-        assert client.post(
-            "/analytics",
-            headers={
-                "Origin": "https://app.example.com",
-                CSRF_HEADER_NAME: raw_csrf[OWNER_ID],
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/analytics",
+                headers={
+                    "Origin": "https://app.example.com",
+                    CSRF_HEADER_NAME: raw_csrf[OWNER_ID],
+                },
+            ).status_code
+            == 200
+        )
     engine.dispose()
 
 
@@ -689,16 +797,25 @@ def test_integrated_legacy_routes_enforce_delegated_database_permissions(
         "platform.analytics.read",
     ]
 
-    assert client.get(
-        "/api/v1/platform-admin/dashboard", headers=delegated_headers
-    ).status_code == 200
-    assert client.get(
-        "/api/v1/platform-admin/analytics/data-readiness",
-        headers=delegated_headers,
-    ).status_code == 200
-    assert client.get(
-        "/api/v1/platform-admin/access/permissions", headers=delegated_headers
-    ).status_code == 200
+    assert (
+        client.get(
+            "/api/v1/platform-admin/dashboard", headers=delegated_headers
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            "/api/v1/platform-admin/analytics/data-readiness",
+            headers=delegated_headers,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            "/api/v1/platform-admin/access/permissions", headers=delegated_headers
+        ).status_code
+        == 200
+    )
     denied_read = client.get(
         "/api/v1/platform-admin/companies", headers=delegated_headers
     )
@@ -795,15 +912,11 @@ def test_integrated_channel_facade_splits_delegated_read_and_manage(
 
 def _migration_config(project_root: Path, database_path: Path) -> Config:
     config = Config(str(project_root / "alembic.ini"))
-    config.set_main_option(
-        "sqlalchemy.url", f"sqlite:///{database_path.as_posix()}"
-    )
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path.as_posix()}")
     return config
 
 
-def test_0024_migration_seeds_catalog_and_downgrades_cleanly(
-    tmp_path, monkeypatch
-):
+def test_0024_migration_seeds_catalog_and_downgrades_cleanly(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     project_root = Path(__file__).resolve().parents[1]
     database_path = tmp_path / "platform-admin-access.db"
@@ -813,18 +926,23 @@ def test_0024_migration_seeds_catalog_and_downgrades_cleanly(
 
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     with engine.connect() as connection:
-        assert connection.scalar(
-            text("SELECT version_num FROM alembic_version")
-        ) == "0024_platform_admin_access"
-        assert connection.scalar(
-            text("SELECT COUNT(*) FROM platform_admin_permissions")
-        ) == 24
-        assert connection.scalar(
-            text(
-                "SELECT COUNT(*) FROM platform_admin_permissions "
-                "WHERE action = 'read'"
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0024_platform_admin_access"
+        )
+        assert (
+            connection.scalar(text("SELECT COUNT(*) FROM platform_admin_permissions"))
+            == 24
+        )
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT COUNT(*) FROM platform_admin_permissions "
+                    "WHERE action = 'read'"
+                )
             )
-        ) == 12
+            == 12
+        )
         tables = set(inspect(engine).get_table_names())
         assert {
             "platform_admin_permissions",
@@ -839,8 +957,9 @@ def test_0024_migration_seeds_catalog_and_downgrades_cleanly(
     command.downgrade(config, "0023_download_gateway_attempts")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     with engine.connect() as connection:
-        assert connection.scalar(
-            text("SELECT version_num FROM alembic_version")
-        ) == "0023_download_gateway_attempts"
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0023_download_gateway_attempts"
+        )
         assert "platform_admin_permissions" not in inspect(engine).get_table_names()
     engine.dispose()

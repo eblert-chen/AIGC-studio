@@ -25,6 +25,27 @@ const relaySchemaV2PostgresCatalogSHA256 = "sha256:0ebe3f289439193f207f087452c28
 // PostgreSQL catalog.
 const relaySchemaV3PostgresCatalogSHA256 = "sha256:0ebe3f289439193f207f087452c289504fdd231759ac2b3d0159f8cc61d6cb6d"
 
+// Frozen from an empty PostgreSQL 16 application database after the complete
+// v4 bootstrap. The pending value is replaced only by the independent catalog
+// fixture before this migration is releasable.
+const relaySchemaV4PostgresCatalogSHA256 = "sha256:b8260ee751d0b9bb6dcd0c2d2d4105bef475296f25a4babb13fca3e117888126"
+
+// Frozen from an empty PostgreSQL 16 application database after the complete
+// v5 bootstrap. V5 changes only the channel-control receipt guard function.
+const relaySchemaV5PostgresCatalogSHA256 = "sha256:2bc1bf2f68e513d12de36cd4f8c2ca6a569d102b93a6fbaea444facad3189fc1"
+
+// Frozen from an empty PostgreSQL 16 database after the complete v6
+// bootstrap. The release freeze test derives the final value independently.
+const relaySchemaV6PostgresCatalogSHA256 = "sha256:180546808883afca58bb9fd246340339d87ac023aff91fe23186d9274dc15135"
+
+// Frozen from an empty PostgreSQL 16 database after the complete v7
+// bootstrap. The release freeze test derives the final value independently.
+const relaySchemaV7PostgresCatalogSHA256 = "sha256:af1377416cb2788093391a03491d2bb380fc4b81db5f08d0d628f3f8a2abef01"
+
+// Frozen from an empty PostgreSQL 16 database after the complete v8
+// bootstrap. Release qualification replaces the pending marker.
+const relaySchemaV8PostgresCatalogSHA256 = "sha256:6374866475d3b9c404592c39ef5ad8be1b63066308b502e5362dbc47e469823c"
+
 type relaySchemaCatalogObject struct {
 	Kind       string `gorm:"column:kind"`
 	Identity   string `gorm:"column:identity"`
@@ -40,6 +61,16 @@ func expectedRelaySchemaCatalogFingerprint(dialect string, version int64) string
 			return relaySchemaV2PostgresCatalogSHA256
 		case 3:
 			return relaySchemaV3PostgresCatalogSHA256
+		case 4:
+			return relaySchemaV4PostgresCatalogSHA256
+		case 5:
+			return relaySchemaV5PostgresCatalogSHA256
+		case 6:
+			return relaySchemaV6PostgresCatalogSHA256
+		case 7:
+			return relaySchemaV7PostgresCatalogSHA256
+		case 8:
+			return relaySchemaV8PostgresCatalogSHA256
 		}
 	}
 	return ""
@@ -48,7 +79,7 @@ func expectedRelaySchemaCatalogFingerprint(dialect string, version int64) string
 func relaySchemaCatalogAlgorithmAvailable(dialect string, version int64) bool {
 	switch dialect {
 	case "postgres":
-		return version == 1 || version == 2 || version == 3
+		return version == 1 || version == 2 || version == 3 || version == 4 || version == 5 || version == 6 || version == 7 || version == 8
 	case "sqlite", "mysql":
 		return version >= 1
 	default:

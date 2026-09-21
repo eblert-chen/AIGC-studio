@@ -33,7 +33,7 @@ from .test_artifact_bridge_and_production_safety import (
     RELAY_JOB_ID,
     make_task_downloadable,
 )
-from .test_relay_boundary import recharge_and_create
+from .test_commercial_task_admission import _task_fixture
 
 
 BUCKET = "relay-output-private"
@@ -160,13 +160,16 @@ def test_platform_registers_gateway_ticket_and_binds_edge_receipt(
     tenant,
     tenant_headers,
 ):
-    task = recharge_and_create(
-        app,
-        client,
-        tenant,
-        tenant_headers,
-        id_suffix="gateway-binding",
+    # This positive download test starts with an actually admitted local task:
+    # capability, live release evidence, commercial plan and quote must agree.
+    # Installing the download-only Relay transport below cannot authorize task
+    # creation, and must never be used to bypass commercial admission.
+    _, _, creation_headers, creation_path, creation_body, _, _ = _task_fixture(
+        app, client, tenant, "company"
     )
+    created = client.post(creation_path, headers=creation_headers, json=creation_body)
+    assert created.status_code == 201, created.text
+    task = created.json()
     make_task_downloadable(app, task["id"])
     now = datetime.now(timezone.utc).replace(microsecond=0)
     relay_payload = _download_payload(now=now)

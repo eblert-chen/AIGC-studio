@@ -2,8 +2,10 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -37,10 +39,40 @@ type relayDatabaseReleaseProof struct {
 	Database               model.RelayDatabaseReleaseIdentity  `json:"database"`
 }
 
+// platformRelayDatabaseReleaseProofBinding is an opaque, process-local digest
+// of the one canonical proof instance that was read and fully verified. It
+// covers the complete Relay/Platform release, file count, endpoint commitment,
+// database identity and isolation generation without a second proof-file read.
+type platformRelayDatabaseReleaseProofBinding struct {
+	pool         *sql.DB
+	consumer     string
+	proof        relayDatabaseReleaseProof
+	schemaStatus model.RelaySchemaStatus
+	digest       [sha256.Size]byte
+}
+
+func (binding platformRelayDatabaseReleaseProofBinding) valid() bool {
+	var empty [sha256.Size]byte
+	return binding.pool != nil && binding.consumer != "" &&
+		subtle.ConstantTimeCompare(binding.digest[:], empty[:]) != 1
+}
+
+func samePlatformRelayDatabaseReleaseProofBinding(
+	left platformRelayDatabaseReleaseProofBinding,
+	right platformRelayDatabaseReleaseProofBinding,
+) bool {
+	return left.valid() && right.valid() && left.pool == right.pool && left.consumer == right.consumer &&
+		left.proof == right.proof && left.schemaStatus == right.schemaStatus &&
+		subtle.ConstantTimeCompare(left.digest[:], right.digest[:]) == 1
+}
+
 var (
 	inspectRelayDatabaseReleaseIdentity              = model.InspectRelayDatabaseReleaseIdentity
 	verifyRelayDatabaseReleaseIdentity               = model.VerifyRelayDatabaseReleaseIdentity
 	requireRelaySchemaCurrentForDatabaseReleaseProof = model.RequireRelaySchemaCurrent
+	currentRelayDatabaseReleaseVerifiedContext       = platformRelaySecretIsolationCurrentVerifiedContext
+	readRelayDatabaseReleaseProofForAttestation      = platformRelayDatabaseReleaseReadProof
+	relayDatabaseReleaseEndpointDigestForAttestation = platformRelayDatabaseReleaseEndpointDigest
 )
 
 // PlatformRelayDatabaseReleaseProofWriter pins the proof directory before the
@@ -257,40 +289,116 @@ func platformRelayDatabaseReleaseReadProof() (relayDatabaseReleaseProof, error) 
 	return platformRelayDatabaseReleaseParseProof(raw)
 }
 
-// VerifyPlatformRelayDatabaseReleaseProof binds a normal consumer to the same
-// global isolation run and endpoint used by the role predecessor, then checks
-// the proof against this consumer's live database connection.
-func VerifyPlatformRelayDatabaseReleaseProof(db *gorm.DB, consumer string) error {
-	verified, err := platformRelaySecretIsolationCurrentVerifiedContext(consumer)
-	if err != nil {
-		return err
+func attestPlatformRelayDatabaseReleaseProofWithContext(
+	ctx context.Context,
+	db *gorm.DB,
+	consumer string,
+) (platformRelayDatabaseReleaseProofBinding, error) {
+	return attestPlatformRelayDatabaseReleaseProofInternal(ctx, db, consumer, nil)
+}
+
+// attestPlatformRelayDatabaseReleaseProofBoundToSchema consumes a schema
+// status already produced by a full role attestation on this exact pool. The
+// release proof and live database identity are still re-read and verified, but
+// the expensive catalog fingerprint is not repeated in the same refresh round.
+func attestPlatformRelayDatabaseReleaseProofBoundToSchema(
+	ctx context.Context,
+	db *gorm.DB,
+	consumer string,
+	schemaStatus model.RelaySchemaStatus,
+) (platformRelayDatabaseReleaseProofBinding, error) {
+	return attestPlatformRelayDatabaseReleaseProofInternal(ctx, db, consumer, &schemaStatus)
+}
+
+func attestPlatformRelayDatabaseReleaseProofInternal(
+	ctx context.Context,
+	db *gorm.DB,
+	consumer string,
+	boundSchemaStatus *model.RelaySchemaStatus,
+) (platformRelayDatabaseReleaseProofBinding, error) {
+	var binding platformRelayDatabaseReleaseProofBinding
+	if ctx == nil || ctx.Err() != nil || db == nil {
+		return binding, errors.New("Relay database release proof context is unavailable")
 	}
-	proof, err := platformRelayDatabaseReleaseReadProof()
-	if err != nil {
-		return err
+	pool, err := db.DB()
+	if err != nil || pool == nil {
+		return binding, errors.New("Relay database release proof pool is unavailable")
 	}
-	endpointDigest, err := platformRelayDatabaseReleaseEndpointDigest(verified.receipt, consumer)
+	verified, err := currentRelayDatabaseReleaseVerifiedContext(consumer)
 	if err != nil {
-		return err
+		return binding, err
+	}
+	proof, err := readRelayDatabaseReleaseProofForAttestation()
+	if err != nil {
+		return binding, err
+	}
+	endpointDigest, err := relayDatabaseReleaseEndpointDigestForAttestation(verified.receipt, consumer)
+	if err != nil {
+		return binding, err
 	}
 	if proof.RunID != verified.marker.RunID ||
 		proof.Generation != verified.marker.Generation ||
 		proof.RootProofID != verified.marker.RootProofID ||
 		proof.Release != verified.marker.Release ||
 		proof.DatabaseEndpointSHA256 != endpointDigest {
-		return errors.New("Relay database release proof is not bound to this consumer")
+		return binding, errors.New("Relay database release proof is not bound to this consumer")
 	}
-	switch consumer {
-	case PlatformRelaySecretIsolationConsumerPost,
-		PlatformRelaySecretIsolationConsumerPrincipal,
-		PlatformRelaySecretIsolationConsumerAPI,
-		PlatformRelaySecretIsolationConsumerRootBootstrap,
-		PlatformRelaySecretIsolationConsumerEdge:
-		if _, err := requireRelaySchemaCurrentForDatabaseReleaseProof(db); err != nil {
-			return errors.New("Relay database release proof requires the current schema")
+	var schemaStatus model.RelaySchemaStatus
+	err = db.WithContext(ctx).Connection(func(connection *gorm.DB) error {
+		pinned := connection.Session(&gorm.Session{NewDB: true})
+		if boundSchemaStatus != nil {
+			schemaStatus = *boundSchemaStatus
+		} else {
+			switch consumer {
+			case PlatformRelaySecretIsolationConsumerPost,
+				PlatformRelaySecretIsolationConsumerPrincipal,
+				PlatformRelaySecretIsolationConsumerAPI,
+				PlatformRelaySecretIsolationConsumerRootBootstrap,
+				PlatformRelaySecretIsolationConsumerEdge:
+				var schemaErr error
+				schemaStatus, schemaErr = requireRelaySchemaCurrentForDatabaseReleaseProof(pinned)
+				if schemaErr != nil {
+					return errors.New("Relay database release proof requires the current schema")
+				}
+			}
 		}
+		return verifyRelayDatabaseReleaseIdentity(pinned, proof.Database)
+	})
+	if err != nil {
+		return binding, err
 	}
-	return verifyRelayDatabaseReleaseIdentity(db, proof.Database)
+	canonical, err := json.Marshal(struct {
+		Consumer     string                    `json:"consumer"`
+		Proof        relayDatabaseReleaseProof `json:"proof"`
+		SchemaStatus model.RelaySchemaStatus   `json:"schema_status"`
+	}{Consumer: consumer, Proof: proof, SchemaStatus: schemaStatus})
+	if err != nil {
+		return binding, errors.New("Relay database release proof binding could not be encoded")
+	}
+	binding = platformRelayDatabaseReleaseProofBinding{
+		pool: pool, consumer: consumer, proof: proof, schemaStatus: schemaStatus,
+		digest: sha256.Sum256(canonical),
+	}
+	clear(canonical)
+	if !binding.valid() {
+		return platformRelayDatabaseReleaseProofBinding{}, errors.New("Relay database release proof binding is invalid")
+	}
+	return binding, nil
+}
+
+func attestPlatformRelayDatabaseReleaseProof(
+	db *gorm.DB,
+	consumer string,
+) (platformRelayDatabaseReleaseProofBinding, error) {
+	return attestPlatformRelayDatabaseReleaseProofWithContext(context.Background(), db, consumer)
+}
+
+// VerifyPlatformRelayDatabaseReleaseProof binds a normal consumer to the same
+// global isolation run and endpoint used by the role predecessor, then checks
+// the proof against this consumer's live database connection.
+func VerifyPlatformRelayDatabaseReleaseProof(db *gorm.DB, consumer string) error {
+	_, err := attestPlatformRelayDatabaseReleaseProof(db, consumer)
+	return err
 }
 
 // VerifyPlatformRelayRootDatabaseReleaseProof is the one install-only exception:

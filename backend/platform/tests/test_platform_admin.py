@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import pytest
 from sqlalchemy import select
 
@@ -16,6 +17,9 @@ from platform_api.models import (
 )
 
 from .conftest import bootstrap
+from .test_model_capability_v1_contract import (
+    _request_with_fixture_distribution_evidence,
+)
 from .test_wallet_and_tasks import seed_model
 
 
@@ -233,14 +237,18 @@ def test_admin_recharge_model_pricing_and_audit_are_recorded(
             ],
         },
     ).json()
-    grant = client.put(
-        f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
-        headers={**admin_headers, "X-Request-ID": "req-model-grant"},
-        json={
-            "model_id": model["id"],
-            "enabled": True,
-            "price_per_second_cents": 91,
-        },
+    grant = _request_with_fixture_distribution_evidence(
+        client,
+        model["id"],
+        lambda: client.put(
+            f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
+            headers={**admin_headers, "X-Request-ID": "req-model-grant"},
+            json={
+                "model_id": model["id"],
+                "enabled": True,
+                "price_per_second_cents": 91,
+            },
+        ),
     )
     assert grant.status_code == 200
     recharge = client.post(
@@ -273,6 +281,90 @@ def test_admin_recharge_model_pricing_and_audit_are_recorded(
         with pytest.raises(RuntimeError, match="immutable"):
             session.flush()
         session.rollback()
+
+
+def test_company_model_grant_rejects_stale_updates_and_audits_locked_before(
+    app, client, tenant
+) -> None:
+    _, admin_headers = bootstrap_admin(client, "grant-optimistic-lock")
+    model = client.post(
+        "/api/v1/bootstrap/models",
+        json={
+            "slug": "grant-optimistic-lock-model",
+            "display_name": "Grant optimistic lock",
+            "provider_key": "development",
+            "billing_mode": "per_second",
+            "capabilities": [
+                {"key": "text-to-video", "config": {"durations": [5]}}
+            ],
+        },
+    ).json()
+    url = (
+        f"/api/v1/platform-admin/companies/{tenant['company_id']}"
+        "/model-grants"
+    )
+    created = client.put(
+        url,
+        headers=admin_headers,
+        json={
+            "model_id": model["id"],
+            "enabled": False,
+            "price_per_second_cents": 91,
+        },
+    )
+    assert created.status_code == 200, created.text
+    first_version = created.json()["updated_at"]
+
+    missing_version = client.put(
+        url,
+        headers=admin_headers,
+        json={
+            "model_id": model["id"],
+            "enabled": False,
+            "price_per_second_cents": 92,
+        },
+    )
+    assert missing_version.status_code == 409
+
+    updated = client.put(
+        url,
+        headers={**admin_headers, "X-Request-ID": "grant-locked-before"},
+        json={
+            "model_id": model["id"],
+            "expected_updated_at": first_version,
+            "enabled": False,
+            "price_per_second_cents": 92,
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["updated_at"] != first_version
+
+    stale = client.put(
+        url,
+        headers=admin_headers,
+        json={
+            "model_id": model["id"],
+            "expected_updated_at": first_version,
+            "enabled": False,
+            "price_per_second_cents": 93,
+        },
+    )
+    assert stale.status_code == 409
+    assert "刷新授权矩阵" in stale.text
+
+    with app.state.session_factory() as session:
+        audit = session.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "company.model_grant.upsert",
+                AuditLog.request_id == "grant-locked-before",
+            )
+        )
+        assert audit is not None
+        assert audit.before_summary["price_per_second_cents"] == 91
+        assert datetime.fromisoformat(
+            audit.before_summary["updated_at"]
+        ) == datetime.fromisoformat(first_version.replace("Z", "+00:00"))
+        assert audit.after_summary["price_per_second_cents"] == 92
 
 
 def test_dashboard_reports_income_real_channel_cost_and_reconciliation(

@@ -20,17 +20,23 @@ import {
   createAuthClient,
   currentReturnTo,
   establishInvitationHandoff,
+  isAuthUnavailableError,
   safeReturnTo,
 } from "./authClient.js";
 import { createAuthSessionSync } from "./sessionSync.js";
+
+const LOGIN_NAVIGATION_TIMEOUT_MS = 8_000;
 
 const AuthContext = createContext({
   status: "loading",
   session: null,
   client: null,
+  loginAvailable: false,
   beginLogin: () => {},
   refreshSession: async () => null,
   logout: async () => {},
+  switchAccount: async () => {},
+  switchProductContext: async () => null,
   switchInvitationAccount: async () => {},
   finishSession: () => {},
   handleAuthenticationError: () => false,
@@ -49,7 +55,7 @@ function AuthenticatedLoginRedirect({ returnTo }) {
     globalThis.location?.replace?.(returnTo);
   }, [returnTo]);
   return (
-    <AuthShell eyebrow="账号已登录" title="正在继续" description="当前安全会话仍然有效。" tone="success" busy />
+    <AuthShell variant="login" eyebrow="账号已登录" title="正在继续" description="当前安全会话仍然有效。" tone="success" busy />
   );
 }
 
@@ -71,6 +77,7 @@ export function AuthGateway({ children, demoMode = false }) {
   const client = clientResult.client;
   const [status, setStatus] = useState(demoMode ? "demo" : "loading");
   const [session, setSession] = useState(null);
+  const [loginAvailable, setLoginAvailable] = useState(false);
   const [error, setError] = useState(clientResult.error?.message || "");
   const [logoutIntent, setLogoutIntent] = useState(null);
   const [route, setRoute] = useState(() => authRoute(globalThis.location?.pathname));
@@ -82,6 +89,7 @@ export function AuthGateway({ children, demoMode = false }) {
   const requestRef = useRef(0);
   const sessionRef = useRef(null);
   const syncRef = useRef(null);
+  const loginNavigationRef = useRef(false);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -94,13 +102,17 @@ export function AuthGateway({ children, demoMode = false }) {
   const refreshSession = useCallback(async ({ silent = false, broadcast = true } = {}) => {
     if (demoMode || !client) return null;
     const request = ++requestRef.current;
-    if (!silent) setStatus("loading");
+    if (!silent) {
+      loginNavigationRef.current = false;
+      setStatus("loading");
+    }
     setError("");
     try {
       const nextSession = await client.getSession();
       if (request !== requestRef.current) return nextSession;
       const previousSession = sessionRef.current;
       if (nextSession.authenticated) {
+        setLoginAvailable(nextSession.login_available === true);
         sessionRef.current = nextSession;
         setSession(nextSession);
         setStatus("authenticated");
@@ -119,10 +131,17 @@ export function AuthGateway({ children, demoMode = false }) {
         }
       } else {
         const wasAuthenticated = Boolean(previousSession?.authenticated);
+        const nextLoginAvailable = nextSession.login_available === true;
         clearAuthSessionState();
         sessionRef.current = null;
         setSession(null);
-        setStatus("anonymous");
+        setLoginAvailable(nextLoginAvailable);
+        if (nextLoginAvailable) {
+          setStatus("anonymous");
+        } else {
+          setError("账号登录尚未配置，请联系管理员。");
+          setStatus("error");
+        }
         if (broadcast && wasAuthenticated) {
           publishSessionEvent("invalidated", { fullClear: false });
         }
@@ -130,18 +149,29 @@ export function AuthGateway({ children, demoMode = false }) {
       return nextSession;
     } catch (nextError) {
       if (request !== requestRef.current) return null;
+      const authUnavailable = isAuthUnavailableError(nextError);
       const explicitlyUnauthenticated = nextError instanceof PlatformApiError && (
-        nextError.status === 401
-        || ["UNAUTHENTICATED", "AUTH_NOT_CONFIGURED"].includes(nextError.code)
+        nextError.status === 401 || nextError.code === "UNAUTHENTICATED"
       );
       if (explicitlyUnauthenticated) {
         clearAuthSessionState();
         sessionRef.current = null;
         setSession(null);
+        setLoginAvailable(true);
         setStatus("anonymous");
         if (broadcast) publishSessionEvent("invalidated", { fullClear: false });
         return null;
       }
+      if (authUnavailable) {
+        clearAuthSessionState();
+        sessionRef.current = null;
+        setSession(null);
+        setLoginAvailable(false);
+        setError("账号登录尚未配置，请联系管理员。");
+        setStatus("error");
+        return null;
+      }
+      setLoginAvailable(false);
       setError(nextError?.message || "无法确认登录状态");
       setStatus((current) => current === "authenticated" ? current : "error");
       return null;
@@ -219,15 +249,52 @@ export function AuthGateway({ children, demoMode = false }) {
     return () => globalThis.clearTimeout?.(timer);
   }, [refreshSession, session?.session_expires_at, status]);
 
+  useEffect(() => {
+    if (status !== "navigating") return undefined;
+    const recoverNavigation = () => {
+      if (!loginNavigationRef.current) return;
+      loginNavigationRef.current = false;
+      setLoginAvailable(false);
+      setError("登录页面未能打开，请重新检测账号服务后再试。");
+      setStatus("error");
+    };
+    const recoverAfterBackForwardCache = (event) => {
+      if (event?.persisted === true) recoverNavigation();
+    };
+    const timer = globalThis.setTimeout?.(recoverNavigation, LOGIN_NAVIGATION_TIMEOUT_MS);
+    globalThis.addEventListener?.("pageshow", recoverAfterBackForwardCache);
+    return () => {
+      globalThis.clearTimeout?.(timer);
+      globalThis.removeEventListener?.("pageshow", recoverAfterBackForwardCache);
+    };
+  }, [status]);
+
   const beginLogin = useCallback(({ returnTo, prompt = "login" } = {}) => {
-    if (!client) return;
-    const target = client.loginUrl({
-      returnTo: safeReturnTo(returnTo || currentReturnTo()),
-      prompt,
-    });
-    setStatus("navigating");
-    globalThis.location?.assign?.(target);
-  }, [client]);
+    if (!client || loginNavigationRef.current) return;
+    if (!loginAvailable) {
+      setError("账号登录当前不可用，请重新检测服务状态。");
+      setStatus("error");
+      return;
+    }
+    try {
+      const target = client.loginUrl({
+        returnTo: safeReturnTo(returnTo || currentReturnTo()),
+        prompt,
+      });
+      if (typeof globalThis.location?.assign !== "function") {
+        throw new Error("当前浏览器无法打开登录页面");
+      }
+      loginNavigationRef.current = true;
+      setError("");
+      setStatus("navigating");
+      globalThis.location.assign(target);
+    } catch (nextError) {
+      loginNavigationRef.current = false;
+      setLoginAvailable(false);
+      setError(nextError?.message || "登录页面未能打开，请重新检测账号服务后再试。");
+      setStatus("error");
+    }
+  }, [client, loginAvailable]);
 
   const finishSession = useCallback(({
     to = "/login",
@@ -239,6 +306,7 @@ export function AuthGateway({ children, demoMode = false }) {
     if (fullClear) clearSessionUiState(globalThis, { preserveInvitation });
     else clearAuthSessionState();
     sessionRef.current = null;
+    loginNavigationRef.current = false;
     setSession(null);
     setError("");
     setLogoutIntent(null);
@@ -258,19 +326,23 @@ export function AuthGateway({ children, demoMode = false }) {
 
   const completeLogout = useCallback((intent) => {
     const switchingInvitationAccount = intent?.kind === "switch_invitation_account";
+    const switchingAccount = switchingInvitationAccount || intent?.kind === "switch_account";
+    const switchReturnTo = switchingInvitationAccount
+      ? "/invite"
+      : safeReturnTo(intent?.returnTo || "/");
     finishSession({
-      to: switchingInvitationAccount ? "/invite" : "/login?logged_out=1",
+      to: switchingInvitationAccount
+        ? "/invite"
+        : switchingAccount
+          ? `/login?return_to=${encodeURIComponent(switchReturnTo)}`
+          : "/login?logged_out=1",
       preserveInvitation: switchingInvitationAccount,
       broadcastType: "logout",
     });
-    if (switchingInvitationAccount) {
-      const target = client?.loginUrl({ returnTo: "/invite", prompt: "select_account" });
-      if (target) {
-        setStatus("navigating");
-        globalThis.location?.assign?.(target);
-      }
+    if (switchingAccount) {
+      beginLogin({ returnTo: switchReturnTo, prompt: "select_account" });
     }
-  }, [client, finishSession]);
+  }, [beginLogin, finishSession]);
 
   const requestLogout = useCallback(async (intent) => {
     setLogoutIntent(intent);
@@ -299,6 +371,34 @@ export function AuthGateway({ children, demoMode = false }) {
 
   const logout = useCallback(async () => requestLogout({ kind: "logout" }), [requestLogout]);
 
+  const switchAccount = useCallback(async ({ returnTo = "/" } = {}) => requestLogout({
+    kind: "switch_account",
+    returnTo: safeReturnTo(returnTo),
+  }), [requestLogout]);
+
+  const switchProductContext = useCallback(async ({ targetContext } = {}) => {
+    if (demoMode) return null;
+    if (!client) {
+      throw new PlatformApiError("账号服务当前不可用", {
+        code: "AUTH_CLIENT_UNAVAILABLE",
+      });
+    }
+    const nextSession = await client.switchProductContext({ targetContext });
+    if (!nextSession?.authenticated) {
+      throw new PlatformApiError("产品空间切换未返回有效会话", {
+        code: "INVALID_PRODUCT_CONTEXT_SESSION",
+      });
+    }
+    requestRef.current += 1;
+    sessionRef.current = nextSession;
+    setSession(nextSession);
+    setLoginAvailable(nextSession.login_available === true);
+    setError("");
+    setStatus("authenticated");
+    publishSessionEvent("product_context_changed", { fullClear: false });
+    return nextSession;
+  }, [client, demoMode, publishSessionEvent]);
+
   const switchInvitationAccount = useCallback(async () => requestLogout({
     kind: "switch_invitation_account",
   }), [requestLogout]);
@@ -309,7 +409,18 @@ export function AuthGateway({ children, demoMode = false }) {
       beginLogin({ returnTo: currentReturnTo(), prompt: "step_up" });
       return true;
     }
-    if (nextError.status === 401 || nextError.code === "AUTH_NOT_CONFIGURED") {
+    if (isAuthUnavailableError(nextError)) {
+      requestRef.current += 1;
+      clearAuthSessionState();
+      sessionRef.current = null;
+      loginNavigationRef.current = false;
+      setSession(null);
+      setLoginAvailable(false);
+      setError("账号登录尚未配置，请联系管理员。");
+      setStatus("error");
+      return true;
+    }
+    if (nextError.status === 401) {
       finishSession({
         to: "/login",
         fullClear: false,
@@ -324,9 +435,12 @@ export function AuthGateway({ children, demoMode = false }) {
     status,
     session,
     client,
+    loginAvailable,
     beginLogin,
     refreshSession,
     logout,
+    switchAccount,
+    switchProductContext,
     switchInvitationAccount,
     finishSession,
     handleAuthenticationError,
@@ -335,10 +449,13 @@ export function AuthGateway({ children, demoMode = false }) {
     client,
     finishSession,
     handleAuthenticationError,
+    loginAvailable,
     logout,
     refreshSession,
     session,
     status,
+    switchAccount,
+    switchProductContext,
     switchInvitationAccount,
   ]);
 
@@ -347,13 +464,17 @@ export function AuthGateway({ children, demoMode = false }) {
   if (!client) {
     return (
       <AuthContext.Provider value={value}>
-        <AuthShell eyebrow="生产配置" title="账号服务暂不可用" description={error || "客户平台地址无效。"} tone="warning" />
+        <LoginPage
+          error="账号服务地址无效，请联系管理员。"
+          onRetry={() => globalThis.location?.reload?.()}
+        />
       </AuthContext.Provider>
     );
   }
 
   if (status === "logging_out" || status === "logout_uncertain") {
-    const switchingInvitationAccount = logoutIntent?.kind === "switch_invitation_account";
+    const switchingAccount = ["switch_account", "switch_invitation_account"]
+      .includes(logoutIntent?.kind);
     return (
       <AuthContext.Provider value={value}>
         <AuthShell
@@ -361,7 +482,7 @@ export function AuthGateway({ children, demoMode = false }) {
           title={status === "logging_out" ? "正在安全退出当前账号" : "服务端尚未确认退出"}
           description={status === "logging_out"
             ? "收到服务端确认前不会宣称退出，也不会开始切换账号。"
-            : `${error || "账号服务暂时不可达。"} 当前 HttpOnly 会话仍可能有效，页面已隐藏业务数据且不会继续${switchingInvitationAccount ? "换号" : "退出跳转"}。`}
+            : `${error || "账号服务暂时不可达。"} 当前 HttpOnly 会话仍可能有效，页面已隐藏业务数据且不会继续${switchingAccount ? "换号" : "退出跳转"}。`}
           tone={status === "logging_out" ? "loading" : "warning"}
           busy={status === "logging_out"}
         >
@@ -421,7 +542,7 @@ export function AuthGateway({ children, demoMode = false }) {
   if (status === "loading") {
     return (
       <AuthContext.Provider value={value}>
-        <AuthShell eyebrow="会话安全检查" title="正在确认账号身份" description="确认完成前不会开放任何个人、企业或平台数据。" tone="loading" busy />
+        <AuthShell variant="login" eyebrow="会话安全检查" title="正在确认账号" description="正在连接安全身份服务。" tone="loading" busy />
       </AuthContext.Provider>
     );
   }
@@ -446,6 +567,7 @@ export function AuthGateway({ children, demoMode = false }) {
         busy={status === "navigating"}
         returnTo={route.kind === "login" ? requestedReturnTo : currentReturnTo()}
         onLogin={beginLogin}
+        onRetry={() => refreshSession()}
       />
     </AuthContext.Provider>
   );

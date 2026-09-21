@@ -67,7 +67,7 @@ def _role_admin_dsn() -> bytes:
     ).encode()
 
 
-def test_role_pre_snapshots_nine_sources_then_verifies_one_exact_receipt(
+def test_role_pre_snapshots_every_source_then_verifies_one_exact_receipt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source_raw = {

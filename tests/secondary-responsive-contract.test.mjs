@@ -70,66 +70,69 @@ test("Studio becomes one column with a complete horizontal route rail", () => {
   const phone = mediaBlocks(mobileSource, 720);
 
   assert.match(shellTablet, /\.app-shell\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
-  assert.match(shellTablet, /\.app-shell\s*>\s*\.main-canvas\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*2;/);
-  assert.match(chromeTablet, /\.app-shell\s*>\s*\.side-nav\s*>\s*div\s*\{[\s\S]*?flex-direction:\s*row;/);
-  assert.match(phone, /\.app-shell\[data-theme\]\s*>\s*\.side-nav\s*>\s*div\s*\{[\s\S]*?overflow-x:\s*auto;/);
+  assert.match(shellTablet, /\.app-shell\s*>\s*\.main-canvas\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*3;/);
+  assert.match(chromeTablet, /\.app-shell \.side-nav-track\s*\{[^}]*flex-direction:\s*row;[^}]*overflow-x:\s*auto;/);
+  assert.match(
+    phone,
+    /\.app-shell\[data-theme\] > \.side-nav \.side-nav-track\s*\{[^}]*overflow-x:\s*auto;/,
+  );
   assert.match(phone, /overscroll-behavior-inline:\s*contain/);
 });
 
 test("secondary routes keep one bounded scrolling work surface", () => {
   assert.match(
-    studioRoutesSource,
-    /:is\(\.app-shell\.is-secondary-page,\s*\.app-shell\.is-creation-hub\)[\s\S]*?:is\(\.creation-hub,\s*\.secondary-view\)\s*\{[\s\S]*?height:\s*100%;[\s\S]*?min-height:\s*0;[\s\S]*?overflow-y:\s*auto;/,
+    shellSource,
+    /\.app-shell > \.main-canvas\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*auto;/s,
   );
-  assert.match(studioRoutesSource, /\.app-shell\.is-secondary-page \.settings-list\s*\{/);
-  assert.match(studioRoutesSource, /\.app-shell\.is-secondary-page \.artwork-item\s*\{/);
+  assert.match(shellSource, /\.app-shell\.is-secondary-page > \.main-canvas\s*\{[^}]*grid-row:\s*2;/);
+  assert.match(studioRoutesSource, /\.settings-list,/);
+  assert.match(studioRoutesSource, /\.artwork-item\s*\{/);
+  assert.doesNotMatch(studioRoutesSource, /\.secondary-view\s*\{[^}]*overflow-y:/s);
 });
 
 test("secondary task state remains actionable above the phone navigation", () => {
   assert.match(
-    composerSource,
-    /\.taskbar\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/,
+    studioRoutesSource,
+    /\.taskbar\s*\{[^}]*position:\s*relative;[^}]*width:\s*calc\(100% - var\(--shell-page-gutter\) - var\(--shell-page-gutter\)\);[^}]*margin:\s*0 var\(--shell-page-gutter\) 12px;[^}]*border-radius:\s*14px;[^}]*box-shadow:\s*0 1px 2px/s,
   );
   assert.match(
-    mobileSource,
-    /\.app-shell\[data-theme\]\.is-secondary-page\s*>\s*\.taskbar\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?var\(--studio-mobile-nav-height\)/,
+    shellSource,
+    /\.app-shell\.is-secondary-page > \.taskbar\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*3;/,
   );
   assert.match(
-    mobileSource,
-    /\.app-shell\[data-theme\]\.is-secondary-page\s*>\s*\.taskbar \.task-action\s*\{[\s\S]*?min-height:\s*44px;/,
+    shellSource,
+    /@media \(max-width: 900px\)[\s\S]*?\.app-shell\.is-secondary-page > \.taskbar\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*4;/,
   );
+  assert.match(mobileSource, /\.app-shell\[data-theme\] \.taskbar button\s*\{[^}]*min-height:\s*44px;/s);
 });
 
 test("the material library uses content-aware columns", () => {
   assert.match(
     studioRoutesSource,
-    /\.media-view \.asset-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(\s*auto-(?:fit|fill),\s*minmax\(/,
+    /\.asset-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/s,
   );
-  assert.doesNotMatch(studioRoutesSource, /\.media-view \.asset-grid\s*\{[^}]*repeat\(3,/s);
+  assert.match(studioRoutesSource, /@media \(max-width: 1240px\)[\s\S]*?\.asset-grid\s*\{[^}]*repeat\(3, minmax\(0, 1fr\)\)/s);
+  assert.match(studioRoutesSource, /@media \(max-width: 760px\)[\s\S]*?\.asset-grid,[\s\S]*?grid-template-columns:\s*1fr;/s);
 });
 
 test("the account center becomes a usable single-column phone form", () => {
-  const phone = mediaBlocks(studioRoutesSource, 720);
+  const phone = mediaBlocks(studioRoutesSource, 760);
 
   assert.match(
     phone,
-    /\.app-shell\.is-secondary-page \.account-section\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/,
+    /\.account-section\s*\{[^}]*grid-template-columns:\s*1fr;/,
   );
   assert.match(
-    phone,
-    /\.app-shell\.is-secondary-page \.account-section\s*>\s*:not\(header\)\s*\{[\s\S]*?grid-column:\s*1;/,
+    studioRoutesSource,
+    /\.account-profile-form,[\s\S]*?\.account-session-list\s*\{[^}]*display:\s*grid;/,
   );
   assert.match(
-    phone,
-    /\.app-shell\.is-secondary-page \.account-profile-form\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/,
+    studioRoutesSource,
+    /\.account-profile-form label\s*\{[^}]*display:\s*grid;/,
   );
   assert.match(
-    phone,
-    /\.app-shell\.is-secondary-page \.account-center :is\(input,\s*select,\s*textarea\)[\s\S]*?min-height:\s*var\(--control-lg,\s*44px\);/,
-  );
-  assert.match(
-    phone,
-    /\.app-shell\.is-secondary-page \.account-center\s*\{[\s\S]*?padding-block-end:\s*calc\(var\(--control-lg,\s*44px\)\s*\+\s*var\(--space-8,\s*32px\)\);/,
+    mobileSource,
+    /\.app-shell\[data-theme\] \.secondary-view input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):not\(\[type="file"\]\),[\s\S]*?min-height:\s*44px;/,
   );
 });
 
@@ -146,8 +149,9 @@ test("demo account switching replaces rather than duplicates signed-in identity"
 
   assert.match(
     managementSource,
-    /\{demoMode && <DemoAccountSwitcher[\s\S]*?\/>\}/,
+    /const demoPersonaControl = demoMode && activeDemoPersonaHost[\s\S]*?createPortal\([\s\S]*?<DemoAccountSwitcher/,
   );
+  assert.equal((managementSource.match(/<DemoAccountSwitcher\b/g) || []).length, 1);
   immediatelyGuardedBy(
     managementSource,
     "control-live-session-desktop",

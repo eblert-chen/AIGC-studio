@@ -1,24 +1,38 @@
 # AI 视频客户管理平台后端
 
-这是客户管理平台的首个可运行后端骨架，包含多公司隔离、成员与权限、模型授权、
-公司钱包账本和任务记录。金额一律以整数分保存。
+这是客户管理平台的 FastAPI 后端，包含多公司隔离、成员与权限、模型授权、
+公司钱包账本和任务记录。当前消费使用整数积分；历史人民币分与测试积分必须按明确的
+`billing_unit`、`billing_version` 和 `billing_scope` 区分，不能直接混合汇总。
 
-## 本地运行
+## 本地环境与运行
+
+完整本地栈仅从仓库根目录使用 `npm run services:start:local` 启动；该入口管理环境文件
+顺序、依赖启动及就绪检查。不要用下面的独立开发说明替代真实栈启动或生产部署。
+
+Platform 使用 Python 3.12，依赖必须从带 SHA-256 的锁文件安装。根目录 `.venv-ci` 是
+统一开发/测试环境，不与历史 Python Relay oracle 共用。新建环境时在仓库根目录执行：
+
+```powershell
+py -3.12 -m venv .venv-ci
+.\.venv-ci\Scripts\python.exe -m pip install --require-hashes -r backend/platform/requirements-dev.txt
+.\.venv-ci\Scripts\python.exe -m pip check
+```
+
+已有环境若含手工安装或历史依赖，应先保留旧环境，再新建并按锁安装；不要把 `pip install -U`
+或另一个虚拟环境的测试结果当成统一环境的证据。依赖分层、重锁和 Linux builder 说明见
+[依赖环境约定](../../docs/dependency-environment.md)。
+
+默认开发配置使用 SQLite，但不会自动建表。数据库结构统一由 Alembic 管理。
+以下独立进程命令只用于已明确配置的隔离开发数据库；先确认 `DATABASE_URL` 不是共享或生产库：
 
 ```powershell
 cd backend/platform
-python -m pip install -r requirements.txt
-python -m alembic upgrade head
-python -m uvicorn platform_api.main:app --reload
+..\..\.venv-ci\Scripts\python.exe -m alembic upgrade head
+..\..\.venv-ci\Scripts\python.exe -m alembic check
+..\..\.venv-ci\Scripts\python.exe -m uvicorn platform_api.main:app --reload
 ```
 
-默认使用当前目录的 SQLite 数据库，但不会自动建表。数据库结构统一由 Alembic 管理。
-生产环境请复制 `.env.example`，使用 PostgreSQL，并在发布应用前以独立迁移步骤执行：
-
-```powershell
-python -m alembic upgrade head
-python -m alembic check
-```
+生产迁移另走受保护的发布流程；本地 `upgrade/check` 通过不表示 catalog 已获生产资格。
 
 `AUTO_CREATE_TABLES` 仅保留给隔离测试；生产配置若尝试开启，应用会拒绝启动。
 
@@ -109,12 +123,18 @@ docker run --rm -p 8000:8000 --env-file .env ai-video-platform
 身份字段或绕过能力契约向 Provider 传参。
 
 平台管理员通过 `GET /api/v1/platform-admin/relay-models` 读取中转站的服务认证模型目录，
-检查平台模型是与 Relay 一致、安全收紧、未配置还是越界。只有一致或安全收紧的模型可用
+检查平台模型是与 Relay 一致、安全收紧、未配置还是越界。受控目录同步按
+`public_model_id` 幂等对账：Relay 中首次出现的新公共模型会自动物化为未发布 Platform
+草稿，并记录精确 catalog revision 与 capability candidate；同一公共模型新增账号、Key、
+等价渠道或调整权重不会重复创建模型。能力内容变化只更新候选，不会静默扩大最后批准的
+Platform 能力。只有一致或安全收紧的模型可用
 `POST /api/v1/platform-admin/models/{model_id}/relay-capability` 确认当前 Relay revision。
 确认值不会改变平台能力版本；它会随新任务快照和 Relay Outbox 固化为
 `expected_capability_revision`。Relay 若在真实渠道提交前发现 revision 漂移，会明确失败且
 不会调用供应商。管理员模型页已提供检查状态与“确认能力”操作。只要平台配置了 Relay，
-未确认 revision 的草稿不能发布，迁移前遗留的未固定模型也不能创建新任务。
+未确认 revision 的草稿不能发布，迁移前遗留的未固定模型也不能创建新任务。自动建草稿
+不会自动批准能力、发布模型、选择计费方式、设置价格或向个人/企业分发；这些操作仍要求
+Platform Owner 明确确认并留下审计记录。
 
 ## 中转站可靠提交
 
@@ -288,29 +308,65 @@ Platform API typed bundle 中历史命名的 `jwt_signing_secret` 现在同时�
 OIDC state、邀请 capability 与审计 IP 摘要的服务端 HMAC pepper。轮换它会刻意使现有
 会话、未接受邀请和进行中的登录事务全部失效，因此只能按全局登出/重发邀请的受控变更执行。
 
-账号由 `(issuer, sub)` 映射到稳定本地 User；全局 `pending/active/suspended/deactivated`
-状态和 `auth_version` 会在每次请求重新核验。公司成员停用只撤销该公司范围；全局停用会
-立即拒绝个人、其他公司和平台管理员范围并撤销全部服务端会话。新成员通过一次性、可过期、
-可撤销、可重发的邀请加入，邀请 token 只放在 URL fragment 和 POST body，不进入查询参数。
+账号由 `(issuer, sub)` 映射到稳定本地 User，并持久化一个互斥的 `account_type`：个人用户只
+进入个人 Studio，企业老板/组长/运营只进入企业 Studio，平台管理员只进入 Platform 控制面。
+同一 Auth0 tenant 只复用认证，不会合并三类账号的钱包、权益、任务、素材、权限或导航。
+企业账号可以在自己拥有有效 membership 的多个企业之间切换；个人账号不进入公司切换流程，
+接受企业邀请也不会静默生成“个人 + 企业”双空间账号，冲突时必须使用独立账号或经过显式、
+可审计的账号类型迁移。全局 `pending/active/suspended/deactivated` 状态和 `auth_version` 会在
+每次请求重新核验。公司成员停用只撤销该公司范围；全局停用会立即拒绝该账号的全部产品范围
+并撤销全部服务端会话。新成员通过一次性、可过期、可撤销、可重发的邀请加入，邀请 token 只
+放在 URL fragment 和 POST body，不进入查询参数。
 
 浏览器只需要非秘密的 `platformApiUrl`。生产构建不再读取
 `sessionStorage["ai-video.access-token"]`，也不得把 token、用户 ID、公司身份或管理员身份
-写入 `VITE_*`、静态 `.env`、HTML、URL 或 `localStorage`。个人/公司切换只提交公司 ID，
-服务端仍会重新核验有效 membership。
+写入 `VITE_*`、静态 `.env`、HTML、URL 或 `localStorage`。只有企业账号的多企业切换会提交
+目标公司 ID，服务端仍会重新核验该企业账号的有效 membership；个人账号与平台管理员账号不
+进入这个切换流程。
 
 代码边界不替代外部系统验收：公网发布前仍必须用目标 IdP 完成 redirect、JWKS 轮换、
 step-up、退出/全设备吊销和停用账号 canary；真实 Provider、生产 OBS 与可信支付也仍需
 各自的上线证据。
 
-当前 Alembic 唯一迁移 head 为 `0040_showcase_management`，直接前序为
-`0039_new_api_relay_defaults`；`0038_download_evidence_checks` 与
-`0037_production_auth_lifecycle` 继续保留为冻结前序。0040 新增仅 Platform Owner 可管理的
+当前 Alembic 唯一迁移 head 为 `0045_system_audit_actor`，直接前序为
+`0044_account_product_partition`；`0038_download_evidence_checks` 与
+`0037_production_auth_lifecycle` 继续保留为冻结前序。0044 为每个用户持久化互斥的
+`PERSONAL`、`COMPANY` 或 `PLATFORM_ADMIN` 产品边界；迁移保留历史钱包、账本、任务、产物和
+成员证据，只停用不属于该账号类型的入口，并以数据库约束和 trigger 阻止静默跨类型。
+0045 允许后台任务以互斥、可追溯的 system actor 写入审计证据，并为
+`relay-catalog-sync` 提供严格最小权限的数据库角色；历史审计行仍保持 user actor。
+0043 以独立 data-only 迁移加入提示词自动汇总库权限，不改变表或 ACL 投影；0042 为企业授权批量、复制与模板执行增加全局唯一的事务 journal，并安全冻结旧审计 key；`0041_model_capability_releases` 分离 Relay capability candidate、
+批准 ceiling 和对应 catalog revision；0040 新增仅 Platform Owner 可管理的
 首页精选案例草稿、不可变发布版本和紧急下线事件；0039 仍只改变未来任务/outbox 的数据库默认
-Relay affinity，不重写任何历史行。受保护 v5 catalog 的唯一 PostgreSQL 16 资格化值为
-`ecd5b3faae20595e66396c59d37327d1e6e5b742c3d70697aaf6f109866591e6`。生产发布必须以独立迁移任务先执行
+Relay affinity，不重写任何历史行。当前 Platform 数据库权限策略为 v10。唯一 PostgreSQL
+16 资格化发布值为
+`7ce8849ecc4be298fe9889bdeaeb7ea17932a51c9ff9eeb024cc55bbcad44142`；v9/0044 的
+`64640e8ccf7069fc6ca0773af64def56babfdb80101ea9cd22e6b8e7fc00c167` 与 v8/0043 的
+`8258cdc950161a8571df59c71fbcea466bf96a481f382b6a598565ce80c9f638` 只允许作为历史迁移源
+证据。生产发布必须以独立迁移任务先执行
 `python -m alembic upgrade head`、`python -m alembic check` 和
 `python -m alembic current`，确认到达该 head 后再启动 API 与后台进程；不要把历史版本号
 继续写成发布目标。
+
+Relay 模型目录对账由独立的 `relay-catalog-sync` Platform 后台进程负责。它使用 ETag
+周期读取 Relay 公共目录，多实例通过 PostgreSQL advisory lock 保证单领导者；新增目录项只会
+幂等生成或更新一个未发布草稿，绝不会自动审批、发布、定价或分发。无变化和 `304` 不写数据库、
+不产生审计噪音；普通失败按上限退避，数据库权限证明失败则直接 fail closed。模型目录页面本身
+只读取状态，不再以页面打开触发对账；管理员按钮仅保留为显式、受权限控制的故障恢复入口。
+
+## 平台管理员提示词收集库
+
+用户提交生成任务时，提示词随任务请求由 Platform 持久化。平台所有者，或被授予
+`platform.task_content.read` 的平台管理员，可通过
+`GET /api/v1/platform-admin/task-content` 按企业/个人工作区、用户、模型、任务状态和创建时间
+分页汇总查询（每页最多 25 条）。每条记录直接返回原样 `prompt` 与 `prompt_length`；接口
+无需逐条操作或填写理由，也不提供提示词写操作。
+该域刻意只提供 `platform.task_content.read`，不存在无实际动作的
+`platform.task_content.manage` 权限。
+
+该查询仍属于平台管理员边界，委派管理员默认拒绝；企业与个人工作区筛选不能混用，时间边界
+必须携带时区且起始时间早于结束时间。响应使用 `Cache-Control: private, no-store` 等禁止缓存
+头，且不会返回完整 `request_payload`、Relay payload、内部资源键或凭据。
 
 ## 私有输入素材库
 

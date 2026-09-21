@@ -1,23 +1,26 @@
 # 需求差距与上线门禁
 
-更新日期：2026-08-21
+更新日期：2026-08-31
 
 ## 结论
+
+Relay schema 跨版本门禁只在门禁自有 `exact-v3` 合成数据库推进；任何 pinned image 都不得访问业务/live 数据库。
 
 需求文档中的“双平台”架构可以实现，当前已经从单页原型进入可运行的第一里程碑。
 
 - **受控内网演示/研发联调**：当前共享工作树仍在收口；必须先在最终 commit 上完成根 CI、数据库 release proof 与本地/内网验收，不能继承旧 PASS 自动放行。
 - **公网商用**：当前禁止放行。原生 OIDC/BFF 登录与账号生命周期代码已经收口，但目标 IdP 的真实 redirect/JWKS/step-up/吊销 canary 尚未签字；真实生成渠道、支付回调、生产 OBS、外部监控告警与备份恢复也仍是硬门槛。
+- **当前数据库资格**：Platform v15 catalog 为 `UNQUALIFIED`，v12/0047、v13/0048 也尚未资格化，v14/0049 同样未资格化。当前受保护发布保持 `BLOCKED / NO-GO`；本地 PG16 功能与并发回归不等于生产 catalog、角色和签名 release proof 资格。
 
 ## 当前覆盖
 
 | 需求域 | 当前状态 | 已完成 | 商用前剩余 |
 | --- | --- | --- | --- |
 | 双平台拆分 | 已形成 | 客户平台与生成中转站独立服务、数据和凭证边界 | 独立生产网络与容量验证 |
-| 多公司与权限 | 第一版完成 | 公司、成员软停用、预置与自定义角色、角色替换/撤销；当前 16 个有效权限项均绑定实际公司端路由校验，只有老板可按完整目录为员工逐项设置 `inherit`/`allow`/`deny`。公司成员改为待接受、可过期/撤回/重发的邀请；个人与多公司上下文仍逐次复核账号、公司和 membership 状态 | 目标 IdP 真实邀请/换账号 canary；全角色长时间会话与离职演练 |
+| 多公司与权限 | 第一版完成 | 公司、成员软停用、预置与自定义角色、角色替换/撤销；当前 16 个有效权限项均绑定实际公司端路由校验，只有老板可按完整目录为员工逐项设置 `inherit`/`allow`/`deny`。个人、企业与平台管理员账号类型互斥：个人账号只进入个人 Studio，企业账号只进入企业 Studio，只有企业账号可在其有效 membership 覆盖的多个企业之间切换 | 目标 IdP 真实邀请/换账号 canary；账号类型冲突和显式迁移演练；全角色长时间会话与离职演练 |
 | 平台管理员 | 工程第一版完成 | 公司创建/启停、模型定价与完整权益矩阵、动态功能/智能体/外部 API 目录、人工充值、消费报表、只追加渠道成本账本、收入/成本/毛利看板和审计日志均已接入平台运营界面；Platform Owner 还可管理首页精选案例草稿、不可变发布/回滚和紧急下线。最高权限账号要求 IdP subject allowlist、防钓鱼 `amr`、`auth_time` 和近期 step-up | 目标 IdP 的 WebAuthn/passkey step-up canary、真实 OBS 精选媒体签名跳转、Relay 真实账单自动上报、可信支付、审批与告警 |
-| 模型与定价 | 第一版完成 | 生产模型草稿/版本/发布/停用、v1 逐模式能力声明、公司授权、按秒/按条价格、价格与完整生效能力快照；Relay 发布服务认证的版本化目录、ETag 和故障切换安全交集，平台只能收紧并固定 revision；任务在 Provider POST 前复核漂移 | 成本价与毛利策略、真实渠道能力准确性和变更审批演练 |
-| 钱包与计费 | 核心完成 | 64 位整数分、ORM 与数据库双层只追加账本、稳定幂等充值、预占、结算、失败释放、行锁、公司/员工/模型/时间消费报表 | 支付订单、可信支付回调、退款、对账 |
+| 模型与定价 | 第一版完成 | 生产模型草稿/版本/发布/停用、v1 逐模式能力声明、公司授权、按秒/按条价格、价格与完整生效能力快照；专用 `relay-catalog-sync` 定时以 ETag 条件请求对账 Relay 目录，只物化未发布草稿和能力候选，页面打开只读、无变化不写库、真实变化写系统审计；批准、发布、定价和个人/企业分发仍由 Platform Owner 人工执行 | 成本价与毛利策略、真实渠道能力准确性和变更审批演练 |
+| 钱包与计费 | 软件实现及本地回归完成，生产未接入 | 现金用 64 位整数分、权益用整数积分（10 积分 = ¥1）；只追加账本、支付订单、退款/拒付、持久投递、原件绑定对账、自动充值及企业月结；任务预占、成功结算、失败释放与并发保护 | 真实 PSP、可信账单来源、v15 受保护数据库资格、生产常驻 billing worker、通知、监控与恢复演练 |
 | 异步生成中转 | 核心完成 | 扩展 new-api 是唯一活动 Relay；统一 `/v1/generations`、版本化能力、PostgreSQL/Redis 协调、路由粘性、unknown fencing、转存、签名回调与成本事件均由该数据面承载 | 真实账号沙箱、真实 Provider/OBS、容量、账单与外部告警证据 |
 | 产物安全 | 第一版完成 | 成功前转存、SSRF 防护、大小/MIME/哈希校验、私有对象元数据；Huawei OBS 上传后以 HEAD 核对大小、类型和哈希元数据，核验前不成功、不结算 | 真实 OBS 桶验收、生命周期、病毒/内容扫描 |
 | 员工/老板/平台界面 | 第一版完成 | 三套浅色响应式工作面；新增生产登录、回调、邀请接受、账号安全、设备会话、资料、全设备退出、账号停用、公司 owner 转移和平台 owner 全局账号状态界面；制作台继续只读取服务端生效能力 | 目标 IdP 与真实账号的桌面/390/320 端到端验收；真实全渠道验收 |
@@ -31,10 +34,11 @@
 1. 为已实现的 OIDC Authorization Code + PKCE/BFF 会话配置目标 IdP，并完成正常登录、state/nonce/replay、JWKS 轮换、邀请、step-up、单设备/全设备吊销和全局停用 canary；生产环境不得信任开发身份请求头或旧浏览器 Bearer。
 2. 使用至少一个真实生成供应商账号完成测试额度、地区/模型权限、失败分类、账单和结果转存验收；仅有官网契约实现不算通过。
 3. 配置私有华为云 OBS 桶，证明匿名读取被拒绝，完成真实文件转存与短时下载测试，并把 OBS access log 或受控边缘下载完成事件接入客户平台。
-4. 充值只能来自平台管理员或可信支付回调；公司成员不得自行增加余额。
+4. 支付与积分软件闭环必须接入选定的真实 PSP，验收商户、Mandate 同意证据、回调验签、查询、退款/拒付和未知结果处理；公司成员不得自行增加余额。PSP、银行及供应商账单须有可信来源，上传文件摘要不能代替来源认证；生产常驻 billing worker、通知与告警仍须部署验收。
 5. 使用真实生成供应商和生产 OBS 完成“创建任务 → 预占 → 生成 → 转存 → 下载 → 结算”的整链路演练；当前仅 Mock 与本地共享卷通过。
 6. 把已经运行的超时补偿、派发/转存耗尽和回调 dead-letter 接入外部告警与统一运营看板；代码侧记录和受保护查询已完成。
 7. 完成数据库与对象存储备份、恢复演练，以及发布失败回滚演练。
+8. 完成 Platform 当前迁移链的 PostgreSQL 16 catalog、最小权限角色与签名 release proof 资格；v12/v13/v14/v15 的 `UNQUALIFIED` 或历史 hash 均不得用于当前生产放行。
 
 ## 明天可放行的范围
 
@@ -58,6 +62,7 @@
 - TikTok 参考轮询和 HMAC 回调接收代码已经交付；跨服务契约测试覆盖 TikTok 独立 tenant、ETag 能力目录、revision 固定、幂等创建、状态/下载、客户平台跨租户 404、普通凭证对账 403 和 operations-only 凭证生成 403。工程接入面已具备，但真实 TikTok 系统尚未接入，双方签字冻结和独立容量配额仍是上线前事项。
 - 第 5.1 节统一生成 API 已收口：`POST /v1/generations` 以 `202` 返回 `id/object/status` 异步资源，查询、转存后短时产物地址、主动回调和统一错误信封闭环；404、405、422、500 及供应商执行失败不会泄露底层渠道身份。文生图、文生视频、图生视频均有完整 HTTP 到产物契约测试。
 - Relay 通过服务凭证发布 `/v1/models` 与单模型资源，能力按模式拆分并带稳定 SHA-256 revision、目录 revision、ETag/304；目录不因瞬时健康波动消失，共享模型发布故障切换安全交集。平台管理员已在真实运行栈把 `mock.video.v1` 的安全子集确认为当前 revision，后续任务快照与 Outbox 固定同一 revision。
+- Platform 的 `relay-catalog-sync` 后台进程按周期、单 leader 使用 ETag 条件请求 `GET /v1/models`。`304` 或完整目录无语义变化时不写模型或审计表；真实变化以 `actor_kind=system`、`actor_key=relay-catalog-sync` 审计，只创建未发布模型草稿或更新能力候选。管理员打开模型目录页面只读 Platform 数据库，不触发 Relay 请求或写入；能力批准、模型发布、计费方式/价格和个人/企业分发继续要求 Platform Owner 人工操作。
 - 第 5.2 节三类渠道统一接入层已形成版本化 v1 契约：逆向渠道、第三方 API 平台和官方渠道必须显式分类，通过零参数工厂动态注册；启动时校验适配器版本、生产就绪状态和逐模型/逐模式能力，Mock 不能伪装成生产渠道。路由只接受公开故障切换安全能力，健康检查隔离超时与异常；可证明未创建的可重试失败才允许切换，Provider POST 结果未知时禁止换渠道重提。已交付可复制模板、自动校验命令和新渠道接入指引；客户身份、回调、计费、转存及平台授权仍由核心层负责，渠道适配器不能接管。
 - 第 5.3 节号池调度已完成工程第一版：一个真实账号对应一个稳定路由，PostgreSQL 在 Provider POST 前按 submission token 加锁分配并跨 Worker 统一执行长任务并发与固定窗口 RPM；已绑定任务在 `processing` 和结果未知对账期间继续占槽并始终粘性轮询原账号。明确未创建的账号级失败才释放并切号，永久失效关闭新准入但不打断存量任务；池忙、冷却和 RPM 到顶通过 Redis 耐久延迟集合等待且不消耗 Provider 重试次数。逆向文件严格模板、sidecar 隔离要求和真实 canary 清单已交付，但公司具体 API 文件、账号与独立鉴权审计的运营控制面仍未交付。
 - 第 5.4 节高可用与监控已完成工程第一版：Router 按 `request/account/channel` 的已证明未创建范围安全切换，未知提交固定原路由并进入对账；独立 Monitor Worker 用 PostgreSQL 租约定时保存每路由健康/延迟和数据库级只追加的真实上游终态，按连续周期检测成功率下降、大面积路由失败和批量 Provider 错误停用账号，并持久化去重的触发/恢复事件。通用告警 Webhook 使用 HMAC、token-fenced claim、指数退避和 dead-letter；readiness 会报告 Monitor 周期新鲜度、活动告警、投递积压和死信，监控异常或全部 Provider 不可用时保持 HTTP `200 degraded`，不阻断存量回调、查询和对账。真实多渠道演练、外部告警接收端、值班路由和 Worker 进程外部监控仍未完成生产验收。
@@ -72,15 +77,24 @@
 - 第 6 节能力自适应闭环已加固：浏览器只使用公司 API 的 `effective_capabilities`；不同模型和模式会即时重构输入区与参数区，并同步清理超限素材、失效枚举和人脸选项。空白、畸形或无可用模式的声明默认拒绝；提交再次按当前能力清洗，并以 `expected_capability_version` 防止界面读取后模型能力被后台改动。服务端只接受白名单生成字段，客户 metadata 被隔离进 `client_metadata`，不能绕过能力校验向渠道注入参数。
 - 第 7 节任务与产物闭环已完成工程第一版：任务历史保留发起人、公司、模型、参数、状态、报价与实际费用；成功产物写入不可变规范化索引；本人范围为默认值，公司范围必须显式请求且要求 `reports.read`，跨范围详情和下载返回 404。作品页支持分页及媒体、员工、模型、时间和可信下载状态筛选。
 - 下载审计严格拆成 `issued` 与 `completed`。按钮点击和签名 URL 只追加不可变签发记录；只有受内部令牌保护、且公司/任务/产物/签发记录/完整字节数/时间全部匹配的 OBS access-log 或边缘事件才能追加完成记录。未部署事件源时界面保持“已签发”，不会虚报“已下载”。
-- 当前冻结工作树的精选案例发布回归：前端/Node 506 项通过，Sites 7 项通过，生产构建成功；Platform 全量 1514 项通过、38 项按环境设计跳过，精选案例/数据库 focused 88 项通过。两套独立 PostgreSQL 16 资格库得到相同 v5 catalog，0039→0040、0040→0039→0040、`alembic current/check`、最小 ACL、不可变 trigger、并发幂等发布和 SQLSTATE 55000 拒绝均实测通过。该本地工程证据不替代目标 IdP、真实 OBS/Provider、支付、外部告警和恢复演练。
+- 上一版 0040 精选案例发布回归证据保留：前端/Node 506 项通过，Sites 7 项通过，生产构建成功；Platform 全量 1514 项通过、38 项按环境设计跳过，精选案例/数据库 focused 88 项通过。两套独立 PostgreSQL 16 资格库得到相同 v5 catalog，0039→0040、0040→0039→0040、`alembic current/check`、最小 ACL、不可变 trigger、并发幂等发布和 SQLSTATE 55000 拒绝均实测通过。该历史证据不能替代当前 0049 发布门禁，也不替代目标 IdP、真实 OBS/Provider、支付、外部告警和恢复演练。
 - 契约边界在本轮继续收紧：Relay 请求和 Platform 消费端的整数/布尔字段禁止字符串隐式转换，50 项公开错误码在 OpenAPI、回调 Schema、Relay 和 Platform 四处机器比对；产物 ID 必须是规范 UUID；生产环境关闭可由调用方自报状态的旧内部结算入口。真实权限编辑必须取得非空的服务端权限目录，不能退回浏览器硬编码目录。
 - 浏览器实测覆盖制作、公司、平台三套界面和 390×844 窄屏；模型切换会从 9 图 + 3 视频 + 3 音频收紧到 4 + 3 + 3，再收紧到仅 1 张图，并同步隐藏不支持的模式、人脸、视频与音频控件。已修复窄屏顶部账号区导致的整页横向溢出，并保留可访问账号菜单；桌面与窄屏控制台均无错误。
 - 历史 Python oracle 的镜像/依赖扫描只用于冻结行为回归，不能作为生产 Relay 镜像安全证据。生产发布必须对本次 new-api immutable digest 重新生成 SBOM、漏洞扫描、签名与 provenance；仓库内没有真实 registry/签名服务的当前外部回执时，该项保持 `BLOCKED`。
-- 客户平台生产唯一迁移 head 为 `0040_showcase_management`，直接前序为 `0039_new_api_relay_defaults`；冻结的 `0038_download_evidence_checks` 与 `0037_production_auth_lifecycle` 仍提供下载证据和生产认证生命周期。0040 新增仅 Platform Owner 可管理的首页精选案例草稿、不可变发布版本、发布指针 CAS 和紧急下线事件；0039 仍只把新 task/outbox 的 server default 冻结到 `new-api-v1 / generations.v1`，绝不 UPDATE 或重写历史 affinity。受保护 v5 catalog fingerprint 已由两套独立 PostgreSQL 16 数据库从 ACL-attested 0039 前序升级资格化，并经 downgrade/re-upgrade 复得一致，唯一发布值为 `ecd5b3faae20595e66396c59d37327d1e6e5b742c3d70697aaf6f109866591e6`；普通未应用 protected ACL 的 catalog、v4 hash 和任何候选/占位 hash 均不得用于发布。发布任务只对 Platform 库执行 Alembic upgrade/check/current，并按逐进程 role-pre → migration → proof 时序验证该精确 fingerprint。Python oracle 的 `0012_generation_contract_v1` 仅可在临时隔离测试库中核对，不是生产迁移或回滚步骤。
-- 扩展 new-api Relay 的原生数据库合同固定为 `target=3,min=1,max=3`，是独立且唯一的生产 Relay schema。fresh v3 的 ledger 只能是 `[3]`；raw legacy 必须先由冻结 v1 migrator 形成 exact v1，再通过 historical frozen v1→v2 no-catalog-delta bridge 和当前 v2→v3 correction，最终 ledger 精确为 `[1,2,3]`，禁止当前 v3 live bootstrap 直接解释 raw legacy 或重放 frozen v2。fresh 与升级路径都必须在真实 PostgreSQL/TLS/pgaudit 环境完成 release proof → root exact replay (`unchanged`) → service-principal creation → API/edge Current-v3 lifecycle；v3 后 max-v2 镜像必须判为 `ahead` 并失败关闭，不能直接回滚。SKIP、missing test 或离线 Python Alembic 结果都不能替代这条证据。生成 wire 和 secret/receipt envelope 的 `schema_version=1` 与数据库合同版本是不同命名空间。
+
+## 当前数据库与支付发布边界（2026-08-31）
+
+- 客户平台当前源码 head 为 `0050_model_commercial_release`，直接前序为 `0049_payment_finance_closure`，当前 Platform 数据库权限策略为 v15。0050 新增证据绑定、不可变的模型商业发布计划及失败关闭的执行状态；0049 保留持久支付投递、Webhook 重放、原始账单绑定、拒付偿债归属与企业催收。v15 catalog 为 `UNQUALIFIED`；v12/0047 与 v13/0048 也未资格化，v14/0049 同样未资格化，受保护运行与迁移保持失败关闭。只有当前链的独立 catalog、角色和签名 release proof 全部完成资格后，才可按 role-pre → migration → proof 顺序发布；开发 PG16 迁移和并发测试不是该资格证据。0049 对无原件绑定的旧结算行、无 Mandate 的历史自动扣款订单在 DDL 前停止，必须制定保留历史的操作员迁移方案，不能删事实或补造原件/同意来通过。
+- 历史 `0045_system_audit_actor` 保留用户/系统审计身份和最小权限 `relay-catalog-sync` principal；`0044_account_product_partition` 保留个人、企业、平台管理员的互斥产品边界；0043/0042 保留只读提示词权限与 durable entitlement journal；`0041_model_capability_releases` 保留 candidate/approved ceiling 的分离；0040 保留首页精选状态机；0039 只设置新任务的 `new-api-v1 / generations.v1` 默认 affinity，不重写历史。`0038_download_evidence_checks` 与 `0037_production_auth_lifecycle` 继续保留。
+- v10/0045 的 `7ce8849ecc4be298fe9889bdeaeb7ea17932a51c9ff9eeb024cc55bbcad44142`、v9/0044 的 `64640e8ccf7069fc6ca0773af64def56babfdb80101ea9cd22e6b8e7fc00c167`、v8/0043 的 `8258cdc950161a8571df59c71fbcea466bf96a481f382b6a598565ce80c9f638` 和 0041 的 `c5f909c67bcfc91482fb6423ccd9c0c0e98724cdba11e951664a311099bf3778` 均仅保留为历史资格证据，不能证明当前链或授权生产。旧版 hash、未资格化 hash 或占位值都不得用于当前发布。Python oracle 的 `0012_generation_contract_v1` 仅可在临时隔离测试库核对，不是生产迁移或回滚步骤。
+- 支付订单、退款/拒付、积分、对账、自动充值与企业月结的软件实现及本地回归见 [支付与财务闭环](payment-finance-closure.md)。真实 PSP、可信账单来源、生产常驻 billing worker 和通知仍未接入。上传原件不能证明 PSP/银行/供应商签发，对账须保留 `SOURCE_AUTHENTICITY_UNVERIFIED`；HTTP-only `python -m platform_api.billing_worker` 的实现不等于常驻部署，催收 action 不等于通知已送达。支付交接的测试计数也不绑定本次最终候选，冻结后仍须复验。
+- 扩展 new-api Relay 的当前源码合同为 `target=8,min=1,max=8`。fresh-v8 预期 ledger 只能是 `[8]`；raw legacy 依次经过 historical v1→v2 no-catalog-delta、pinned v3 correction、不可变 pinned-v4/v5、pinned-v6 与历史 v7 边界后，current-v8 只允许从 exact v7 增加不可变、回执绑定的 provider-cost allocation evidence，预期完整 ledger 为 `[1,2,3,4,5,6,7,8]`。v8 source/model/checksum/catalog 已冻结为 `sha256:4d1422f6f691d1440600536f9b89c3e1fb9af9e69f880437b95d437b101f71dd`、`sha256:24f03d665ed5df5958cbf82075bfd28fb8aeb97fee277164e443a0218132776d`、`sha256:1def22667e226cf8dfbd467e18445874dcce6959a8b9e74b43623e14bbc31de7` 与 `sha256:6374866475d3b9c404592c39ef5ad8be1b63066308b502e5362dbc47e469823c`，但冻结身份不等于生产资格。专用 PostgreSQL 用例 `TestRelaySchemaPostgresConstructedV7ToV8ProviderCostEvidence` 已通过 `TEST_RELAY_SCHEMA_V7_TO_V8_DSN` 在一次性 `postgres:16-alpine` 上完成 `PG16-constructed-v7→v8-gate=PASS (9.021s)`，证明构造 v7→v8、v7 ledger 不变、v8 表与 UPDATE/DELETE 不可变 guard。该专项没有覆盖 TLS 或 pgAudit；`PG16+TLS+pgAudit-full-qualification-gate=NOT_RUN`，尚未完成生产资格并保持 `BLOCKED / NO-GO`。pinned-v4/pinned-v5 都只是 immutable binary behavior fixture。既有长门禁只证明到历史 v7：`pinned-v3 migration -> pre-v4 zero-ACL role-pre -> pinned-v4 migration -> pinned-v4 full verifier -> pre-v5 zero-ACL role-pre -> pinned-v5 migration -> pinned-v5 rollback verifier -> pre-v6 zero-ACL role-pre -> pinned-v6 migration -> pinned-v6 rollback verifier -> pre-v7 zero-ACL role-pre -> historical-v7 migration`。这段归档证据的事件名依次为 `pre-v4-zero-acl-role-stub-gate=PASS`、`pre-v5-zero-acl-role-stub-gate=PASS`、`pre-v6-zero-acl-role-stub-gate=PASS` 与 `pre-v7-zero-acl-role-stub-gate=PASS`；其中 role-pre does not perform schema migration，四项历史 PASS 也不能写成完整生产 v8 PASS。v8 生产门禁还必须证明 exact-v7→v8、当前角色/ACL、release proof 与 Current-v8 API/edge lifecycle；成功后 max-v7 镜像必须判为 `ahead` 并失败关闭。所有 pinned image 仍不得访问业务/live 数据库；pinned image 不是运营迁移源。SKIP、missing test 或离线结果不能替代生产证据。生成 wire 和 secret/receipt envelope 的 `schema_version=1` 与数据库合同版本是不同命名空间。
+
+## 归档本地冒烟补充（不可作为当前发布证据）
+
 - 重建后的本地整链路冒烟通过：管理员创建公司；模型 revision 在任务快照与 Relay Outbox 中存在且一致；新增 feature、agent、external API 三类动态资源并验证新公司默认关闭；客户 API 返回能力版本 2 和 9 图 + 3 视频 + 3 音频、人脸能力；模型按条定价 25 分并授权；8,991 字节私有图片生成并转存为 4,372,373 字节 MP4，任务历史和作品库各返回 1 条完整记录；短时下载先保持 `issued`，受保护边缘事件确认后才变为 `completed`；任务成功结算 25 分且预留归零，渠道成本 9 分幂等入账，公司停用和恢复路径正常。
 - Compose 重建后客户平台、网关、PostgreSQL 和 Redis 健康，全部容器重启计数为 0；Relay readiness 仍因 Mock Provider 与本地文件存储为预期的 `degraded`。平台 API 被替换且尚未就绪时，网关记录过一次短暂的 DNS 解析超时，随后无需重启即恢复；服务稳定后的日志窗口未出现 ERROR、Traceback、CRITICAL、Unhandled 或 Exception。
-- 平台充值当前是管理员人工调账，不是支付订单；真实供应商成本的自动采集入口已经准备好，但 Relay 尚未接真实供应商账单。原生身份代码门禁已完成，目标 IdP 真实 canary、真实 Provider、生产 OBS、支付、集中告警接收/值班系统和备份恢复仍未完成，因此公网商用结论继续为 **NO-GO**。
+- 此归档的充值证据当时只覆盖管理员人工调账，不能证明当前支付订单链；当前 0048/0049 软件能力与未接入边界以上节为准。真实 IdP、Provider、生产 OBS、可信支付与账单、集中告警和恢复演练仍须独立验收，公网商用结论继续为 **NO-GO**。
 
 ## 归档工程证据（2026-08-04；不可作为当前发布证据）
 
@@ -89,7 +103,7 @@
 - 客户平台迁移 head 为 `0014_billing_report_hardening`，Relay 为 `0006_source_client_identity`；两个 PostgreSQL 实例均在 head 且 `alembic check` 无漂移，平台迁移还完成空 SQLite 库和临时 PostgreSQL schema 的升级、回退及重升，并验证账本禁止 UPDATE、DELETE 与 TRUNCATE。
 - 公司计费闭环已在真实 PostgreSQL 竞争条件下验证：两个员工共享余额时不会透支，成功结算与失败释放只能落一个终态，相同充值只入账一次，模型计费方式、公司授权及模型生命周期并发修改不会产生错配或陈旧覆盖；充值与消费分页的汇总和明细由单条 SQL 返回一致快照。
 - 公司组织层级已收敛为老板、组长、运营：创建公司原子生成老板，新成员默认运营或显式设为组长，普通成员始终只有一个主级别，升降级原子替换；历史零个/多个主级别由 `0012` 迁移归一，运行中容器已完成“运营 → 组长 → 运营”验收。
-- 成员权限已实现“角色模板 + 个人三态覆盖”：当前 12 个有效权限项均有实际公司端路由约束，完整目录、继承值、个人 `allow`/`deny` 和最终生效值均可见；只有老板可为员工逐项配置，清除个人覆盖即恢复 `inherit`。老板一次提交即可原子修改级别、附加角色与个人覆盖。批量请求字段必须显式提交并禁止未知字段；提交携带的 expected 快照只覆盖角色分配与个人覆盖，不覆盖角色模板内容，成员行锁内角色/覆盖快照不一致返回 409。`models.manage` 与 `tasks.manage` 已退役且永不复用，不出现在目录 API、不接受新分配/覆盖、也不参与有效权限求值。测试覆盖全目录翻转、恢复继承、非老板越权、跨公司、停用成员、自己/老板保护、失败回滚、陈旧编辑冲突、错误字段不清权、幂等和审计前后值。
+- 成员权限已实现“角色模板 + 个人三态覆盖”：当前 16 个有效权限项均有实际公司端路由约束，完整目录、继承值、个人 `allow`/`deny` 和最终生效值均可见；只有老板可为员工逐项配置，清除个人覆盖即恢复 `inherit`。老板一次提交即可原子修改级别、附加角色与个人覆盖。批量请求字段必须显式提交并禁止未知字段；提交携带的 expected 快照只覆盖角色分配与个人覆盖，不覆盖角色模板内容，成员行锁内角色/覆盖快照不一致返回 409。`models.manage` 与 `tasks.manage` 已退役且永不复用，不出现在目录 API、不接受新分配/覆盖、也不参与有效权限求值。测试覆盖全目录翻转、恢复继承、非老板越权、跨公司、停用成员、自己/老板保护、失败回滚、陈旧编辑冲突、错误字段不清权、幂等和审计前后值。
 - 公司私有素材链路已覆盖幂等上传、MIME/大小校验、短签访问、公司隔离和任务引用；首次 Relay POST 前只签发并持久化一次完整请求，后续用同一载荷和幂等键恢复，避免重签导致重复生成。
 - Platform 派发遇到网络中断、5xx、异常成功响应或幂等冲突时不再推测失败退款；结果未知会进入待对账并保持预占。派发 attempt CAS 阻止租约过期的旧 Worker 覆盖新结果，签名回调可安全补绑响应丢失的 Relay job。
 - 模型能力已收敛为版本化 v1 契约：逐模式声明图/视频/音频数量、人脸、提示词、时长、比例、分辨率、产物数和资源要求。公司 API 返回服务端计算的完整生效能力，制作台、报价、任务落库、余额预占及 Outbox 共用该语义；覆盖只能取子集、降低上限、关闭人脸或增加资源要求，声明式 `required_resource_keys` 缺定义、停用或未授权时默认拒绝。

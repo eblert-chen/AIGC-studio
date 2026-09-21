@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -43,12 +42,31 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 
 // ValidateRequestAndSetAction parses body, validates fields and sets default action.
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *taskdto.TaskError) {
-	return relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionTextGenerate)
+	if taskErr := relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionTextGenerate); taskErr != nil {
+		return taskErr
+	}
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	if _, err := resolveVeoTaskSpec(req, info.UpstreamModelName); err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	if len(req.Images) > 1 || len(req.Videos) != 0 || len(req.Audios) != 0 {
+		return service.TaskErrorWrapperLocal(fmt.Errorf("Gemini Veo accepts at most one initial image in this adapter profile"), "invalid_request", http.StatusBadRequest)
+	}
+	if len(req.Images) == 1 || strings.TrimSpace(req.Image) != "" {
+		info.Action = constant.TaskActionGenerate
+	}
+	return nil
 }
 
 // BuildRequestURL constructs the Gemini API predictLongRunning endpoint for Veo.
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	modelName := info.UpstreamModelName
+	if _, supported := veoModelCodes[modelName]; !supported {
+		return "", fmt.Errorf("unsupported Gemini Veo model")
+	}
 	version := model_setting.GetGeminiVersionSetting(modelName)
 
 	return fmt.Sprintf(
@@ -61,6 +79,9 @@ func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, erro
 
 // BuildRequestHeader sets required headers.
 func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error {
+	if strings.TrimSpace(a.apiKey) == "" {
+		return fmt.Errorf("Gemini API key is missing")
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("x-goog-api-key", a.apiKey)
@@ -78,6 +99,10 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, fmt.Errorf("unexpected task_request type")
 	}
 
+	spec, err := resolveVeoTaskSpec(req, info.UpstreamModelName)
+	if err != nil {
+		return nil, err
+	}
 	instance := VeoInstance{Prompt: req.Prompt}
 	if img := ExtractMultipartImage(c, info); img != nil {
 		instance.Image = img
@@ -85,6 +110,8 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		if parsed := ParseImageInput(req.Images[0]); parsed != nil {
 			instance.Image = parsed
 			info.Action = constant.TaskActionGenerate
+		} else {
+			return nil, fmt.Errorf("Gemini Veo initial image must be valid inline base64")
 		}
 	}
 
@@ -92,17 +119,12 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if err := taskcommon.UnmarshalMetadata(req.Metadata, params); err != nil {
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
 	}
-	if params.DurationSeconds == 0 && req.Duration > 0 {
-		params.DurationSeconds = req.Duration
-	}
-	if params.Resolution == "" && req.Size != "" {
-		params.Resolution = SizeToVeoResolution(req.Size)
-	}
-	if params.AspectRatio == "" && req.Size != "" {
-		params.AspectRatio = SizeToVeoAspectRatio(req.Size)
-	}
-	params.Resolution = strings.ToLower(params.Resolution)
-	params.SampleCount = 1
+	params.DurationSeconds = spec.DurationSeconds
+	params.Resolution = spec.Resolution
+	params.AspectRatio = spec.AspectRatio
+	params.NumberOfVideos = 1
+	params.SampleCount = 0
+	params.StorageUri = ""
 
 	body := VeoRequestPayload{
 		Instances:  []VeoInstance{instance},
@@ -118,32 +140,60 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 
 // DoRequest delegates to common helper.
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
-	return channel.DoTaskApiRequest(a, c, info, requestBody)
+	// Google long-running generation is a paid, non-idempotent POST. Never let
+	// net/http replay it at a redirect target (307/308 preserve both method and
+	// credentials). A 3xx is returned to the Relay state machine as a provider
+	// failure instead.
+	return channel.DoTaskApiRequestNoRedirect(a, c, info, requestBody)
 }
 
 // DoResponse handles upstream response, returns taskID etc.
 func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (taskID string, taskData []byte, taskErr *taskdto.TaskError) {
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := relaycommon.ReadProviderTaskResponseBody(resp.Body)
 	if err != nil {
 		return "", nil, service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 	_ = resp.Body.Close()
 
+	if err := common.RejectDuplicateJSONKeys(responseBody); err != nil {
+		return "", nil, service.TaskErrorWrapperLocal(fmt.Errorf("Gemini Veo submit response is invalid"), "invalid_response", http.StatusBadGateway)
+	}
 	var s submitResponse
 	if err := common.Unmarshal(responseBody, &s); err != nil {
-		return "", nil, service.TaskErrorWrapper(err, "unmarshal_response_failed", http.StatusInternalServerError)
+		return "", nil, service.TaskErrorWrapperLocal(fmt.Errorf("Gemini Veo submit response is invalid"), "invalid_response", http.StatusBadGateway)
 	}
-	if strings.TrimSpace(s.Name) == "" {
-		return "", nil, service.TaskErrorWrapper(fmt.Errorf("missing operation name"), "invalid_response", http.StatusInternalServerError)
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return "", nil, service.TaskErrorWrapperLocal(fmt.Errorf("Gemini Veo request identity is unavailable"), "submission_result_uncertain", http.StatusBadGateway)
 	}
-	taskID = taskcommon.EncodeLocalTaskID(s.Name)
+	spec, err := resolveVeoTaskSpec(req, info.UpstreamModelName)
+	if err != nil {
+		return "", nil, service.TaskErrorWrapperLocal(fmt.Errorf("Gemini Veo request identity is invalid"), "submission_result_uncertain", http.StatusBadGateway)
+	}
+	taskID, err = buildVeoTaskID(s.Name, spec)
+	if err != nil {
+		return "", nil, service.TaskErrorWrapperLocal(err, "submission_result_uncertain", http.StatusBadGateway)
+	}
+	taskData, err = common.Marshal(veoSubmissionReceipt{
+		SchemaVersion:   1,
+		Object:          veoSubmissionReceiptName,
+		TaskID:          taskID,
+		OperationName:   s.Name,
+		ProviderModel:   spec.Model,
+		DurationSeconds: spec.DurationSeconds,
+		Resolution:      spec.Resolution,
+		AspectRatio:     spec.AspectRatio,
+	})
+	if err != nil {
+		return "", nil, service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
 	ov := dto.NewOpenAIVideo()
 	ov.ID = info.PublicTaskID
 	ov.TaskID = info.PublicTaskID
 	ov.CreatedAt = time.Now().Unix()
 	ov.Model = info.OriginModelName
 	c.JSON(http.StatusOK, ov)
-	return taskID, responseBody, nil
+	return taskID, taskData, nil
 }
 
 func (a *TaskAdaptor) GetModelList() []string {
@@ -191,30 +241,150 @@ func (a *TaskAdaptor) FetchTaskWithContext(ctx context.Context, baseUrl, key str
 		return nil, fmt.Errorf("invalid task_id")
 	}
 
-	upstreamName, err := taskcommon.DecodeLocalTaskID(taskID)
-	if err != nil {
-		return nil, fmt.Errorf("decode task_id failed: %w", err)
+	identity, identityErr := parseVeoTaskID(taskID)
+	upstreamName := ""
+	if identityErr == nil {
+		upstreamName = identity.OperationName
+		if providerModel, _ := body["provider_model"].(string); providerModel != "" && providerModel != identity.Model {
+			return nil, fmt.Errorf("Gemini Veo polling model drifted from its task identity")
+		}
+	} else {
+		var err error
+		upstreamName, err = decodeLegacyVeoTaskID(taskID)
+		if err != nil {
+			return nil, fmt.Errorf("decode task_id failed: %w", err)
+		}
 	}
 
-	version := model_setting.GetGeminiVersionSetting("default")
-	url := fmt.Sprintf("%s/%s/%s", baseUrl, version, upstreamName)
+	requestURL, err := buildVeoOperationURL(baseUrl, upstreamName)
+	if err != nil {
+		return nil, err
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header.Set("Accept", "application/json")
+	if strings.TrimSpace(key) == "" {
+		return nil, fmt.Errorf("Gemini API key is missing")
+	}
 	req.Header.Set("x-goog-api-key", key)
 
 	client, err := service.GetHttpClientWithProxy(proxy)
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
 	}
-	return client.Do(req)
+	isolated := *client
+	isolated.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	response, err := isolated.Do(req)
+	if err != nil || response == nil || response.Body == nil || identityErr != nil ||
+		response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return response, err
+	}
+	raw, err := relaycommon.ReadProviderTaskResponseBody(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	providerModel, _ := body["provider_model"].(string)
+	envelope, err := buildVeoOperationEnvelope(raw, taskID, providerModel)
+	if err != nil {
+		return nil, err
+	}
+	return replaceVeoResponseBody(response, envelope), nil
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
+	if err := common.RejectDuplicateJSONKeys(respBody); err != nil {
+		return nil, fmt.Errorf("Gemini Veo task response contains duplicate fields")
+	}
+	var discriminator struct {
+		Object string `json:"object"`
+		TaskID string `json:"task_id"`
+	}
+	if err := common.Unmarshal(respBody, &discriminator); err != nil {
+		return nil, fmt.Errorf("unmarshal operation response failed: %w", err)
+	}
+	if discriminator.Object == veoOperationEnvelopeName || strings.HasPrefix(discriminator.TaskID, veoTaskIdentityPrefix+":") {
+		return parseVeoOperationEnvelope(respBody)
+	}
+	return parseLegacyVeoOperationResult(respBody)
+}
+
+func parseVeoOperationEnvelope(respBody []byte) (*relaycommon.TaskInfo, error) {
+	var envelope veoOperationEnvelope
+	if err := common.DecodeJsonDisallowUnknownFields(strings.NewReader(string(respBody)), &envelope); err != nil {
+		return nil, fmt.Errorf("decode Gemini Veo operation envelope failed: %w", err)
+	}
+	identity, err := parseVeoTaskID(envelope.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	if envelope.SchemaVersion != 1 || envelope.Object != veoOperationEnvelopeName ||
+		envelope.OperationName != identity.OperationName || envelope.ProviderModel != identity.Model ||
+		envelope.DurationSeconds != identity.DurationSeconds || envelope.Resolution != identity.Resolution ||
+		envelope.AspectRatio != identity.AspectRatio {
+		return nil, fmt.Errorf("Gemini Veo operation envelope binding is invalid")
+	}
+	if err := validateVeoEnvelopeDigest(envelope); err != nil {
+		return nil, err
+	}
+	result := &relaycommon.TaskInfo{
+		Code:   0,
+		TaskID: envelope.TaskID,
+		ProviderResultProof: &relaycommon.ProviderTaskResultProof{
+			SchemaVersion:  1,
+			Protocol:       ProviderProtocolV1,
+			TaskID:         envelope.TaskID,
+			Model:          envelope.ProviderModel,
+			ProviderStatus: envelope.ProviderState,
+		},
+	}
+	switch envelope.ProviderState {
+	case "processing":
+		if envelope.ArtifactURL != "" || envelope.FailureOwner != "" || envelope.FailureCode != "" {
+			return nil, fmt.Errorf("Gemini Veo processing envelope contains terminal material")
+		}
+		result.Status = model.TaskStatusInProgress
+		result.Progress = taskcommon.ProgressInProgress
+	case "succeeded":
+		artifactURL, err := canonicalVeoFileDownloadURL(envelope.ArtifactURL)
+		if err != nil || artifactURL != envelope.ArtifactURL || envelope.FailureOwner != "" || envelope.FailureCode != "" {
+			return nil, fmt.Errorf("Gemini Veo success envelope is invalid")
+		}
+		result.Status = model.TaskStatusSuccess
+		result.Progress = taskcommon.ProgressComplete
+		result.Url = artifactURL
+		result.RemoteUrl = artifactURL
+		result.ProviderResultProof.Resolution = identity.Resolution
+		result.ProviderResultProof.DurationSeconds = identity.DurationSeconds
+		result.ProviderResultProof.AspectRatio = identity.AspectRatio
+		result.ProviderResultProof.OutputCount = 1
+		result.ProviderResultProof.MediaType = "video"
+	case "failed":
+		if envelope.ArtifactURL != "" || (envelope.FailureOwner != "client" && envelope.FailureOwner != "provider") ||
+			(envelope.FailureCode != "content_policy_rejected" && envelope.FailureCode != "provider_service_failure") {
+			return nil, fmt.Errorf("Gemini Veo failure envelope is invalid")
+		}
+		if (envelope.FailureOwner == "client") != (envelope.FailureCode == "content_policy_rejected") {
+			return nil, fmt.Errorf("Gemini Veo failure classification is inconsistent")
+		}
+		result.Status = model.TaskStatusFailure
+		result.Progress = taskcommon.ProgressComplete
+		result.Reason = "Gemini Veo generation failed"
+		result.ProviderResultProof.FailureOwner = envelope.FailureOwner
+		result.ProviderResultProof.FailureCode = envelope.FailureCode
+	default:
+		return nil, fmt.Errorf("Gemini Veo operation state is unknown")
+	}
+	return result, nil
+}
+
+func parseLegacyVeoOperationResult(respBody []byte) (*relaycommon.TaskInfo, error) {
 	var op operationResponse
 	if err := common.Unmarshal(respBody, &op); err != nil {
 		return nil, fmt.Errorf("unmarshal operation response failed: %w", err)
@@ -240,8 +410,10 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 
 	ti.TaskID = taskcommon.EncodeLocalTaskID(op.Name)
 
-	if len(op.Response.GenerateVideoResponse.GeneratedVideos) > 0 {
-		if uri := op.Response.GenerateVideoResponse.GeneratedVideos[0].Video.URI; uri != "" {
+	outputs := append([]generatedVideo(nil), op.Response.GenerateVideoResponse.GeneratedSamples...)
+	outputs = append(outputs, op.Response.GenerateVideoResponse.GeneratedVideos...)
+	if len(outputs) == 1 {
+		if uri, err := canonicalVeoFileDownloadURL(outputs[0].Video.URI); err == nil {
 			ti.RemoteUrl = uri
 		}
 	}
@@ -251,11 +423,12 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 
 func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 	upstreamTaskID := task.GetUpstreamTaskID()
-	upstreamName, err := taskcommon.DecodeLocalTaskID(upstreamTaskID)
-	if err != nil {
-		upstreamName = ""
+	modelName := ""
+	if identity, err := parseVeoTaskID(upstreamTaskID); err == nil {
+		modelName = identity.Model
+	} else if upstreamName, legacyErr := decodeLegacyVeoTaskID(upstreamTaskID); legacyErr == nil {
+		modelName, _, _ = parseVeoOperationName(upstreamName)
 	}
-	modelName := extractModelFromOperationName(upstreamName)
 	if strings.TrimSpace(modelName) == "" {
 		modelName = "veo-3.0-generate-001"
 	}
@@ -273,26 +446,4 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 	}
 
 	return common.Marshal(video)
-}
-
-// ============================
-// helpers
-// ============================
-
-var modelRe = regexp.MustCompile(`models/([^/]+)/operations/`)
-
-func extractModelFromOperationName(name string) string {
-	if name == "" {
-		return ""
-	}
-	if m := modelRe.FindStringSubmatch(name); len(m) == 2 {
-		return m[1]
-	}
-	if idx := strings.Index(name, "models/"); idx >= 0 {
-		s := name[idx+len("models/"):]
-		if p := strings.Index(s, "/operations/"); p > 0 {
-			return s[:p]
-		}
-	}
-	return ""
 }

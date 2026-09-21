@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,6 +42,7 @@ func preparePlatformProviderMonitorCostServiceTest(t *testing.T) {
 		&model.PlatformArtifactUploadIntent{},
 	}, model.PlatformProviderMonitorAndCostModels()...)
 	require.NoError(t, db.AutoMigrate(models...))
+	require.NoError(t, model.MigratePlatformChannelCostPersonalScopeV7WithDB(db))
 	model.DB = db
 	t.Cleanup(func() {
 		model.DB = previousDB
@@ -325,12 +328,13 @@ func TestSuccessfulProviderOutcomeMaterializesContractRateCostIdempotently(t *te
 	require.Len(t, events, 1)
 	event := events[0]
 	assert.Equal(t, int64(35), event.AmountCents)
-	assert.Equal(t, uuid.NewSHA1(uuid.NameSpaceURL, []byte("relay-contract-cost:"+outcome.ID+":"+rate.ID)).String(), event.ID)
-	assert.Equal(t, "relay-contract-cost-"+outcome.ID+"-"+rate.ID, event.IdempotencyKey)
+	assert.Equal(t, uuid.NewSHA1(uuid.NameSpaceURL, []byte("relay-contract-cost:"+outcome.ID)).String(), event.ID)
+	assert.Equal(t, "relay-contract-cost-"+outcome.ID, event.IdempotencyKey)
 	assert.Equal(t, route.RouteKey, event.ChannelKey)
 	assert.Equal(t, route.ChannelClass, event.ChannelType)
 	assert.Equal(t, outcome.ExternalReference, event.ExternalReference)
 	assert.Equal(t, companyID, event.CompanyID)
+	assert.Empty(t, event.PersonalWorkspaceID)
 	assert.NotEqual(t, job.TenantID, event.CompanyID, "the authenticated Relay client tenant is not the Platform company tenant")
 	require.NotNil(t, job.ClientReferenceID)
 	assert.Equal(t, *job.ClientReferenceID, event.TaskID)
@@ -351,9 +355,171 @@ func TestSuccessfulProviderOutcomeMaterializesContractRateCostIdempotently(t *te
 	assert.Equal(t, model.PlatformCostReconciliationCompleted, queue.State)
 }
 
+func TestSuccessfulPersonalProviderOutcomeMaterializesAndDeliversSignedWorkspaceScope(t *testing.T) {
+	preparePlatformProviderMonitorCostServiceTest(t)
+	route := createPlatformProviderServiceRoute(t, "runtime-personal-cost-route", 9311)
+	job, outcome, personalWorkspaceID := createPlatformChannelCostRuntimeFixtureForScope(
+		t, route, 5, 1, "personal",
+	)
+	rate := dto.PlatformProviderContractRateInput{
+		ID: uuid.NewString(), ProviderName: route.ProviderName, ChannelID: route.ChannelID,
+		UpstreamModel: route.UpstreamModel, Mode: route.Mode, Resolution: "720p",
+		BillingUnit: dto.PlatformContractRateUnitOutputSecond, UnitAmountCents: 9, Currency: "CNY",
+		EffectiveFrom: outcome.OccurredAt.Add(-time.Hour), SourceReference: "provider-contract-personal-video-v1",
+		SourceDocumentSHA256: strings.Repeat("9", 64),
+	}
+	require.NoError(t, model.SyncPlatformProviderContractRates([]dto.PlatformProviderContractRateInput{rate}))
+
+	processed, err := RunPlatformChannelCostReconciliationOnce(context.Background(), 30*time.Second)
+	require.NoError(t, err)
+	require.True(t, processed)
+	processed, err = RunPlatformChannelCostReconciliationOnce(context.Background(), 30*time.Second)
+	require.NoError(t, err)
+	assert.False(t, processed, "personal cost reconciliation must remain idempotent")
+
+	var event model.PlatformChannelCostEvent
+	require.NoError(t, model.DB.First(&event, "relay_job_id = ?", job.ID).Error)
+	assert.Equal(t, int64(45), event.AmountCents)
+	assert.Empty(t, event.CompanyID)
+	assert.Equal(t, personalWorkspaceID, event.PersonalWorkspaceID)
+	require.NotNil(t, job.ClientReferenceID)
+	assert.Equal(t, *job.ClientReferenceID, event.TaskID)
+	assert.Equal(t, job.ID, event.RelayJobID)
+	assert.Contains(t, event.PayloadJSON, `"personal_workspace_id":"`+personalWorkspaceID+`"`)
+	assert.NotContains(t, event.PayloadJSON, `"company_id"`)
+
+	receivedBody := make(chan []byte, 1)
+	receivedHeaders := make(chan http.Header, 1)
+	endpoint := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		receivedBody <- body
+		receivedHeaders <- request.Header.Clone()
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(endpoint.Close)
+	claim, err := model.ClaimPlatformRelayExternalDelivery(model.PlatformRelayDeliveryKindChannelCost, 30*time.Second)
+	require.NoError(t, err)
+	config := PlatformChannelCostSinkConfig{
+		URL:                  endpoint.URL + "/internal/channel-costs",
+		InternalServiceToken: "platform-personal-internal-token",
+		SigningSecret:        "personal-cost-signing-secret",
+	}
+	state, won, err := DeliverPlatformChannelCostClaim(context.Background(), *claim, config)
+	require.NoError(t, err)
+	assert.True(t, won)
+	assert.Equal(t, model.PlatformRelayDeliveryDelivered, state)
+	body := <-receivedBody
+	headers := <-receivedHeaders
+	assert.Equal(t, event.ID, headers.Get("X-Relay-Event-ID"))
+	timestamp, err := strconv.ParseInt(headers.Get("X-Relay-Timestamp"), 10, 64)
+	require.NoError(t, err)
+	expectedSignature, err := SignPlatformRelayExternalEvent(config.SigningSecret, timestamp, event.ID, body)
+	require.NoError(t, err)
+	assert.Equal(t, expectedSignature, headers.Get("X-Relay-Signature"))
+	var payload dto.PlatformChannelCostPayload
+	require.NoError(t, common.Unmarshal(body, &payload))
+	assert.Empty(t, payload.CompanyID)
+	assert.Equal(t, personalWorkspaceID, payload.PersonalWorkspaceID)
+	assert.Equal(t, event.TaskID, payload.TaskID)
+	assert.Equal(t, job.ID, payload.RelayJobID)
+}
+
+func TestExpiredCostClaimAndLateRateCannotProduceTwoFactsAcrossWorkers(t *testing.T) {
+	preparePlatformProviderMonitorCostServiceTest(t)
+	sqlDB, err := model.DB.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(4)
+	route := createPlatformProviderServiceRoute(t, "runtime-cost-late-rate-race", 9305)
+	job, outcome, _ := createPlatformChannelCostRuntimeFixture(t, route, 5, 1)
+	firstRate := dto.PlatformProviderContractRateInput{
+		ID: uuid.NewString(), ProviderName: route.ProviderName, ChannelID: route.ChannelID,
+		UpstreamModel: route.UpstreamModel, Mode: route.Mode, Resolution: "720p",
+		BillingUnit: dto.PlatformContractRateUnitOutputItem, UnitAmountCents: 7, Currency: "CNY",
+		EffectiveFrom: outcome.OccurredAt.Add(-2 * time.Hour), SourceReference: "provider-contract-before-expiry",
+		SourceDocumentSHA256: strings.Repeat("a", 64),
+	}
+	require.NoError(t, model.SyncPlatformProviderContractRates([]dto.PlatformProviderContractRateInput{firstRate}))
+	created, err := model.DiscoverPlatformChannelCostReconciliations(10)
+	require.NoError(t, err)
+	require.Equal(t, 1, created)
+	staleClaim, err := model.ClaimPlatformChannelCostReconciliation(30 * time.Second)
+	require.NoError(t, err)
+	require.NoError(t, model.DB.Model(&model.PlatformChannelCostReconciliation{}).
+		Where("relay_job_id = ?", job.ID).
+		Update("claim_expires_at", time.Now().UTC().Add(-time.Second)).Error)
+	currentClaim, err := model.ClaimPlatformChannelCostReconciliation(30 * time.Second)
+	require.NoError(t, err)
+	require.NotEqual(t, staleClaim.Token, currentClaim.Token)
+
+	lateRate := firstRate
+	lateRate.ID = uuid.NewString()
+	lateRate.UnitAmountCents = 11
+	lateRate.EffectiveFrom = outcome.OccurredAt.Add(-time.Hour)
+	lateRate.SourceReference = "provider-contract-arrived-after-reclaim"
+	lateRate.SourceDocumentSHA256 = strings.Repeat("b", 64)
+	require.NoError(t, model.SyncPlatformProviderContractRates([]dto.PlatformProviderContractRateInput{lateRate}))
+
+	type workerResult struct {
+		result PlatformChannelCostReconciliationResult
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan workerResult, 2)
+	var workers sync.WaitGroup
+	for _, claim := range []model.PlatformChannelCostReconciliationClaim{*staleClaim, *currentClaim} {
+		claim := claim
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			result, reconcileErr := ReconcilePlatformChannelCostClaim(claim)
+			results <- workerResult{result: result, err: reconcileErr}
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	completed := 0
+	claimLost := 0
+	for worker := range results {
+		if worker.err == nil && worker.result.Completed {
+			completed++
+			continue
+		}
+		if errors.Is(worker.err, model.ErrPlatformCostReconciliationClaimLost) {
+			claimLost++
+			continue
+		}
+		require.NoError(t, worker.err)
+	}
+	require.Equal(t, 1, completed)
+	require.Equal(t, 1, claimLost)
+
+	var events []model.PlatformChannelCostEvent
+	require.NoError(t, model.DB.Where("relay_job_id = ?", job.ID).Find(&events).Error)
+	require.Len(t, events, 1)
+	assert.Equal(t, int64(11), events[0].AmountCents)
+	assert.Equal(t, uuid.NewSHA1(uuid.NameSpaceURL, []byte("relay-contract-cost:"+outcome.ID)).String(), events[0].ID)
+	assert.Equal(t, "relay-contract-cost-"+outcome.ID, events[0].IdempotencyKey)
+	assert.Contains(t, events[0].Note, lateRate.ID)
+	assert.NotContains(t, events[0].Note, firstRate.ID)
+	var queue model.PlatformChannelCostReconciliation
+	require.NoError(t, model.DB.First(&queue, "relay_job_id = ?", job.ID).Error)
+	assert.Equal(t, model.PlatformCostReconciliationCompleted, queue.State)
+}
+
 func TestStagingProviderOutcomeUsesStagingReadinessInsteadOfProductionApproval(t *testing.T) {
 	preparePlatformProviderMonitorCostServiceTest(t)
+	setPlatformProviderRuntimeTestEnvironment(t)
 	t.Setenv("RELAY_COMPAT_ENVIRONMENT", "staging")
+	t.Setenv("RELAY_PROVIDER_ALERT_WEBHOOK_URL", "https://8.8.8.8/relay/provider")
+	t.Setenv("RELAY_PROVIDER_ALERT_SIGNING_SECRET", "alert-runtime-secret-0123456789abcdef")
+	t.Setenv("RELAY_PLATFORM_CHANNEL_COST_URL", "https://platform.internal/internal/channel-costs")
+	t.Setenv("RELAY_PLATFORM_INTERNAL_SERVICE_TOKEN", "platform-runtime-token-0123456789abcdef")
+	t.Setenv("RELAY_PLATFORM_CHANNEL_COST_SIGNING_SECRET", "platform-cost-signing-0123456789abcdef")
+	t.Setenv("RELAY_PLATFORM_TASK_STAGE_URL", "https://platform.internal/internal/relay/task-stages")
+	t.Setenv("RELAY_PLATFORM_OPERATIONS_SNAPSHOT_URL", "https://platform.internal/internal/relay/operations-snapshots")
+	t.Setenv("RELAY_TELEMETRY_SIGNING_SECRET", "platform-telemetry-signing-0123456789abcdef")
 	route := createPlatformProviderServiceRoute(t, "runtime-cost-staging-route", 9303)
 	require.NoError(t, model.DB.Model(&model.PlatformGenerationProviderRoute{}).
 		Where("id = ?", route.ID).
@@ -474,9 +640,21 @@ func createPlatformChannelCostRuntimeFixture(
 	durationSeconds int,
 	outputCount int,
 ) (model.PlatformGenerationJob, model.PlatformProviderTerminalOutcome, string) {
+	return createPlatformChannelCostRuntimeFixtureForScope(
+		t, route, durationSeconds, outputCount, "company",
+	)
+}
+
+func createPlatformChannelCostRuntimeFixtureForScope(
+	t *testing.T,
+	route model.PlatformGenerationProviderRoute,
+	durationSeconds int,
+	outputCount int,
+	billingScope string,
+) (model.PlatformGenerationJob, model.PlatformProviderTerminalOutcome, string) {
 	t.Helper()
 	serviceTenantID := uuid.NewString()
-	companyID := uuid.NewString()
+	scopeID := uuid.NewString()
 	taskID := uuid.NewString()
 	request := dto.NewPlatformGenerationRequest()
 	request.ClientReferenceID = &taskID
@@ -487,7 +665,14 @@ func createPlatformChannelCostRuntimeFixture(
 	request.Output.DurationSeconds = durationSeconds
 	request.Output.Resolution = "720p"
 	request.Output.Count = outputCount
-	request.Metadata["platform_company_id"] = companyID
+	request.Metadata["platform_billing_scope"] = billingScope
+	request.Metadata["platform_billing_scope_id"] = scopeID
+	if billingScope == "company" {
+		request.Metadata["platform_company_id"] = scopeID
+	} else {
+		require.Equal(t, "personal", billingScope)
+		request.Metadata["platform_personal_workspace_id"] = scopeID
+	}
 	request.Metadata["platform_task_id"] = taskID
 	requestJSON, err := common.Marshal(request)
 	require.NoError(t, err)
@@ -524,7 +709,7 @@ func createPlatformChannelCostRuntimeFixture(
 	created, err := model.CreatePlatformProviderTerminalOutcome(&outcome)
 	require.NoError(t, err)
 	require.True(t, created)
-	return job, outcome, companyID
+	return job, outcome, scopeID
 }
 
 func TestPlatformProviderCostLinkageAcceptsSignedPlatformCompanyMetadata(t *testing.T) {
@@ -534,27 +719,66 @@ func TestPlatformProviderCostLinkageAcceptsSignedPlatformCompanyMetadata(t *test
 	request := dto.NewPlatformGenerationRequest()
 	request.ClientReferenceID = &taskID
 	request.Metadata["platform_company_id"] = companyID
+	request.Metadata["platform_billing_scope"] = "company"
+	request.Metadata["platform_billing_scope_id"] = companyID
 	request.Metadata["platform_task_id"] = taskID
 	job := model.PlatformGenerationJob{
 		TenantID:          serviceTenantID,
 		ClientReferenceID: &taskID,
 	}
 
-	linkedCompanyID, linkedTaskID, err := platformProviderCostLinkage(job, request)
+	linkedCompanyID, linkedPersonalWorkspaceID, linkedTaskID, err := platformProviderCostLinkage(job, request)
 	require.NoError(t, err)
 	assert.Equal(t, companyID, linkedCompanyID)
+	assert.Empty(t, linkedPersonalWorkspaceID)
 	assert.NotEqual(t, job.TenantID, linkedCompanyID)
 	assert.Equal(t, taskID, linkedTaskID)
 
+	delete(request.Metadata, "platform_billing_scope")
+	delete(request.Metadata, "platform_billing_scope_id")
+	_, _, _, err = platformProviderCostLinkage(job, request)
+	require.Error(t, err, "company Platform linkage must require both billing scope markers")
+	request.Metadata["platform_billing_scope"] = "company"
+	request.Metadata["platform_billing_scope_id"] = companyID
+
 	delete(request.Metadata, "platform_company_id")
-	_, _, err = platformProviderCostLinkage(job, request)
+	_, _, _, err = platformProviderCostLinkage(job, request)
 	require.Error(t, err, "partial Platform linkage must fail closed")
 
 	delete(request.Metadata, "platform_task_id")
-	linkedCompanyID, linkedTaskID, err = platformProviderCostLinkage(job, request)
+	delete(request.Metadata, "platform_billing_scope")
+	delete(request.Metadata, "platform_billing_scope_id")
+	linkedCompanyID, linkedPersonalWorkspaceID, linkedTaskID, err = platformProviderCostLinkage(job, request)
 	require.NoError(t, err, "non-Platform callers may carry an unrelated client reference without fabricated Platform linkage")
 	assert.Empty(t, linkedCompanyID)
+	assert.Empty(t, linkedPersonalWorkspaceID)
 	assert.Empty(t, linkedTaskID)
+
+	personalWorkspaceID := uuid.NewString()
+	request.Metadata["platform_task_id"] = taskID
+	request.Metadata["platform_personal_workspace_id"] = personalWorkspaceID
+	request.Metadata["platform_billing_scope"] = "personal"
+	request.Metadata["platform_billing_scope_id"] = personalWorkspaceID
+	linkedCompanyID, linkedPersonalWorkspaceID, linkedTaskID, err = platformProviderCostLinkage(job, request)
+	require.NoError(t, err)
+	assert.Empty(t, linkedCompanyID)
+	assert.Equal(t, personalWorkspaceID, linkedPersonalWorkspaceID)
+	assert.Equal(t, taskID, linkedTaskID)
+
+	delete(request.Metadata, "platform_billing_scope")
+	delete(request.Metadata, "platform_billing_scope_id")
+	_, _, _, err = platformProviderCostLinkage(job, request)
+	require.Error(t, err, "personal Platform linkage must require both billing scope markers")
+	request.Metadata["platform_billing_scope"] = "personal"
+	request.Metadata["platform_billing_scope_id"] = personalWorkspaceID
+
+	request.Metadata["platform_company_id"] = companyID
+	_, _, _, err = platformProviderCostLinkage(job, request)
+	require.Error(t, err, "a task cannot carry company and personal billing scopes")
+	delete(request.Metadata, "platform_company_id")
+	request.Metadata["platform_billing_scope_id"] = companyID
+	_, _, _, err = platformProviderCostLinkage(job, request)
+	require.Error(t, err, "scope marker and personal workspace id must agree")
 }
 
 func TestProviderAlertDeliveryIsSignedSecretFreeAndDoesNotFollowRedirect(t *testing.T) {

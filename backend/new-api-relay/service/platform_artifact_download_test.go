@@ -5,6 +5,8 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -72,6 +74,36 @@ func artifactTestDownloader(
 		},
 	)
 	require.NoError(t, err)
+	return downloader, sourceURL, &dialed
+}
+
+func artifactTLSTestDownloader(
+	t *testing.T,
+	server *httptest.Server,
+	config PlatformArtifactDownloadConfig,
+	addresses []net.IPAddr,
+) (*PlatformArtifactDownloader, string, *[]string) {
+	t.Helper()
+	serverURL, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	require.NotNil(t, server.Certificate())
+	require.NotEmpty(t, server.Certificate().DNSNames)
+	host := server.Certificate().DNSNames[0]
+	sourceURL := "https://" + net.JoinHostPort(host, serverURL.Port()) + "/artifact"
+	dialed := make([]string, 0, 1)
+	downloader, err := newPlatformArtifactDownloader(
+		config,
+		artifactStaticResolver{host: addresses},
+		func(ctx context.Context, network string, address string) (net.Conn, error) {
+			dialed = append(dialed, address)
+			dialer := &net.Dialer{}
+			return dialer.DialContext(ctx, network, server.Listener.Addr().String())
+		},
+	)
+	require.NoError(t, err)
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	downloader.tlsConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
 	return downloader, sourceURL, &dialed
 }
 
@@ -147,6 +179,36 @@ func platformArtifactImageFixture(t *testing.T, contentType string) []byte {
 	return payload.Bytes()
 }
 
+func platformArtifactPNGDimensionsFixture(t *testing.T, width int, height int) []byte {
+	t.Helper()
+	picture := image.NewGray(image.Rect(0, 0, width, height))
+	var payload bytes.Buffer
+	require.NoError(t, png.Encode(&payload, picture))
+	return payload.Bytes()
+}
+
+func platformArtifactCorruptPNGChunk(t *testing.T, payload []byte, chunkType string, corruptData bool) []byte {
+	t.Helper()
+	corrupted := append([]byte(nil), payload...)
+	for offset := 8; offset+12 <= len(corrupted); {
+		chunkLength := int(binary.BigEndian.Uint32(corrupted[offset : offset+4]))
+		chunkEnd := offset + 12 + chunkLength
+		require.LessOrEqual(t, chunkEnd, len(corrupted))
+		if string(corrupted[offset+4:offset+8]) == chunkType {
+			if corruptData {
+				require.Greater(t, chunkLength, 0)
+				corrupted[offset+8] ^= 0xff
+			} else {
+				corrupted[chunkEnd-1] ^= 0xff
+			}
+			return corrupted
+		}
+		offset = chunkEnd
+	}
+	t.Fatalf("PNG chunk %q was not found", chunkType)
+	return nil
+}
+
 func platformArtifactValidWebPFixture(t *testing.T) []byte {
 	t.Helper()
 	payload, err := base64.StdEncoding.DecodeString("UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=")
@@ -164,6 +226,15 @@ func artifactTestDownloadPayload(
 	payload []byte,
 	contentType string,
 ) (*PlatformDownloadedArtifact, error) {
+	return artifactTestDownloadPayloadWithExpectation(t, payload, contentType, PlatformArtifactDownloadExpectation{})
+}
+
+func artifactTestDownloadPayloadWithExpectation(
+	t *testing.T,
+	payload []byte,
+	contentType string,
+	expectation PlatformArtifactDownloadExpectation,
+) (*PlatformDownloadedArtifact, error) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", contentType)
@@ -176,7 +247,7 @@ func artifactTestDownloadPayload(
 		PlatformArtifactDownloadConfig{MaxBytes: int64(len(payload)) + 1, Timeout: 5 * time.Second},
 		[]net.IPAddr{{IP: net.ParseIP("8.8.8.8")}},
 	)
-	return downloader.Download(context.Background(), sourceURL, PlatformArtifactDownloadExpectation{})
+	return downloader.Download(context.Background(), sourceURL, expectation)
 }
 
 func TestPlatformArtifactDownloaderPinsPublicDNSAndStreamsIntegrity(t *testing.T) {
@@ -234,6 +305,115 @@ func TestPlatformArtifactDownloaderAcceptsStructurallyValidMedia(t *testing.T) {
 			assert.Equal(t, int64(len(test.payload)), artifact.SizeBytes)
 		})
 	}
+}
+
+func TestPlatformArtifactDownloaderEnforcesExactSeedreamPNGDimensions(t *testing.T) {
+	expectation := PlatformArtifactDownloadExpectation{
+		ExpectedContentType: "image/png",
+		ExpectedImageWidth:  2048,
+		ExpectedImageHeight: 2048,
+	}
+	exact := platformArtifactPNGDimensionsFixture(t, 2048, 2048)
+	artifact, err := artifactTestDownloadPayloadWithExpectation(t, exact, "image/png", expectation)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, artifact.Close()) })
+	require.Equal(t, "image/png", artifact.ContentType)
+
+	tests := []struct {
+		name        string
+		contentType string
+		payload     []byte
+	}{
+		{name: "one pixel square", contentType: "image/png", payload: platformArtifactPNGDimensionsFixture(t, 1, 1)},
+		{name: "1024 square", contentType: "image/png", payload: platformArtifactPNGDimensionsFixture(t, 1024, 1024)},
+		{name: "non square", contentType: "image/png", payload: platformArtifactPNGDimensionsFixture(t, 2048, 1024)},
+		{name: "wrong MIME", contentType: "image/jpeg", payload: platformArtifactImageFixture(t, "image/jpeg")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			artifact, err := artifactTestDownloadPayloadWithExpectation(t, test.payload, test.contentType, expectation)
+			require.ErrorIs(t, err, ErrPlatformArtifactIntegrity)
+			require.Nil(t, artifact)
+		})
+	}
+}
+
+func TestTransferPlatformProviderArtifactRejectsSeedreamDimensionsBeforePut(t *testing.T) {
+	transfer := func(t *testing.T, payload []byte, contentType string) (*fencingPlatformArtifactStore, error) {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.Header().Set("Content-Type", contentType)
+			_, _ = response.Write(payload)
+		}))
+		t.Cleanup(server.Close)
+		downloader, sourceURL, _ := artifactTestDownloader(
+			t,
+			server,
+			PlatformArtifactDownloadConfig{MaxBytes: int64(len(payload)) + 1, Timeout: 5 * time.Second},
+			[]net.IPAddr{{IP: net.ParseIP("8.8.8.8")}},
+		)
+		store := &fencingPlatformArtifactStore{}
+		_, err := TransferPlatformProviderArtifact(context.Background(), downloader, store, PlatformArtifactTransferRequest{
+			SourceURL:           sourceURL,
+			TenantID:            "51bdf7c4-93a6-4b7c-a4a1-03f616a10f30",
+			JobID:               "58775bb2-b6d2-4ad3-ab03-2f9d10854ba1",
+			AssetID:             "6b4f72d2-4d64-4ef9-adf2-7ead3e125b4f",
+			MediaType:           "image",
+			ExpectedContentType: "image/png",
+			ExpectedImageWidth:  2048,
+			ExpectedImageHeight: 2048,
+		})
+		return store, err
+	}
+
+	exactPNG := platformArtifactPNGDimensionsFixture(t, 2048, 2048)
+	t.Run("exact PNG reaches Put", func(t *testing.T) {
+		store, err := transfer(t, exactPNG, "image/png")
+		require.NoError(t, err)
+		require.NotEmpty(t, store.putObjectKey)
+	})
+
+	for name, fixture := range map[string]struct {
+		payload     []byte
+		contentType string
+	}{
+		"1024 square":  {payload: platformArtifactPNGDimensionsFixture(t, 1024, 1024), contentType: "image/png"},
+		"non square":   {payload: platformArtifactPNGDimensionsFixture(t, 2048, 1024), contentType: "image/png"},
+		"wrong MIME":   {payload: platformArtifactImageFixture(t, "image/jpeg"), contentType: "image/jpeg"},
+		"corrupt IDAT": {payload: platformArtifactCorruptPNGChunk(t, exactPNG, "IDAT", true), contentType: "image/png"},
+		"bad CRC":      {payload: platformArtifactCorruptPNGChunk(t, exactPNG, "IDAT", false), contentType: "image/png"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, err := transfer(t, fixture.payload, fixture.contentType)
+			require.ErrorIs(t, err, ErrPlatformArtifactIntegrity)
+			require.Empty(t, store.putObjectKey, "unverified image bytes must never reach durable Put")
+		})
+	}
+
+	t.Run("video transfer keeps zero image expectations", func(t *testing.T) {
+		payload := platformArtifactValidMP4Fixture(t)
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.Header().Set("Content-Type", "video/mp4")
+			_, _ = response.Write(payload)
+		}))
+		defer server.Close()
+		downloader, sourceURL, _ := artifactTestDownloader(
+			t,
+			server,
+			PlatformArtifactDownloadConfig{MaxBytes: int64(len(payload)) + 1, Timeout: 5 * time.Second},
+			[]net.IPAddr{{IP: net.ParseIP("8.8.8.8")}},
+		)
+		store := &fencingPlatformArtifactStore{}
+		_, err := TransferPlatformProviderArtifact(context.Background(), downloader, store, PlatformArtifactTransferRequest{
+			SourceURL: sourceURL,
+			TenantID:  "51bdf7c4-93a6-4b7c-a4a1-03f616a10f30",
+			JobID:     "58775bb2-b6d2-4ad3-ab03-2f9d10854ba1",
+			AssetID:   "6b4f72d2-4d64-4ef9-adf2-7ead3e125b4f",
+			MediaType: "video",
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, store.putObjectKey)
+	})
 }
 
 func TestPlatformArtifactDownloaderRejectsSpoofedOrTruncatedMedia(t *testing.T) {

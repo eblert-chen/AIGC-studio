@@ -40,8 +40,9 @@ import {
   Priority,
   StatusPill,
 } from "./operationsShared.jsx";
+import { relayChannelTestErrorLabel } from "../relayChannelOperations.js";
 
-function Drawer({ title, detail, onClose, children, footer, wide = false }) {
+function Drawer({ title, detail, onClose, children, footer, wide = false, tone = "evidence" }) {
   const dialogRef = useRef(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -85,7 +86,7 @@ function Drawer({ title, detail, onClose, children, footer, wide = false }) {
   }, []);
   return (
     <div className="ops-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section ref={dialogRef} className={cx("ops-drawer", wide && "is-wide")} role="dialog" aria-modal="true" aria-label={title} tabIndex="-1">
+      <section ref={dialogRef} className={cx("ops-drawer", wide && "is-wide", `is-${tone}`)} role="dialog" aria-modal="true" aria-label={title} tabIndex="-1">
         <header><div><h2>{title}</h2>{detail ? <p>{detail}</p> : null}</div><button className="ops-drawer-close" data-icon-only="true" type="button" onClick={onClose} aria-label="关闭"><X size={19} /></button></header>
         <div className="ops-drawer-body">{children}</div>
         {footer ? <footer>{footer}</footer> : null}
@@ -96,6 +97,7 @@ function Drawer({ title, detail, onClose, children, footer, wide = false }) {
 
 export function RelayChannelDrawer({
   channel,
+  routeOptions = [],
   intent,
   targetStatus,
   operationId,
@@ -111,12 +113,30 @@ export function RelayChannelDrawer({
 }) {
   const [reason, setReason] = useState("");
   const [approved, setApproved] = useState(false);
+  const [selectedRouteKey, setSelectedRouteKey] = useState("");
+  const [selectedMode, setSelectedMode] = useState("");
+  const exactRouteOptions = (Array.isArray(routeOptions) ? routeOptions : [])
+    .filter((route) => String(route.channelId) === String(channel.id))
+    .map((route) => ({
+      ...route,
+      selectionKey: `${encodeURIComponent(route.publicModelId)}|${encodeURIComponent(route.routeId)}`,
+    }));
+  const selectedRoute = exactRouteOptions.find(
+    (route) => route.selectionKey === selectedRouteKey,
+  ) || null;
+  const routeTestModes = Array.isArray(selectedRoute?.requiredTestModes)
+    ? selectedRoute.requiredTestModes
+    : [];
+  const effectiveMode = routeTestModes.includes(selectedMode)
+    ? selectedMode
+    : routeTestModes.find((mode) => !selectedRoute?.freshTestModes?.includes(mode)) || routeTestModes[0] || "";
   const isOperation = intent === "test" || intent === "status";
   const state = RELAY_CHANNEL_STATUS_META[channel.status] || RELAY_CHANNEL_STATUS_META.unavailable;
   const ready = canManage
     && isOperation
     && reason.trim().length >= 3
     && reason.trim().length <= 240
+    && (intent !== "test" || selectedRoute)
     && approved
     && !receipt
     && !requiresReadback;
@@ -129,13 +149,16 @@ export function RelayChannelDrawer({
       approved,
       expectedRevision: channel.revision,
       targetStatus,
+      publicModelId: selectedRoute?.publicModelId || "",
+      routeId: selectedRoute?.routeId || "",
+      mode: effectiveMode,
     },
   });
   const resultLabel = receipt?.kind === "test"
     ? receipt.result?.success
       ? `测试成功，${formatInteger(receipt.result.responseTimeMs)} ms`
       : receipt.result
-        ? `测试失败，${receipt.result.errorCode || "CHANNEL_TEST_FAILED"}`
+        ? `测试失败：${relayChannelTestErrorLabel(receipt.result.errorCode)}`
         : "等待 Relay 完成测试"
     : receipt?.kind === "status"
       ? receipt.result?.errorCode === "CHANNEL_REVISION_CONFLICT"
@@ -150,6 +173,7 @@ export function RelayChannelDrawer({
       detail={`channel #${channel.id} · ${relayChannelTypeLabel(channel)}`}
       onClose={onClose}
       wide
+      tone="guarded"
       footer={(
         <>
           <button className="ops-secondary-button" type="button" onClick={onClose}>{requiresReadback ? "结果核对前不可关闭" : "关闭"}</button>
@@ -169,12 +193,12 @@ export function RelayChannelDrawer({
         <span><small>模型数量</small><strong>{channel.modelCount}</strong></span>
         <span><small>测试模型</small><strong>{channel.testModel || "未指定"}</strong></span>
         <span><small>通用连通测试</small><strong>{channel.testSupported ? "支持" : "不支持，需 staging canary"}</strong></span>
-        <span><small>权重 / 优先级</small><strong>{channel.weight ?? "—"} / {channel.priority ?? "—"}</strong></span>
+        <span><small>权重 / 优先级</small><strong>{channel.weight ?? "未提供"} / {channel.priority ?? "未提供"}</strong></span>
         <span><small>自动禁用</small><strong>{channel.autoBan ? "开启" : "关闭"}</strong></span>
         <span><small>标签</small><strong>{channel.tag || "无"}</strong></span>
         <span><small>创建时间</small><strong>{formatDateTime(channel.createdAt)}</strong></span>
         <span><small>上次测试</small><strong>{formatDateTime(channel.lastTestedAt)}</strong></span>
-        <span><small>响应延迟</small><strong>{channel.responseTimeMs == null ? "—" : `${formatInteger(channel.responseTimeMs)} ms`}</strong></span>
+        <span><small>响应延迟</small><strong>{channel.responseTimeMs == null ? "待核验" : `${formatInteger(channel.responseTimeMs)} ms`}</strong></span>
         <span><small>路由数量</small><strong>Platform 当前未提供</strong></span>
       </div>
       <div className="ops-drawer-section">
@@ -191,6 +215,64 @@ export function RelayChannelDrawer({
         canManage ? (
           <>
             <div className="ops-drawer-section ops-operation-identity"><span className="ops-field-label">稳定 operation_id</span><code>{operationId}</code></div>
+            {intent === "test" ? (
+              <div className="ops-drawer-section ops-exact-route-test">
+                <div className="ops-section-heading">
+                  <div>
+                    <span className="ops-field-label">精确发布路由</span>
+                    <p>从 Relay 当前签名发布中选择精确路由。Platform 不接受手填 route_id，也不会把渠道密钥、凭据指纹或上游地址发送到浏览器。</p>
+                  </div>
+                </div>
+                {exactRouteOptions.length ? (
+                  <>
+                    <label className="ops-form-field">
+                      <span>Relay 发布路由 <b>必选</b></span>
+                      <select value={selectedRouteKey} onChange={(event) => {
+                        const nextKey = event.target.value;
+                        const nextRoute = exactRouteOptions.find((route) => route.selectionKey === nextKey);
+                        setSelectedRouteKey(nextKey);
+                        setSelectedMode(
+                          nextRoute?.requiredTestModes?.find((mode) => !nextRoute?.freshTestModes?.includes(mode))
+                          || nextRoute?.requiredTestModes?.[0]
+                          || "",
+                        );
+                      }} disabled={busy || requiresReadback}>
+                        <option value="">选择 public model 与精确 route</option>
+                        {exactRouteOptions.map((route) => (
+                          <option key={route.selectionKey} value={route.selectionKey}>
+                            {route.publicModelId} → {route.upstreamModel} · {route.routeId}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {selectedRoute && routeTestModes.length ? (
+                      <label className="ops-form-field">
+                        <span>验收模式 <b>必选</b></span>
+                        <select value={effectiveMode} onChange={(event) => setSelectedMode(event.target.value)} disabled={busy || requiresReadback}>
+                          {routeTestModes.map((mode) => (
+                            <option key={mode} value={mode}>
+                              {mode} · {selectedRoute.freshTestModes?.includes(mode) ? "已有新鲜证据" : "需要真实测试"}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    {selectedRoute ? (
+                      <div className="ops-route-selection-evidence" aria-live="polite">
+                        <span><small>public model</small><strong>{selectedRoute.publicModelId}</strong></span>
+                        <span><small>route</small><strong>{selectedRoute.routeId}</strong></span>
+                        <span><small>upstream</small><strong>{selectedRoute.upstreamModel}</strong></span>
+                        <span><small>Adapter Profile</small><strong>{selectedRoute.adapterProfileId} · {selectedRoute.adapterProfileRevision}</strong></span>
+                        <span><small>当前证据</small><strong>{selectedRoute.fresh ? "测试新鲜" : selectedRoute.accepted ? "验收过但需重测" : "尚未验收"}</strong></span>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="ops-message is-error" role="alert">当前渠道没有来自 Relay 发布证据的可选路由。请先完成路由声明并刷新本页；为避免测试错误账号，页面不提供手填 route_id。</div>
+                )}
+                <div className="ops-callout is-warning"><WarningCircle size={21} /><div><strong>这不是免费连通探测</strong><span>批准后将发起一次真实低配生成，可能产生供应商费用；失败不会解锁模型发布。</span></div></div>
+              </div>
+            ) : null}
             <label className="ops-form-field"><span>操作原因 <b>必填</b></span><textarea rows="4" minLength="3" maxLength="240" value={reason} onChange={(event) => setReason(event.target.value)} disabled={busy || requiresReadback} placeholder="至少 3 个字符，说明测试或状态变更的工单依据" /></label>
             <label className="ops-approval-check"><input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} disabled={busy || requiresReadback} /><span><strong>明确批准本次操作</strong><small>我确认使用当前 revision 和上方 operation_id；网络结果不明时只做只读核对。</small></span></label>
           </>
@@ -216,12 +298,13 @@ export function ExceptionDrawer({
       title={item.title}
       detail={`${item.priority || "P3"} · ${exceptionStatusLabel(item.status)} · ${formatDateTime(item.occurredAt)}`}
       onClose={onClose}
+      tone={isRelayUnknown ? "guarded" : "action"}
       footer={<><button className="ops-secondary-button" type="button" onClick={onClose}>关闭</button>{isRelayUnknown ? <button className="ops-primary-button" type="button" onClick={onOpenRelayReconciliation}><ShieldCheck size={16} />打开人工对账列表</button> : <button className="ops-primary-button" type="button" onClick={() => onResolve(item, note)} disabled={!canResolve || busy || !note.trim()}><CheckCircle size={16} />{canResolve ? "执行安全处置" : "需按处理指引操作"}</button>}</>}
     >
       <div className="ops-drawer-section"><span className="ops-field-label">异常说明</span><p>{item.description}</p></div>
       {item.nextAction ? <div className="ops-drawer-section"><span className="ops-field-label">处理指引</span><p>{item.nextAction}</p></div> : null}
       {item.nextAction ? <div className="ops-callout"><Lightning size={20} /><div><strong>建议处置</strong><span>{item.nextAction}</span></div></div> : null}
-      <div className="ops-detail-grid"><span><small>负责人</small><strong>{item.owner || "未分派"}</strong></span><span><small>持续时间</small><strong>{item.duration || "—"}</strong></span><span><small>异常类型</small><strong>{item.kind || "—"}</strong></span><span><small>当前状态</small><strong>{exceptionStatusLabel(item.status)}</strong></span></div>
+      <div className="ops-detail-grid"><span><small>负责人</small><strong>{item.owner || "未分派"}</strong></span><span><small>持续时间</small><strong>{item.duration || "未提供"}</strong></span><span><small>异常类型</small><strong>{item.kind || "未提供"}</strong></span><span><small>当前状态</small><strong>{exceptionStatusLabel(item.status)}</strong></span></div>
       {isRelayUnknown ? <div className="ops-callout is-warning"><WarningCircle size={20} /><div><strong>异常摘要不能直接 resolve</strong><span>进入 Relay 人工对账列表并重新读取详情，核对 route、attempt 与 token fencing 证明。</span></div></div> : <label className="ops-form-field"><span>处理记录 <b>必填</b></span><textarea value={note} onChange={(event) => setNote(event.target.value)} rows="5" maxLength="500" placeholder="说明核对结果、处置动作和后续观察项" /></label>}
     </Drawer>
   );
@@ -236,31 +319,64 @@ export function RelayUnknownDrawer({
   busy = false,
   refreshing = false,
   error = "",
+  fieldErrors = {},
   requiresRefresh = false,
 }) {
   const [outcome, setOutcome] = useState("");
   const [upstreamTaskId, setUpstreamTaskId] = useState("");
+  const [synchronousResult, setSynchronousResult] = useState({
+    providerModelId: item.providerUpstreamModel || "",
+    providerResponseSha256: "",
+    artifactUrl: "",
+    providerCreatedAt: "",
+    generatedImages: "1",
+    outputTokens: "0",
+    totalTokens: "0",
+  });
   const [verificationReference, setVerificationReference] = useState("");
   const [reason, setReason] = useState("");
   const [approved, setApproved] = useState(false);
+  const synchronousImageCreated = item.mode === "text_to_image" && outcome === "created";
+  const synchronousReady = !synchronousImageCreated || (
+    synchronousResult.providerModelId.trim()
+    && /^[0-9a-f]{64}$/.test(synchronousResult.providerResponseSha256.trim())
+    && /^https:\/\//.test(synchronousResult.artifactUrl.trim())
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(synchronousResult.providerCreatedAt.trim())
+    && Number.isInteger(Number(synchronousResult.generatedImages))
+    && Number(synchronousResult.generatedImages) >= 1
+    && Number(synchronousResult.generatedImages) <= 16
+    && Number.isInteger(Number(synchronousResult.outputTokens))
+    && Number(synchronousResult.outputTokens) >= 0
+    && Number.isInteger(Number(synchronousResult.totalTokens))
+    && Number(synchronousResult.totalTokens) >= Number(synchronousResult.outputTokens)
+  );
   const ready = approved
     && ["created", "not_created"].includes(outcome)
     && verificationReference.trim()
     && reason.trim().length >= 3
-    && (outcome !== "created" || upstreamTaskId.trim());
+    && (outcome !== "created" || synchronousImageCreated || upstreamTaskId.trim())
+    && synchronousReady;
   const submit = () => onResolve(item, {
     outcome,
     upstreamTaskId,
     verificationReference,
     reason,
     approved,
+    synchronousResult,
   });
+  const updateSynchronousResult = (field) => (event) => {
+    setSynchronousResult((current) => ({ ...current, [field]: event.target.value }));
+  };
+  const fieldError = (field) => fieldErrors[field]
+    ? <small className="ops-field-error" role="alert">{fieldErrors[field]}</small>
+    : null;
   return (
     <Drawer
       title="核实 Relay 未知提交"
       detail={`${compactIdentifier(item.jobId, 12, 8)} · ${formatDateTime(item.unknownAt)}`}
       onClose={onClose}
       wide
+      tone="guarded"
       footer={(
         <>
           <button className="ops-secondary-button" type="button" onClick={onClose}>关闭</button>
@@ -273,11 +389,11 @@ export function RelayUnknownDrawer({
       {requiresRefresh ? <div className="ops-callout is-warning"><WarningCircle size={21} /><div><strong>已锁定再次提交</strong><span>上一次 resolve 的结果需要重新确认。点“刷新详情”只会读取 pending 详情或 Relay receipt；页面不会再次 POST resolve。</span></div></div> : null}
       <div className="ops-detail-grid ops-reconciliation-identity">
         <span><small>Relay job ID</small><strong>{item.jobId}</strong></span>
-        <span><small>业务引用</small><strong>{item.clientReferenceId || "—"}</strong></span>
+        <span><small>业务引用</small><strong>{item.clientReferenceId || "未提供"}</strong></span>
         <span><small>模型 / 模式</small><strong>{item.model} · {GENERATION_MODE_LABELS[item.mode] || item.mode}</strong></span>
-        <span><small>错误证据</small><strong>{item.errorCode || "—"} · {item.errorMessage || "—"}</strong></span>
+        <span><small>错误证据</small><strong>{item.errorCode || "未提供"} · {item.errorMessage || "未提供"}</strong></span>
         <span><small>固定 Provider</small><strong>{item.providerName} · {CHANNEL_CLASS_LABELS[item.providerChannelClass] || item.providerChannelClass}</strong></span>
-        <span><small>上游模型</small><strong>{item.providerUpstreamModel || "—"}</strong></span>
+        <span><small>上游模型</small><strong>{item.providerUpstreamModel || "未提供"}</strong></span>
         <span><small>固定 route</small><strong>{item.providerRouteId} · {item.providerRouteKey}</strong></span>
         <span><small>固定账号</small><strong>{item.providerAccountId} · channel {item.providerChannelId} / key {item.providerKeyIndex}</strong></span>
         <span><small>提交 attempt fencing</small><strong>{item.providerSubmissionAttempt}</strong></span>
@@ -295,12 +411,33 @@ export function RelayUnknownDrawer({
         <>
           <fieldset className="ops-state-options ops-reconciliation-outcomes">
             <legend>Provider 核实结果 <b>必选</b></legend>
-            <label className={outcome === "created" ? "is-active" : ""}><input type="radio" name="relay-unknown-outcome" value="created" checked={outcome === "created"} onChange={() => setOutcome("created")} /><span><strong>已创建</strong><small>填写真实上游任务 ID，继续原路由跟踪</small></span></label>
+            <label className={outcome === "created" ? "is-active" : ""}><input type="radio" name="relay-unknown-outcome" value="created" checked={outcome === "created"} onChange={() => setOutcome("created")} /><span><strong>已创建</strong><small>{item.mode === "text_to_image" ? "补齐同步图片结果证据，继续原路由恢复" : "填写真实上游任务 ID，继续原路由跟踪"}</small></span></label>
             <label className={outcome === "not_created" ? "is-active" : ""}><input type="radio" name="relay-unknown-outcome" value="not_created" checked={outcome === "not_created"} onChange={() => { setOutcome("not_created"); setUpstreamTaskId(""); }} /><span><strong>未创建</strong><small>确认 Provider 侧没有对应任务，结束本次提交</small></span></label>
           </fieldset>
-          {outcome === "created" ? <label className="ops-form-field"><span>Provider 上游任务 ID <b>必填</b></span><input value={upstreamTaskId} onChange={(event) => setUpstreamTaskId(event.target.value)} maxLength="191" autoComplete="off" placeholder="从 Provider 控制台复制，不要填写本平台任务 ID" /></label> : null}
-          <label className="ops-form-field"><span>核实凭证 <b>必填</b></span><input value={verificationReference} onChange={(event) => setVerificationReference(event.target.value)} maxLength="191" autoComplete="off" placeholder="工单号、Provider 查询记录或内部事件编号" /></label>
-          <label className="ops-form-field"><span>审批原因 <b>必填</b></span><textarea value={reason} onChange={(event) => setReason(event.target.value)} rows="4" maxLength="240" placeholder="至少 3 个字符；说明核实时间、控制台结果与审批依据" /></label>
+          {outcome === "created" && !synchronousImageCreated ? <label className="ops-form-field"><span>Provider 上游任务 ID <b>必填</b></span><input value={upstreamTaskId} onChange={(event) => setUpstreamTaskId(event.target.value)} maxLength="191" autoComplete="off" aria-invalid={Boolean(fieldErrors.upstream_task_id)} placeholder="从 Provider 控制台复制，不要填写本平台任务 ID" />{fieldError("upstream_task_id")}</label> : null}
+          {synchronousImageCreated ? (
+            <div className="ops-drawer-section ops-synchronous-evidence">
+              <div className="ops-callout is-warning">
+                <WarningCircle size={21} />
+                <div><strong>同步图片结果需要补齐一次性结果证据</strong><span>临时 Artifact URL 提交后只供 Platform → Relay 内部恢复结果使用；审计和结果回执只保留 URL 的 SHA-256，不会回显原 URL。不要把 URL 复制到日志、截图或工单。</span></div>
+              </div>
+              <div className="ops-form-grid">
+                <label className="ops-form-field"><span>Provider 模型 <b>必填</b></span><input value={synchronousResult.providerModelId} onChange={updateSynchronousResult("providerModelId")} maxLength="128" autoComplete="off" aria-invalid={Boolean(fieldErrors.provider_model_id)} placeholder="例如 doubao-seedream-5-0-260128" />{fieldError("provider_model_id")}</label>
+                <label className="ops-form-field"><span>Provider 响应 SHA-256 <b>必填</b></span><input value={synchronousResult.providerResponseSha256} onChange={updateSynchronousResult("providerResponseSha256")} maxLength="64" autoComplete="off" spellCheck="false" aria-invalid={Boolean(fieldErrors.provider_response_sha256)} placeholder="64 位小写十六进制；系统据此绑定任务 ID" />{fieldError("provider_response_sha256")}</label>
+              </div>
+              <label className="ops-form-field"><span>临时 Artifact URL <b>敏感 · 必填</b></span><input type="url" value={synchronousResult.artifactUrl} onChange={updateSynchronousResult("artifactUrl")} maxLength="8192" autoComplete="off" spellCheck="false" aria-invalid={Boolean(fieldErrors.artifact_url)} placeholder="https://provider.example/result.png?..." />{fieldError("artifact_url")}</label>
+              <div className="ops-form-grid">
+                <label className="ops-form-field"><span>Provider 创建时间（UTC） <b>必填</b></span><input value={synchronousResult.providerCreatedAt} onChange={updateSynchronousResult("providerCreatedAt")} autoComplete="off" spellCheck="false" aria-invalid={Boolean(fieldErrors.provider_created_at)} placeholder="2026-08-28T01:02:03Z" />{fieldError("provider_created_at")}</label>
+                <label className="ops-form-field"><span>生成图片数 <b>必填</b></span><input type="number" min="1" max="16" step="1" value={synchronousResult.generatedImages} onChange={updateSynchronousResult("generatedImages")} aria-invalid={Boolean(fieldErrors.generated_images)} />{fieldError("generated_images")}</label>
+              </div>
+              <div className="ops-form-grid">
+                <label className="ops-form-field"><span>输出 token 数 <b>必填</b></span><input type="number" min="0" step="1" value={synchronousResult.outputTokens} onChange={updateSynchronousResult("outputTokens")} aria-invalid={Boolean(fieldErrors.output_tokens)} />{fieldError("output_tokens")}</label>
+                <label className="ops-form-field"><span>总 token 数 <b>必填</b></span><input type="number" min="0" step="1" value={synchronousResult.totalTokens} onChange={updateSynchronousResult("totalTokens")} aria-invalid={Boolean(fieldErrors.total_tokens)} />{fieldError("total_tokens")}</label>
+              </div>
+            </div>
+          ) : null}
+          <label className="ops-form-field"><span>核实凭证 <b>必填</b></span><input value={verificationReference} onChange={(event) => setVerificationReference(event.target.value)} maxLength="191" autoComplete="off" aria-invalid={Boolean(fieldErrors.verification_reference)} placeholder="工单号、Provider 查询记录或内部事件编号" />{fieldError("verification_reference")}</label>
+          <label className="ops-form-field"><span>审批原因 <b>必填</b></span><textarea value={reason} onChange={(event) => setReason(event.target.value)} rows="4" maxLength="240" aria-invalid={Boolean(fieldErrors.reason)} placeholder="至少 3 个字符；说明核实时间、控制台结果与审批依据" />{fieldError("reason")}</label>
           <label className="ops-approval-check"><input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} /><span><strong>明确审批确认</strong><small>我已在 Provider 控制台核实，并理解此次动作不会创建新的 Provider 请求，也不能跨渠道重试。</small></span></label>
         </>
       ) : <div className="ops-callout"><LockKey size={21} /><div><strong>当前为只读核实</strong><span>需要 platform.relay_health.manage 权限才能作出明确审批并提交 resolve。</span></div></div>}
@@ -319,6 +456,7 @@ export function RelayCallbackDeadLetterDrawer({ item, onClose, onRedrive, canMan
       detail={`${compactIdentifier(item.eventId, 12, 8)} · ${formatDateTime(item.deadLetteredAt)}`}
       onClose={onClose}
       wide
+      tone="guarded"
       footer={<><button className="ops-secondary-button" type="button" onClick={onClose}>关闭并刷新队列</button>{canManage ? <button className="ops-primary-button" type="button" onClick={() => onRedrive(item, { actor, reason, approved })} disabled={busy || requiresReadback || !ready}><ArrowClockwise size={16} />{requiresReadback ? "等待只读核对" : "批准重新投递"}</button> : null}</>}
     >
       {error ? <div className="ops-message is-error" role="alert">{error}</div> : null}
@@ -343,7 +481,10 @@ export function RelayCallbackDeadLetterDrawer({ item, onClose, onRedrive, canMan
 
 export function EntitlementDrawer({ company, product, grant, onClose, onSave, busy, readOnly = false }) {
   const [state, setState] = useState(grant?.state === "disabled" ? "disabled" : "enabled");
-  const [priceCents, setPriceCents] = useState(grant?.priceCents ?? "");
+  const pointBilling = company?.billingUnit === "POINT" && Number(company?.billingVersion) === 2;
+  const [priceAmount, setPriceAmount] = useState(
+    pointBilling ? (grant?.pricePoints ?? "") : (grant?.priceCents ?? ""),
+  );
   const [quota, setQuota] = useState(grant?.quota ?? "");
   const [concurrency, setConcurrency] = useState(grant?.concurrency ?? "");
   const [effectiveAt, setEffectiveAt] = useState(grant?.effectiveAt || "");
@@ -352,13 +493,13 @@ export function EntitlementDrawer({ company, product, grant, onClose, onSave, bu
   const [reason, setReason] = useState("");
   const submit = () => {
     if (readOnly) return;
-    onSave({ company, product, grant: { ...grant, companyId: company.id, productId: product.id, state, priceCents: priceCents === "" ? null : Number(priceCents), quota: quota === "" ? null : Number(quota), concurrency: concurrency === "" ? null : Number(concurrency), effectiveAt, expiresAt, capabilityLimit }, reason });
+    onSave({ company, product, grant: { ...grant, companyId: company.id, productId: product.id, state, priceAmount: priceAmount === "" ? null : Number(priceAmount), billingUnit: company.billingUnit, billingVersion: company.billingVersion, quota: quota === "" ? null : Number(quota), concurrency: concurrency === "" ? null : Number(concurrency), effectiveAt, expiresAt, capabilityLimit }, reason });
   };
   return (
     <Drawer title={`${company.name} · ${product.name}`} detail={`${KIND_LABELS[product.kind] || product.kind}权益${readOnly ? "详情" : "配置"}`} onClose={onClose} footer={readOnly ? <button className="ops-secondary-button" type="button" onClick={onClose}>关闭</button> : <><button className="ops-secondary-button" type="button" onClick={onClose}>取消</button><button className="ops-primary-button" type="button" onClick={submit} disabled={busy || !reason.trim()}><Check size={16} />保存变更</button></>}>
       {readOnly ? <div className="ops-callout"><Eye size={20} /><div><strong>只读详情</strong><span>当前权限允许核对价格、配额、并发与有效期，不允许提交任何变更。</span></div></div> : null}
       <fieldset className="ops-state-options"><legend>授权状态</legend>{["enabled", "disabled"].map((value) => <label className={state === value ? "is-active" : ""} key={value}><input type="radio" name="state" value={value} checked={state === value} onChange={() => setState(value)} disabled={readOnly} /><span>{entitlementStateLabel(value)}</span></label>)}</fieldset>
-      {product.kind === "model" ? <label className="ops-form-field"><span>企业单价（分）</span><input type="number" min="1" value={priceCents} onChange={(event) => setPriceCents(event.target.value)} placeholder="只填写模型当前计费方式的单价" disabled={readOnly} /></label> : null}
+      {product.kind === "model" ? <label className="ops-form-field"><span>{pointBilling ? "企业单价（积分）" : "历史企业单价（分）"}</span><input type="number" min="1" step="1" value={priceAmount} onChange={(event) => setPriceAmount(event.target.value)} placeholder="只填写模型当前计费方式的整数单价" disabled={readOnly} /></label> : null}
       <div className="ops-form-grid"><label className="ops-form-field"><span>调用额度</span><input type="number" min="0" value={quota} onChange={(event) => setQuota(event.target.value)} placeholder="留空表示不单独限制" disabled={readOnly} /></label><label className="ops-form-field"><span>并发数</span><input type="number" min="1" value={concurrency} onChange={(event) => setConcurrency(event.target.value)} placeholder="留空使用平台默认" disabled={readOnly} /></label></div>
       <div className="ops-form-grid"><label className="ops-form-field"><span>生效时间</span><input type="datetime-local" value={effectiveAt} onChange={(event) => setEffectiveAt(event.target.value)} disabled={readOnly} /></label><label className="ops-form-field"><span>到期时间</span><input type="datetime-local" min={effectiveAt || undefined} value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} disabled={readOnly} /></label></div>
       {product.kind === "model" ? <label className="ops-form-field"><span>能力限制（JSON，可选）</span><textarea rows="4" value={capabilityLimit} onChange={(event) => setCapabilityLimit(event.target.value)} placeholder={'例如 {"max_images": 4, "resolutions": ["720p"]}；只能收窄目录能力'} disabled={readOnly} /></label> : null}

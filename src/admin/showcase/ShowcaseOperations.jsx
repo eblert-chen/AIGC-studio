@@ -39,7 +39,6 @@ const EMPTY_FORM = {
   sortOrder: 0,
   file: null,
   mediaSource: "upload",
-  sourceTaskArtifactId: "",
 };
 
 function MediaPreview({ item, controls = true }) {
@@ -138,10 +137,6 @@ function ShowcaseItemDialog({
   busy,
   demoMode,
   uploadedMedia,
-  ownedArtworks,
-  ownedArtworksLoading,
-  ownedArtworksError,
-  onReloadOwnedArtworks,
   onClose,
   onSubmit,
 }) {
@@ -171,9 +166,6 @@ function ShowcaseItemDialog({
     ...current,
     mediaSource,
     file: mediaSource === "upload" ? current.file : null,
-    sourceTaskArtifactId: mediaSource === "artifact"
-      ? current.sourceTaskArtifactId
-      : "",
     mediaId: mediaSource === "existing" ? current.mediaId : "",
   }));
   const selectedUploadedMedia = (uploadedMedia || []).find((media) => (
@@ -207,8 +199,8 @@ function ShowcaseItemDialog({
     <DialogFrame
       title={item ? "编辑精选案例" : "添加精选案例"}
       description={demoMode
-        ? "演示操作只更新当前浏览器内存，不会写入 Platform；本地仅支持图片，视频从本人作品导入。"
-        : "本地仅接收 JPEG、PNG 或 WebP 图片；视频须从本人已验证作品导入。媒体由 Platform 校验并存入专用 OBS 区域。"}
+        ? "演示操作只更新当前浏览器内存，不会写入 Platform；媒体可选择本地图片或当前内容库中已上传的媒体。"
+        : "本地仅接收 JPEG、PNG 或 WebP 图片；也可复用当前内容库中已由 Platform 校验的媒体。媒体存入专用 OBS 区域。"}
       onClose={onClose}
       className="showcase-editor-dialog"
     >
@@ -245,15 +237,6 @@ function ShowcaseItemDialog({
                 <input
                   type="radio"
                   name="showcase-media-source"
-                  checked={values.mediaSource === "artifact"}
-                  onChange={() => selectMediaSource("artifact")}
-                />
-                <span>本人作品</span>
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="showcase-media-source"
                   checked={values.mediaSource === "existing"}
                   onChange={() => selectMediaSource("existing")}
                 />
@@ -269,41 +252,6 @@ function ShowcaseItemDialog({
                   onChange={(event) => update("file", event.target.files?.[0] || null)}
                 />
               </label>
-            ) : values.mediaSource === "artifact" ? (
-              <div className="showcase-artifact-control">
-                <label>
-                  <span>本人作品 Artifact ID</span>
-                  <input
-                    value={values.sourceTaskArtifactId}
-                    list="showcase-owned-artifacts"
-                    autoComplete="off"
-                    placeholder="选择下方作品，或粘贴 Artifact ID"
-                    onChange={(event) => update("sourceTaskArtifactId", event.target.value)}
-                  />
-                </label>
-                <datalist id="showcase-owned-artifacts">
-                  {(ownedArtworks || []).map((artwork) => (
-                    <option
-                      key={artwork.artifact_id}
-                      value={artwork.artifact_id}
-                      label={`${artwork.model_display_name || "模型未记录"} / ${artwork.media_type === "video" ? "视频" : "图片"}`}
-                    />
-                  ))}
-                </datalist>
-                <div className="showcase-artifact-hint">
-                  <span>
-                    {ownedArtworksLoading
-                      ? "正在读取本人作品…"
-                      : ownedArtworksError
-                        ? ownedArtworksError
-                        : (ownedArtworks || []).length
-                          ? `可选择最近 ${(ownedArtworks || []).length} 个已验证作品。`
-                          : "当前没有可列出的作品，也可以粘贴本人已验证作品的 Artifact ID。"}
-                  </span>
-                  <button type="button" onClick={onReloadOwnedArtworks} disabled={ownedArtworksLoading}>刷新作品</button>
-                </div>
-                <small>图片和视频均可导入。Platform 只接受当前 Owner 本人的个人空间成功产物，不接受任意网址，也不会跨账号读取。</small>
-              </div>
             ) : (
               <div className="showcase-artifact-control showcase-existing-media-control">
                 <label>
@@ -527,11 +475,7 @@ export function ShowcaseOperationsScreen({
   notice,
   busyAction,
   demoMode,
-  ownedArtworks,
-  ownedArtworksLoading,
-  ownedArtworksError,
   onReload,
-  onReloadOwnedArtworks,
   onSave,
   onMove,
   onRetire,
@@ -713,7 +657,7 @@ export function ShowcaseOperationsScreen({
         )}
       </section>
 
-      {editorOpen ? <ShowcaseItemDialog key={editorItem?.id || "new"} item={editorItem} busy={busyAction === "save"} demoMode={demoMode} uploadedMedia={snapshot?.media || []} ownedArtworks={ownedArtworks} ownedArtworksLoading={ownedArtworksLoading} ownedArtworksError={ownedArtworksError} onReloadOwnedArtworks={onReloadOwnedArtworks} onClose={() => { setEditorOpen(false); setEditorItem(null); }} onSubmit={(values) => onSave(values, editorItem)} /> : null}
+      {editorOpen ? <ShowcaseItemDialog key={editorItem?.id || "new"} item={editorItem} busy={busyAction === "save"} demoMode={demoMode} uploadedMedia={snapshot?.media || []} onClose={() => { setEditorOpen(false); setEditorItem(null); }} onSubmit={(values) => onSave(values, editorItem)} /> : null}
       {retiringItem ? <RetireDialog item={retiringItem} busy={busyAction === "retire"} demoMode={demoMode} onClose={() => setRetiringItem(null)} onConfirm={() => onRetire(retiringItem)} /> : null}
       {publishOpen ? <ConfirmDialog kind="publish" busy={busyAction === "publish"} demoMode={demoMode} onClose={() => setPublishOpen(false)} onConfirm={onPublish} /> : null}
       {unpublishOpen ? <ConfirmDialog kind="unpublish" busy={busyAction === "unpublish"} demoMode={demoMode} onClose={() => setUnpublishOpen(false)} onConfirm={onUnpublish} /> : null}

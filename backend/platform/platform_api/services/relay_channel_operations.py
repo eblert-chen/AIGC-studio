@@ -38,6 +38,9 @@ def _intent_payload(
     reason: str,
     expected_revision: str | None,
     target_status: str | None,
+    public_model_id: str | None = None,
+    route_id: str | None = None,
+    mode: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     tenant_id = _canonical_tenant_id(tenant_id)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", operation_id):
@@ -51,7 +54,27 @@ def _intent_payload(
     if kind == "test":
         if expected_revision is not None or target_status is not None:
             raise ValueError("channel test intent has status fields")
+        if public_model_id is None or route_id is None:
+            raise ValueError(
+                "route-bound channel test identity is required"
+            )
+        if (
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", public_model_id)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", route_id)
+        ):
+            raise ValueError("route-bound channel test identity is invalid")
+
+        if mode is not None and mode not in {
+            "text_to_image",
+            "image_to_image",
+            "text_to_video",
+            "image_to_video",
+            "video_to_video",
+        }:
+            raise ValueError("route-bound channel test mode is invalid")
     elif kind == "status":
+        if public_model_id is not None or route_id is not None or mode is not None:
+            raise ValueError("channel status intent has route test fields")
         if not expected_revision or not re.fullmatch(
             r"sha256:[0-9a-f]{64}", expected_revision
         ):
@@ -69,7 +92,14 @@ def _intent_payload(
         "reason": reason,
         "expected_revision": expected_revision,
         "target_status": target_status,
+        "public_model_id": public_model_id,
+        "route_id": route_id,
     }
+    # Preserve the canonical digest of operations approved before mode-level
+    # acceptance existed. New explicit mode tests bind this extra dimension;
+    # an omitted mode remains the legacy default and adds no JSON key.
+    if mode is not None:
+        payload["mode"] = mode
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
@@ -122,6 +152,9 @@ class RelayChannelOperationJournalService:
         before_summary: dict[str, Any],
         approval_proof: dict[str, Any],
         request_id: str,
+        public_model_id: str | None = None,
+        route_id: str | None = None,
+        mode: str | None = None,
     ) -> tuple[RelayChannelOperationJournal, bool]:
         payload, digest = _intent_payload(
             tenant_id=tenant_id,
@@ -132,6 +165,9 @@ class RelayChannelOperationJournalService:
             reason=reason,
             expected_revision=expected_revision,
             target_status=target_status,
+            public_model_id=public_model_id,
+            route_id=route_id,
+            mode=mode,
         )
         canonical_tenant_id = payload["tenant_id"]
         action = (
@@ -208,6 +244,9 @@ class RelayChannelOperationJournalService:
         reason: str,
         expected_revision: str | None,
         target_status: str | None,
+        public_model_id: str | None = None,
+        route_id: str | None = None,
+        mode: str | None = None,
     ) -> None:
         payload, digest = _intent_payload(
             tenant_id=tenant_id,
@@ -218,6 +257,9 @@ class RelayChannelOperationJournalService:
             reason=reason,
             expected_revision=expected_revision,
             target_status=target_status,
+            public_model_id=public_model_id,
+            route_id=route_id,
+            mode=mode,
         )
         if not _matches(
             row,
@@ -291,4 +333,3 @@ class RelayChannelOperationJournalService:
         row.updated_at = now
         session.flush()
         return row
-

@@ -20,9 +20,15 @@ For commercial licensing, please contact support@quantumnous.com
  * Application-wide constants
  */
 
-// System Configuration Defaults
-export const DEFAULT_SYSTEM_NAME = 'New API'
-export const DEFAULT_LOGO = '/logo.png'
+// System Configuration Defaults. Keep the upstream defaults recognizable so
+// existing databases can be upgraded in the client without overwriting a
+// genuinely customized SystemName or Logo option.
+export const UPSTREAM_DEFAULT_SYSTEM_NAME = 'New API'
+export const UPSTREAM_DEFAULT_LOGO = '/logo.png'
+export const DEFAULT_SYSTEM_NAME = UPSTREAM_DEFAULT_SYSTEM_NAME
+export const PRODUCT_BRAND_NAME = '旭天 AI studio'
+export const DEFAULT_LOGO = '/brand/xutian-ai-studio-symbol.svg'
+export const DEFAULT_WORDMARK = '/brand/xutian-ai-studio-wordmark.svg'
 
 // LocalStorage Keys
 export const STORAGE_KEYS = {

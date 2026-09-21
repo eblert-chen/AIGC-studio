@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import i18next from 'i18next'
 
 import type { ApiResponse } from '@/features/auth/types'
-import { api, get2FAStatus } from '@/lib/api'
+import { api } from '@/lib/api'
 import {
   buildAssertionResult,
   prepareCredentialRequestOptions,
@@ -33,6 +33,7 @@ import {
 } from '../passkey'
 import type {
   SecurityProof,
+  SecurityProofBinding,
   SecurityProofScope,
   VerificationMethod,
   VerificationMethods,
@@ -41,12 +42,16 @@ import type {
 /**
  * Fetch available verification methods for the current user.
  */
-export async function checkVerificationMethods(): Promise<VerificationMethods> {
+export async function checkVerificationMethods(
+  signal?: AbortSignal
+): Promise<VerificationMethods> {
   try {
     const [twoFAResponse, passkeyResponse, passkeySupported] =
       await Promise.all([
-        get2FAStatus(),
-        getPasskeyStatus(),
+        api
+          .get('/api/user/2fa/status', { signal })
+          .then((response) => response.data),
+        getPasskeyStatus(signal),
         detectPasskeySupport(),
       ])
 
@@ -62,6 +67,7 @@ export async function checkVerificationMethods(): Promise<VerificationMethods> {
       passkeySupported,
     }
   } catch (error) {
+    if (isAbortError(error)) throw error
     // eslint-disable-next-line no-console
     console.error('[Secure Verification] Failed to check methods', error)
     return {
@@ -78,13 +84,15 @@ export async function checkVerificationMethods(): Promise<VerificationMethods> {
 export async function verify(
   method: VerificationMethod,
   scope: SecurityProofScope,
-  code?: string
+  code?: string,
+  binding?: SecurityProofBinding,
+  signal?: AbortSignal
 ): Promise<SecurityProof> {
   switch (method) {
     case '2fa':
-      return verifyTwoFA(scope, code)
+      return verifyTwoFA(scope, code, binding, signal)
     case 'passkey':
-      return verifyPasskey(scope)
+      return verifyPasskey(scope, binding, signal)
     default:
       throw new Error(
         i18next.t('Unsupported verification method: {{method}}', { method })
@@ -97,7 +105,9 @@ export async function verify(
  */
 async function verifyTwoFA(
   scope: SecurityProofScope,
-  code?: string | null
+  code?: string | null,
+  binding?: SecurityProofBinding,
+  signal?: AbortSignal
 ): Promise<SecurityProof> {
   const trimmed = code?.trim()
   if (!trimmed) {
@@ -106,11 +116,16 @@ async function verifyTwoFA(
     )
   }
 
-  const res = await api.post<ApiResponse<SecurityProof>>('/api/verify', {
-    method: '2fa',
-    code: trimmed,
-    scope,
-  })
+  const res = await api.post<ApiResponse<SecurityProof>>(
+    '/api/verify',
+    {
+      method: '2fa',
+      code: trimmed,
+      scope,
+      binding,
+    },
+    { signal }
+  )
 
   if (!res.data?.success) {
     throw new Error(res.data?.message || i18next.t('Verification failed'))
@@ -125,7 +140,9 @@ async function verifyTwoFA(
  * Perform Passkey verification flow.
  */
 async function verifyPasskey(
-  scope: SecurityProofScope
+  scope: SecurityProofScope,
+  binding?: SecurityProofBinding,
+  signal?: AbortSignal
 ): Promise<SecurityProof> {
   if (typeof navigator === 'undefined' || !navigator.credentials) {
     throw new Error(
@@ -134,7 +151,7 @@ async function verifyPasskey(
   }
 
   try {
-    const beginResponse = await beginPasskeyVerification(scope)
+    const beginResponse = await beginPasskeyVerification(scope, binding, signal)
     if (!beginResponse.success) {
       throw new Error(
         beginResponse.message || i18next.t('Failed to start verification')
@@ -151,6 +168,7 @@ async function verifyPasskey(
 
     const credential = (await navigator.credentials.get({
       publicKey,
+      signal,
     })) as PublicKeyCredential | null
 
     if (!credential) {
@@ -162,7 +180,11 @@ async function verifyPasskey(
       throw new Error(i18next.t('Unable to build Passkey assertion'))
     }
 
-    const finishResponse = await finishPasskeyVerification(flowToken, assertion)
+    const finishResponse = await finishPasskeyVerification(
+      flowToken,
+      assertion,
+      signal
+    )
     if (!finishResponse.success) {
       throw new Error(
         finishResponse.message || i18next.t('Passkey verification failed')
@@ -188,4 +210,12 @@ async function verifyPasskey(
     }
     throw error
   }
+}
+
+export function isAbortError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') return true
+  const candidate = error as { code?: unknown; name?: unknown }
+  return (
+    candidate?.code === 'ERR_CANCELED' || candidate?.name === 'CanceledError'
+  )
 }

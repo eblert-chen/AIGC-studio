@@ -6,14 +6,17 @@ from fastapi.testclient import TestClient
 
 from platform_api.models import (
     AuditLog,
+    BillingUnit,
     ChannelCostEntry,
     ChannelCostSource,
     ChannelType,
     Company,
+    CompanyPointLedgerEntry,
     GenerationTask,
     LedgerEntry,
     LedgerKind,
     ModelDefinition,
+    PointLedgerKind,
     PublicationJob,
     PublicationJobStatus,
     PublisherConnection,
@@ -235,6 +238,94 @@ def test_operating_task_and_model_analytics_keep_missing_cost_explicit(app):
         assert row["known_gross_profit_cents"] == 1_000
         assert row["gross_profit_cents"] is None
         assert row["cost_reconciliation_status"] == "incomplete"
+
+
+def test_operating_series_keeps_point_settlements_out_of_cash_revenue(app):
+    with app.state.session_factory() as session:
+        start, company, user, model = _seed_financial_window(session)
+        point_task = GenerationTask(
+            company_id=company.id,
+            user_id=user.id,
+            model_id=model.id,
+            idempotency_key="analytics-point-settlement",
+            request_fingerprint="8" * 64,
+            status=TaskStatus.SUCCEEDED,
+            request_payload={},
+            billing_unit=BillingUnit.POINT,
+            billing_version=2,
+            quote_cents=None,
+            quote_points=50,
+            pricing_snapshot={},
+            capability_snapshot={},
+            reserved_cents=0,
+            reserved_points=0,
+            actual_cost_cents=None,
+            actual_cost_points=50,
+            created_at=start + timedelta(hours=2),
+            updated_at=start + timedelta(hours=2, seconds=10),
+        )
+        session.add(point_task)
+        session.flush()
+        session.add_all(
+            (
+                CompanyPointLedgerEntry(
+                    company_id=company.id,
+                    kind=PointLedgerKind.SETTLE,
+                    amount_points=50,
+                    available_delta_points=0,
+                    reserved_delta_points=-50,
+                    idempotency_key="analytics-point-ledger-settlement",
+                    task_id=point_task.id,
+                    note="point settlement without cash attribution",
+                    created_at=point_task.updated_at,
+                ),
+                ChannelCostEntry(
+                    amount_cents=250,
+                    idempotency_key="analytics-point-provider-cost",
+                    channel_key="official-points",
+                    channel_type=ChannelType.OFFICIAL,
+                    occurred_at=point_task.updated_at - timedelta(seconds=1),
+                    external_reference="provider-point-cost",
+                    company_id=company.id,
+                    task_id=point_task.id,
+                    note="point task provider cost",
+                    source=ChannelCostSource.PLATFORM_ADMIN,
+                    recorded_by_user_id=user.id,
+                ),
+            )
+        )
+        session.commit()
+
+        series = AdminAnalyticsService.operating_series(
+            session,
+            start=start,
+            end=start + timedelta(days=1),
+            granularity="day",
+        )
+
+        row = series["points"][0]
+        assert row["settled_revenue_cents"] == 500
+        assert row["settled_points"] == 50
+        assert row["point_settlement_count"] == 1
+        assert row["unattributed_point_settlement_count"] == 1
+        assert row["provider_cost_cents"] == 450
+        assert row["cost_reconciliation_status"] == "complete"
+        assert row["revenue_reconciliation_status"] == "incomplete"
+        assert row["finance_status"] == "incomplete"
+        assert row["known_gross_profit_cents"] is None
+        assert row["gross_profit_cents"] is None
+        assert row["gross_margin"] is None
+
+        totals = series["totals"]
+        assert totals["settled_revenue_cents"] == 500
+        assert totals["settled_points"] == 50
+        assert totals["point_settlement_count"] == 1
+        assert totals["unattributed_point_settlement_count"] == 1
+        assert totals["revenue_reconciliation_status"] == "incomplete"
+        assert totals["finance_status"] == "incomplete"
+        assert totals["known_gross_profit_cents"] is None
+        assert totals["gross_profit_cents"] is None
+        assert totals["gross_margin"] is None
 
 
 def test_operating_series_returns_real_period_and_year_comparisons(app):

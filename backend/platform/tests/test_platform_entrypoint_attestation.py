@@ -14,6 +14,7 @@ from platform_api import dispatcher
 from platform_api import download_gateway_registration_worker as gateway_worker
 from platform_api import main as platform_main
 from platform_api import publishing_worker
+from platform_api import relay_catalog_sync_worker
 from platform_api import relay_sync_worker
 from platform_api import timeout_worker
 from platform_api.database_privileges import PlatformDatabaseAttestationError
@@ -27,6 +28,7 @@ class _AttestationStopped(RuntimeError):
     "module",
     (
         dispatcher,
+        relay_catalog_sync_worker,
         relay_sync_worker,
         timeout_worker,
         publishing_worker,
@@ -100,6 +102,15 @@ def test_api_factory_attests_before_framework_or_table_io(monkeypatch):
         lambda preflight, service: relay_sync_worker.run_loop(
             service,
             stop_event=Event(),
+            once=True,
+            preflight=preflight,
+        ),
+        lambda preflight, service: relay_catalog_sync_worker.run_loop(
+            service,
+            stop_event=Event(),
+            interval_seconds=60,
+            retry_base_seconds=5,
+            retry_cap_seconds=300,
             once=True,
             preflight=preflight,
         ),

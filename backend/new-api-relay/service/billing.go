@@ -61,15 +61,17 @@ func platformOwnedBillingAuthorized(c *gin.Context, relayInfo *relaycommon.Relay
 }
 
 // PrepareProtectedRelayBilling installs the explicit Platform-owned no-op
-// settler before price/free-model branching. Consequently a fenced free model
-// cannot fall through to legacy settlement, while every ordinary protected
-// task is rejected before an adaptor or provider request is reached.
+// settler before price/free-model branching in every environment. The private
+// native-admission marker and both pinned-route flags, not a deployment flag,
+// establish Platform ownership. Every ordinary protected task still fails
+// before an adaptor or provider request is reached.
 func PrepareProtectedRelayBilling(c *gin.Context, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
-	if !model.RelayDatabaseRoleAttestationRequired() {
-		return nil
-	}
 	if !platformOwnedBillingAuthorized(c, relayInfo) {
-		return protectedNativeBillingError()
+		if model.RelayDatabaseRoleAttestationRequired() || IsPlatformOwnedBilling(relayInfo) {
+			return protectedNativeBillingError()
+		}
+		// Ordinary development native calls retain their existing billing mode.
+		return nil
 	}
 	if relayInfo.Billing != nil && !IsPlatformOwnedBilling(relayInfo) {
 		return protectedNativeBillingError()
@@ -123,7 +125,7 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 			types.ErrOptionWithSkipRetry(),
 		)
 	}
-	if model.RelayDatabaseRoleAttestationRequired() {
+	if model.RelayDatabaseRoleAttestationRequired() || platformOwnedBillingAuthorized(c, relayInfo) || IsPlatformOwnedBilling(relayInfo) {
 		return PrepareProtectedRelayBilling(c, relayInfo)
 	}
 	session, apiErr := NewBillingSession(c, relayInfo, preConsumedQuota)
@@ -144,7 +146,7 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 	if relayInfo == nil {
 		return errors.New("billing relay information is required")
 	}
-	if model.RelayDatabaseRoleAttestationRequired() {
+	if model.RelayDatabaseRoleAttestationRequired() || platformOwnedBillingAuthorized(ctx, relayInfo) || IsPlatformOwnedBilling(relayInfo) {
 		if !platformOwnedBillingAuthorized(ctx, relayInfo) || !IsPlatformOwnedBilling(relayInfo) {
 			return ErrProtectedRelayNativeBillingDisabled
 		}

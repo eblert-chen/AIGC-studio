@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 export const CANDIDATE_UPSTREAM_GIT_REVISION =
   "0ab02020603d22e5613bc4cf46bfab06f8567769";
 
-export const REQUIRED_FAULT_SCENARIOS = Object.freeze({
+export const FAULT_RESTORE_ASSERTION = "fault_environment_restored";
+
+const FAULT_SCENARIO_ASSERTIONS = {
   provider_post_pre_disconnect: [
     "provider_post_not_attempted",
     "job_retry_safe",
@@ -124,7 +126,20 @@ export const REQUIRED_FAULT_SCENARIOS = Object.freeze({
     "stale_delivery_token_fenced",
     "readiness_backlog_reported",
   ],
-});
+};
+
+// A fault run is not complete when its scenario-specific invariant passes.
+// The control plane must also prove that the injected condition was removed
+// and the isolated candidate environment was restored before the final
+// readiness gate is allowed to attest the post-test state.
+export const REQUIRED_FAULT_SCENARIOS = Object.freeze(
+  Object.fromEntries(
+    Object.entries(FAULT_SCENARIO_ASSERTIONS).map(([scenario, assertions]) => [
+      scenario,
+      Object.freeze([...assertions, FAULT_RESTORE_ASSERTION]),
+    ]),
+  ),
+);
 
 const REQUIRED_REAL_EVIDENCE = Object.freeze([
   "provider_task",
@@ -202,6 +217,18 @@ const GIT_REVISION_RE = /^[0-9a-f]{40}$/;
 const CANDIDATE_INSTANCE_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const CHANNEL_CLASSES = new Set(["reverse", "third_party_api", "official"]);
 const DEFAULT_FAULT_CLOCK_SKEW_MS = 5_000;
+const FAULT_EVIDENCE_KEYS = Object.freeze([
+  "id",
+  "observed_at_utc",
+  "kind",
+  "action",
+  "data",
+  "sha256",
+]);
+const FAULT_EVIDENCE_SECRET_PATTERN = /(?:-----BEGIN [A-Z ]+PRIVATE KEY-----|\bBearer\s+\S+|\bsk-[A-Za-z0-9_-]{8,}|\bAKIA[A-Z0-9]{12,}|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:password|passwd|secret|credential|api[_-]?key|access[_-]?key|private[_-]?key)\s*[:=]\s*\S+)/i;
+const FAULT_EVIDENCE_URL_PATTERN = /(?:https?:\/\/|https?%3a%2f%2f)[^\s"'<>]*/i;
+const FAULT_EVIDENCE_SENSITIVE_KEY_PATTERN = /(?:^|[_-])(?:auth|authorization|bearer|cookie|session|password|passwd|secret|token|credential|signature|dsn|connection[_-]?string|api[_-]?key|access[_-]?key|private[_-]?key|signing[_-]?key|key)(?:$|[_-])/i;
+const FAULT_EVIDENCE_DIGEST_KEY_PATTERN = /(?:^|[_-])(?:sha256|digest|fingerprint|hash)(?:$|[_-])/i;
 
 class GateError extends Error {
   constructor(status, message, evidence = []) {
@@ -403,6 +430,73 @@ async function requestJson(fetchImpl, baseUrl, path, options = {}) {
   }
 }
 
+const MUTATION_TARGETS = Object.freeze([
+  "python_oracle",
+  "new_api_candidate",
+  "fault_control",
+]);
+
+function createMutationTracker() {
+  return Object.fromEntries(
+    MUTATION_TARGETS.map((target) => [target, {
+      attempted_request_count: 0,
+      accepted_mutation_count: 0,
+    }]),
+  );
+}
+
+async function requestMutatingJson(
+  fetchImpl,
+  tracker,
+  target,
+  baseUrl,
+  path,
+  options = {},
+) {
+  const targetState = tracker?.[target];
+  if (!targetState) {
+    throw new GateError("BLOCKED", `mutation target ${target} is not tracked`);
+  }
+  const {
+    confirmedAcceptedStatuses = [],
+    ...requestOptions
+  } = options;
+  // Record the attempt before any network operation. A timeout, disconnect, or
+  // unreadable response cannot prove that the remote service did not mutate.
+  targetState.attempted_request_count += 1;
+  const response = await requestJson(fetchImpl, baseUrl, path, requestOptions);
+  if (confirmedAcceptedStatuses.includes(response.status)) {
+    targetState.accepted_mutation_count += 1;
+  }
+  return response;
+}
+
+function mutationTrackingSnapshot(tracker) {
+  const byTarget = Object.fromEntries(
+    MUTATION_TARGETS.map((target) => {
+      const attemptedRequestCount = tracker[target].attempted_request_count;
+      const acceptedMutationCount = tracker[target].accepted_mutation_count;
+      return [target, {
+        request_attempted: attemptedRequestCount > 0,
+        accepted_mutation_confirmed: acceptedMutationCount > 0,
+        attempted_request_count: attemptedRequestCount,
+        accepted_mutation_count: acceptedMutationCount,
+      }];
+    }),
+  );
+  const attemptedRequestCount = Object.values(byTarget)
+    .reduce((total, target) => total + target.attempted_request_count, 0);
+  const acceptedMutationCount = Object.values(byTarget)
+    .reduce((total, target) => total + target.accepted_mutation_count, 0);
+  return {
+    request_attempted: attemptedRequestCount > 0,
+    accepted_mutation_confirmed: acceptedMutationCount > 0,
+    attempted_request_count: attemptedRequestCount,
+    accepted_mutation_count: acceptedMutationCount,
+    by_target: byTarget,
+  };
+}
+
 function validHttpUrl(value, { production = false } = {}) {
   try {
     const parsed = new URL(value);
@@ -568,6 +662,123 @@ function catalogModes(catalog) {
   return [...new Set(catalog.data.flatMap((entry) => Object.keys(entry.capabilities.modes)))].sort();
 }
 
+async function runCandidateReadinessGate(config, options, credential, id, phase) {
+  return captureGate(id, async () => {
+    const requestId = `accept-candidate-readiness-${phase}`;
+    const response = await requestJson(options.fetchImpl, config.candidate.baseUrl, "/health/ready", {
+      credential,
+      headers: { "X-Request-ID": requestId },
+    });
+    const runtimeProvenance = {
+      upstream_git_revision: response.headers.get("x-relay-upstream-revision"),
+      source_git_revision: response.headers.get("x-relay-source-revision"),
+      image_digest: response.headers.get("x-relay-image-digest"),
+    };
+    const providerRuntime = Array.isArray(response.json?.dependencies)
+      ? response.json.dependencies.find((dependency) => dependency?.name === "provider_runtime")
+      : null;
+    const productionCutoverReady = providerRuntime?.details?.production_cutover_ready;
+    const liveCostReadiness = {
+      cost_incomplete: providerRuntime?.details?.cost_incomplete,
+      cost_backlog: providerRuntime?.details?.cost_backlog,
+      cost_dead_letter: providerRuntime?.details?.cost_dead_letter,
+      cost_successful_relay_jobs: providerRuntime?.details?.cost_successful_relay_jobs,
+      native_billing_reconciliation_jobs:
+        providerRuntime?.details?.native_billing_reconciliation_jobs,
+      cost_reconciliation_complete:
+        providerRuntime?.details?.cost_reconciliation_complete,
+    };
+    const liveOperationalReadiness = {
+      enabled: providerRuntime?.details?.enabled,
+      monitor_fresh: providerRuntime?.details?.monitor_fresh,
+      monitor_last_error_code: providerRuntime?.details?.monitor_last_error_code,
+      active_alerts: providerRuntime?.details?.active_alerts,
+      unavailable_routes: providerRuntime?.details?.unavailable_routes,
+      alert_backlog: providerRuntime?.details?.alert_backlog,
+      alert_dead_letter: providerRuntime?.details?.alert_dead_letter,
+      task_stage_backlog: providerRuntime?.details?.task_stage_backlog,
+      task_stage_dead_letter: providerRuntime?.details?.task_stage_dead_letter,
+      operations_snapshot_backlog: providerRuntime?.details?.operations_snapshot_backlog,
+      operations_snapshot_dead_letter:
+        providerRuntime?.details?.operations_snapshot_dead_letter,
+      provider_result_reconciliation_backlog:
+        providerRuntime?.details?.provider_result_reconciliation_backlog,
+    };
+    const evidence = [
+      responseEvidence(`new_api_candidate:health_ready:${phase}`, response),
+      {
+        kind: "candidate_runtime_provenance",
+        phase,
+        state: response.json?.state ?? null,
+        provider_runtime_state: providerRuntime?.state ?? null,
+        production_cutover_ready:
+          typeof productionCutoverReady === "boolean" ? productionCutoverReady : null,
+        ...liveOperationalReadiness,
+        ...liveCostReadiness,
+        ...runtimeProvenance,
+      },
+    ];
+    requireCondition(response.status === 200, `candidate ${phase} readiness returned HTTP ${response.status}`, evidence);
+    requireCondition(
+      response.json?.state === "healthy",
+      `candidate ${phase} readiness state is not healthy`,
+      evidence,
+    );
+    requireCondition(
+      productionCutoverReady === true,
+      `candidate ${phase} production_cutover_ready is not true`,
+      evidence,
+    );
+    requireCondition(
+      providerRuntime?.state === "healthy" &&
+        liveOperationalReadiness.enabled === true &&
+        liveOperationalReadiness.monitor_fresh === true &&
+        liveOperationalReadiness.monitor_last_error_code === "" &&
+        liveOperationalReadiness.active_alerts === 0 &&
+        liveOperationalReadiness.unavailable_routes === 0 &&
+        liveOperationalReadiness.alert_backlog === 0 &&
+        liveOperationalReadiness.alert_dead_letter === 0 &&
+        liveOperationalReadiness.task_stage_backlog === 0 &&
+        liveOperationalReadiness.task_stage_dead_letter === 0 &&
+        liveOperationalReadiness.operations_snapshot_backlog === 0 &&
+        liveOperationalReadiness.operations_snapshot_dead_letter === 0 &&
+        liveOperationalReadiness.provider_result_reconciliation_backlog === 0,
+      `candidate ${phase} provider operational readiness evidence is incomplete`,
+      evidence,
+    );
+    requireCondition(
+      liveCostReadiness.cost_incomplete === 0 &&
+        liveCostReadiness.cost_backlog === 0 &&
+        liveCostReadiness.cost_dead_letter === 0 &&
+        Number.isInteger(liveCostReadiness.cost_successful_relay_jobs) &&
+        liveCostReadiness.cost_successful_relay_jobs > 0 &&
+        liveCostReadiness.native_billing_reconciliation_jobs === 0 &&
+        liveCostReadiness.cost_reconciliation_complete === true,
+      `candidate ${phase} live cost reconciliation evidence is incomplete`,
+      evidence,
+    );
+    requireCondition(
+      runtimeProvenance.upstream_git_revision === config.candidate.upstreamGitRevision,
+      `candidate ${phase} readiness upstream revision does not match acceptance configuration`,
+      evidence,
+    );
+    requireCondition(
+      runtimeProvenance.source_git_revision === config.candidate.gitRevision,
+      `candidate ${phase} readiness source revision does not match acceptance configuration`,
+      evidence,
+    );
+    requireCondition(
+      runtimeProvenance.image_digest === config.candidate.imageDigest,
+      `candidate ${phase} readiness image digest does not match acceptance configuration`,
+      evidence,
+    );
+    return {
+      summary: `candidate ${phase} runtime is healthy, production cutover is ready, and live build provenance matches`,
+      evidence,
+    };
+  });
+}
+
 async function runContractGates(config, options) {
   const gates = {};
   const fetchImpl = options.fetchImpl;
@@ -599,47 +810,13 @@ async function runContractGates(config, options) {
   const secondary = credentials[1];
   const state = { catalogs: {}, models: {}, jobs: {} };
 
-  gates["contract.candidate_readiness"] = await captureGate("contract.candidate_readiness", async () => {
-    const requestId = "accept-candidate-readiness";
-    const response = await requestJson(fetchImpl, config.candidate.baseUrl, "/health/ready", {
-      credential: primary,
-      headers: { "X-Request-ID": requestId },
-    });
-    const runtimeProvenance = {
-      upstream_git_revision: response.headers.get("x-relay-upstream-revision"),
-      source_git_revision: response.headers.get("x-relay-source-revision"),
-      image_digest: response.headers.get("x-relay-image-digest"),
-    };
-    const evidence = [
-      responseEvidence("new_api_candidate:health_ready", response),
-      {
-        kind: "candidate_runtime_provenance",
-        state: response.json?.state ?? null,
-        ...runtimeProvenance,
-      },
-    ];
-    requireCondition(response.status === 200, `candidate readiness returned HTTP ${response.status}`, evidence);
-    requireCondition(response.json?.state === "healthy", "candidate readiness state is not healthy", evidence);
-    requireCondition(
-      runtimeProvenance.upstream_git_revision === config.candidate.upstreamGitRevision,
-      "candidate readiness upstream revision does not match acceptance configuration",
-      evidence,
-    );
-    requireCondition(
-      runtimeProvenance.source_git_revision === config.candidate.gitRevision,
-      "candidate readiness source revision does not match acceptance configuration",
-      evidence,
-    );
-    requireCondition(
-      runtimeProvenance.image_digest === config.candidate.imageDigest,
-      "candidate readiness image digest does not match acceptance configuration",
-      evidence,
-    );
-    return {
-      summary: "candidate readiness is healthy and its live build provenance matches the acceptance candidate",
-      evidence,
-    };
-  });
+  gates["contract.candidate_readiness"] = await runCandidateReadinessGate(
+    config,
+    options,
+    primary,
+    "contract.candidate_readiness",
+    "preflight",
+  );
 
   gates["contract.auth"] = await captureGate("contract.auth", async () => {
     const evidence = [];
@@ -782,15 +959,22 @@ async function runContractGates(config, options) {
           ];
           const errors = [];
           for (const [index, body] of cases.entries()) {
-            const response = await requestJson(fetchImpl, baseUrl, "/v1/generations", {
-              method: "POST",
-              credential: primary,
-              headers: {
-                "Idempotency-Key": `accept-strict-${randomUUID()}`,
-                "X-Request-ID": `accept-strict-${label}-${index}`,
+            const response = await requestMutatingJson(
+              fetchImpl,
+              options.mutationTracker,
+              label,
+              baseUrl,
+              "/v1/generations",
+              {
+                method: "POST",
+                credential: primary,
+                headers: {
+                  "Idempotency-Key": `accept-strict-${randomUUID()}`,
+                  "X-Request-ID": `accept-strict-${label}-${index}`,
+                },
+                body,
               },
-              body,
-            });
+            );
             evidence.push(responseEvidence(`${label}:${index}`, response));
             requireCondition(response.status === 422, `${label} accepted unknown request fields in case ${index}`, evidence);
             requireCondition(
@@ -827,24 +1011,46 @@ async function runContractGates(config, options) {
             "Idempotency-Key": idempotencyKey,
             "X-Request-ID": `accept-submit-${label}`,
           };
-          const first = await requestJson(fetchImpl, baseUrl, "/v1/generations", {
-            method: "POST",
-            credential: primary,
-            headers,
-            body,
-          });
-          const replay = await requestJson(fetchImpl, baseUrl, "/v1/generations", {
-            method: "POST",
-            credential: primary,
-            headers: { ...headers, "X-Request-ID": `accept-replay-${label}` },
-            body,
-          });
-          const conflict = await requestJson(fetchImpl, baseUrl, "/v1/generations", {
-            method: "POST",
-            credential: primary,
-            headers: { ...headers, "X-Request-ID": `accept-conflict-${label}` },
-            body: { ...body, client_reference_id: `conflict-${randomUUID()}` },
-          });
+          const first = await requestMutatingJson(
+            fetchImpl,
+            options.mutationTracker,
+            label,
+            baseUrl,
+            "/v1/generations",
+            {
+              method: "POST",
+              credential: primary,
+              headers,
+              body,
+              confirmedAcceptedStatuses: [202],
+            },
+          );
+          const replay = await requestMutatingJson(
+            fetchImpl,
+            options.mutationTracker,
+            label,
+            baseUrl,
+            "/v1/generations",
+            {
+              method: "POST",
+              credential: primary,
+              headers: { ...headers, "X-Request-ID": `accept-replay-${label}` },
+              body,
+            },
+          );
+          const conflict = await requestMutatingJson(
+            fetchImpl,
+            options.mutationTracker,
+            label,
+            baseUrl,
+            "/v1/generations",
+            {
+              method: "POST",
+              credential: primary,
+              headers: { ...headers, "X-Request-ID": `accept-conflict-${label}` },
+              body: { ...body, client_reference_id: `conflict-${randomUUID()}` },
+            },
+          );
           evidence.push(
             responseEvidence(`${label}:first`, first),
             responseEvidence(`${label}:replay`, replay),
@@ -940,15 +1146,23 @@ async function runContractGates(config, options) {
           const drift = current === `sha256:${"0".repeat(64)}`
             ? `sha256:${"1".repeat(64)}`
             : `sha256:${"0".repeat(64)}`;
-          const submitted = await requestJson(fetchImpl, baseUrl, "/v1/generations", {
-            method: "POST",
-            credential: primary,
-            headers: {
-              "Idempotency-Key": `accept-drift-${randomUUID()}`,
-              "X-Request-ID": `accept-drift-${label}`,
+          const submitted = await requestMutatingJson(
+            fetchImpl,
+            options.mutationTracker,
+            label,
+            baseUrl,
+            "/v1/generations",
+            {
+              method: "POST",
+              credential: primary,
+              headers: {
+                "Idempotency-Key": `accept-drift-${randomUUID()}`,
+                "X-Request-ID": `accept-drift-${label}`,
+              },
+              body: generationPayload(config, drift, `revision-drift-${label}`),
+              confirmedAcceptedStatuses: [202],
             },
-            body: generationPayload(config, drift, `revision-drift-${label}`),
-          });
+          );
           evidence.push(responseEvidence(`${label}:accepted`, submitted));
           requireCondition(submitted.status === 202, `${label} did not durably accept the drift check`, evidence);
           validateAccepted(submitted.json, `${label} drift acceptance`);
@@ -1002,6 +1216,61 @@ function faultEvidenceCore(entry) {
     action: entry.action,
     data: entry.data,
   };
+}
+
+function faultEvidenceStringContainsSensitiveMaterial(value, knownSecrets) {
+  let candidate = value;
+  for (let decodeDepth = 0; decodeDepth < 4; decodeDepth += 1) {
+    if (
+      FAULT_EVIDENCE_SECRET_PATTERN.test(candidate) ||
+      FAULT_EVIDENCE_URL_PATTERN.test(candidate) ||
+      knownSecrets.some((secret) => candidate.includes(secret))
+    ) {
+      return true;
+    }
+    let decoded;
+    try {
+      decoded = decodeURIComponent(candidate);
+    } catch {
+      break;
+    }
+    if (decoded === candidate) break;
+    candidate = decoded;
+  }
+  return false;
+}
+
+function faultEvidenceSafetyErrors(entry, knownSecrets = []) {
+  const errors = [];
+  const exactKeys = Object.keys(entry).sort();
+  if (canonicalJson(exactKeys) !== canonicalJson([...FAULT_EVIDENCE_KEYS].sort())) {
+    errors.push("unexpected evidence fields");
+  }
+  const secrets = knownSecrets.filter((value) => typeof value === "string" && value.length > 0);
+  const scan = (value, key = "") => {
+    const digestField = FAULT_EVIDENCE_DIGEST_KEY_PATTERN.test(key);
+    const sensitiveField = !digestField && FAULT_EVIDENCE_SENSITIVE_KEY_PATTERN.test(key);
+    if (typeof value === "string") {
+      if (faultEvidenceStringContainsSensitiveMaterial(value, secrets)) {
+        errors.push("credential or URL material in evidence value");
+      }
+      if (sensitiveField && value.trim().length > 0) {
+        errors.push("credential-bearing evidence field");
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      if (sensitiveField && value.length > 0) errors.push("credential-bearing evidence field");
+      value.forEach((item) => scan(item));
+      return;
+    }
+    if (value && typeof value === "object") {
+      if (sensitiveField && Object.keys(value).length > 0) errors.push("credential-bearing evidence field");
+      for (const [nestedKey, item] of Object.entries(value)) scan(item, nestedKey);
+    }
+  };
+  scan(faultEvidenceCore(entry));
+  return errors;
 }
 
 function validateFaultCandidate(actual, expected, label, evidence) {
@@ -1081,31 +1350,44 @@ export function validateFaultRunResult(result, expected, evidence = []) {
 
   requireCondition(Array.isArray(result?.raw_evidence), `${expected.scenario} omitted raw evidence`, evidence);
   const evidenceByID = new Map();
-  for (const entry of result.raw_evidence) {
-    requireCondition(entry && typeof entry === "object" && !Array.isArray(entry), `${expected.scenario} returned malformed evidence`, evidence);
-    requireCondition(typeof entry.id === "string" && entry.id.length > 0, `${expected.scenario} evidence omitted id`, evidence);
-    requireCondition(!evidenceByID.has(entry.id), `${expected.scenario} reused evidence id ${entry.id}`, evidence);
-    requireCondition(typeof entry.kind === "string" && entry.kind.length > 0, `${expected.scenario} evidence ${entry.id} omitted kind`, evidence);
-    requireCondition(typeof entry.action === "string" && entry.action.length > 0, `${expected.scenario} evidence ${entry.id} omitted action`, evidence);
+  const safeRawEvidence = [];
+  for (const [entryIndex, entry] of result.raw_evidence.entries()) {
+    const entryLabel = `${expected.scenario} evidence[${entryIndex}]`;
+    requireCondition(entry && typeof entry === "object" && !Array.isArray(entry), `${entryLabel} is malformed`, evidence);
+    requireCondition(
+      typeof entry.id === "string" && /^[A-Za-z0-9._-]+$/.test(entry.id),
+      `${entryLabel} omitted a safe id`,
+      evidence,
+    );
+    requireCondition(!evidenceByID.has(entry.id), `${expected.scenario} reused an evidence id`, evidence);
+    requireCondition(typeof entry.kind === "string" && entry.kind.length > 0, `${entryLabel} omitted kind`, evidence);
+    requireCondition(typeof entry.action === "string" && entry.action.length > 0, `${entryLabel} omitted action`, evidence);
     requireCondition(
       entry.data && typeof entry.data === "object" && !Array.isArray(entry.data),
-      `${expected.scenario} evidence ${entry.id} omitted structured data`,
+      `${entryLabel} omitted structured data`,
       evidence,
     );
     const observedAt = faultUtcMillis(entry.observed_at_utc);
-    requireCondition(Number.isFinite(observedAt), `${expected.scenario} evidence ${entry.id} time is not UTC`, evidence);
+    requireCondition(Number.isFinite(observedAt), `${entryLabel} time is not UTC`, evidence);
     requireCondition(
       observedAt >= startedAt - expected.clockSkewMs && observedAt <= completedAt + expected.clockSkewMs,
-      `${expected.scenario} evidence ${entry.id} is outside the run window`,
+      `${entryLabel} is outside the run window`,
       evidence,
     );
     const expectedDigest = `sha256:${sha256(canonicalJson(faultEvidenceCore(entry)))}`;
     requireCondition(
       entry.sha256 === expectedDigest,
-      `${expected.scenario} evidence ${entry.id} digest mismatch`,
+      `${entryLabel} digest mismatch`,
       evidence,
     );
-    evidenceByID.set(entry.id, entry);
+    requireCondition(
+      faultEvidenceSafetyErrors(entry, expected.knownSecrets).length === 0,
+      `${entryLabel} is not secret-free`,
+      evidence,
+    );
+    const safeEntry = { ...faultEvidenceCore(entry), sha256: entry.sha256 };
+    evidenceByID.set(entry.id, safeEntry);
+    safeRawEvidence.push(safeEntry);
   }
   requireCondition(evidenceByID.size > 0, `${expected.scenario} returned no raw evidence`, evidence);
 
@@ -1140,6 +1422,18 @@ export function validateFaultRunResult(result, expected, evidence = []) {
       `${expected.scenario} assertion ${assertion} is not backed by raw evidence`,
       evidence,
     );
+    if (assertion === FAULT_RESTORE_ASSERTION) {
+      requireCondition(
+        ids.some((id) => {
+          const entry = evidenceByID.get(id);
+          return entry.kind === "fault_cleanup" &&
+            entry.action === "restore" &&
+            entry.data?.restored === true;
+        }),
+        `${expected.scenario} did not provide explicit fault cleanup/restore evidence`,
+        evidence,
+      );
+    }
   }
   return {
     kind: "fault_run_evidence",
@@ -1153,7 +1447,7 @@ export function validateFaultRunResult(result, expected, evidence = []) {
     completed_at_utc: result.completed_at_utc,
     assertions: result.assertions,
     assertion_evidence: result.assertion_evidence,
-    raw_evidence: result.raw_evidence,
+    raw_evidence: safeRawEvidence,
   };
 }
 
@@ -1182,21 +1476,29 @@ async function runFaultGates(config, options) {
       const requestedAtUtc = new Date().toISOString();
       const candidate = faultCandidateIdentity(config);
       const target = "new_api_candidate";
-      const started = await requestJson(options.fetchImpl, controlUrl, "/v1/relay-fault-injections", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: {
-          schema_version: 1,
-          scenario,
-          target,
-          model: config.testCase.model,
-          mode: config.testCase.mode,
-          run_nonce: runNonce,
-          requested_at_utc: requestedAtUtc,
-          candidate,
+      const started = await requestMutatingJson(
+        options.fetchImpl,
+        options.mutationTracker,
+        "fault_control",
+        controlUrl,
+        "/v1/relay-fault-injections",
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: {
+            schema_version: 1,
+            scenario,
+            target,
+            model: config.testCase.model,
+            mode: config.testCase.mode,
+            run_nonce: runNonce,
+            requested_at_utc: requestedAtUtc,
+            candidate,
+          },
+          timeoutMs: config.faultInjection.requestTimeoutMs ?? 15_000,
+          confirmedAcceptedStatuses: [200, 202],
         },
-        timeoutMs: config.faultInjection.requestTimeoutMs ?? 15_000,
-      });
+      );
       evidence.push(responseEvidence(`${scenario}:start`, started));
       requireCondition([200, 202].includes(started.status), `${scenario} control plane rejected the run`, evidence);
       const startValidation = {
@@ -1209,6 +1511,10 @@ async function runFaultGates(config, options) {
         requestedAtUtc,
         nowMs: Date.now(),
         clockSkewMs: config.faultInjection.clockSkewMs ?? DEFAULT_FAULT_CLOCK_SKEW_MS,
+        knownSecrets: [
+          token,
+          ...(config.tenants || []).map((tenant) => options.env[tenant.apiKeyEnv]),
+        ],
       };
       validateFaultStart(started.json, startValidation, evidence);
       const deadline = Date.now() + (config.faultInjection.timeoutMs ?? 120_000);
@@ -1352,11 +1658,14 @@ function realRecordSafetyErrors(record, config, env) {
   const knownSecrets = [
     ...(config.tenants || []).map((tenant) => env[tenant.apiKeyEnv]),
     config.faultInjection?.tokenEnv ? env[config.faultInjection.tokenEnv] : null,
-  ].filter((value) => typeof value === "string" && value.length >= 8);
-  const secretPattern = /(?:-----BEGIN [A-Z ]+PRIVATE KEY-----|\bBearer\s+|\bsk-[A-Za-z0-9_-]{12,}|\bAKIA[A-Z0-9]{12,}|(?:password|secret|api[_-]?key|access[_-]?key)=)/i;
+  ].filter((value) => typeof value === "string" && value.length > 0);
   const scan = (value, path) => {
     if (typeof value === "string") {
-      if (secretPattern.test(value) || knownSecrets.some((secret) => value.includes(secret))) {
+      if (
+        FAULT_EVIDENCE_SECRET_PATTERN.test(value) ||
+        FAULT_EVIDENCE_URL_PATTERN.test(value) ||
+        knownSecrets.some((secret) => value.includes(secret))
+      ) {
         errors.push(`${path} appears to contain credential material`);
       }
     } else if (Array.isArray(value)) {
@@ -1505,6 +1814,7 @@ function configEvidence(config, errors) {
 }
 
 export async function runAcceptance(config, options = {}) {
+  const mutationTracker = createMutationTracker();
   const resolvedOptions = {
     executeContracts: options.executeContracts === true,
     executeFaults: options.executeFaults === true,
@@ -1512,6 +1822,7 @@ export async function runAcceptance(config, options = {}) {
     env: options.env || process.env,
     configDir: options.configDir || process.cwd(),
     now: options.now || (() => new Date()),
+    mutationTracker,
   };
   const validationErrors = validateConfig(config);
   const gates = {};
@@ -1521,6 +1832,7 @@ export async function runAcceptance(config, options = {}) {
 
   const contractIds = [
     "contract.candidate_readiness",
+    "contract.candidate_readiness_final",
     "contract.auth",
     "contract.models_etag",
     "contract.strict_fields",
@@ -1553,12 +1865,37 @@ export async function runAcceptance(config, options = {}) {
     Object.assign(gates, await runRealChannelGates(config, resolvedOptions));
   }
 
+  // This is deliberately the final network gate. Contract probes and fault
+  // scenarios are mutating, and the fault control plane may restore state only
+  // as part of completing a scenario. Re-attest readiness after all of those
+  // operations so a preflight-ready candidate cannot produce a PASS report
+  // with residual backlog, dead letters, incomplete cost, or changed build
+  // provenance. No candidate or fault-control request may follow this gate.
+  if (validationErrors.length === 0 && resolvedOptions.executeContracts) {
+    try {
+      const [primary] = resolveCredentials(config, resolvedOptions.env);
+      gates["contract.candidate_readiness_final"] = await runCandidateReadinessGate(
+        config,
+        resolvedOptions,
+        primary,
+        "contract.candidate_readiness_final",
+        "final",
+      );
+    } catch (error) {
+      gates["contract.candidate_readiness_final"] = blocked(
+        "contract.candidate_readiness_final",
+        error instanceof Error ? error.message : "final candidate readiness credential resolution failed",
+      );
+    }
+  }
+
   const requiredGates = Object.values(gates);
   const technicalAcceptancePassed = requiredGates.length > 1 && requiredGates.every((item) => item.status === "PASS");
   const anyFail = requiredGates.some((item) => item.status === "FAIL");
   const generatedAt = resolvedOptions.now().toISOString();
+  const mutationTracking = mutationTrackingSnapshot(mutationTracker);
   const report = {
-    schema_version: 2,
+    schema_version: 3,
     report_id: randomUUID(),
     generated_at_utc: generatedAt,
     environment: config?.environment || "unknown",
@@ -1572,8 +1909,11 @@ export async function runAcceptance(config, options = {}) {
     execution: {
       contracts_enabled: resolvedOptions.executeContracts,
       faults_enabled: resolvedOptions.executeFaults,
-      mutating_service_actions_performed: false,
-      python_relay_changed: false,
+      mutation_tracking: mutationTracking,
+      python_relay_source_or_deployment_changed: false,
+      python_oracle_runtime_mutation: {
+        ...mutationTracking.by_target.python_oracle,
+      },
     },
     gates,
     overall: {

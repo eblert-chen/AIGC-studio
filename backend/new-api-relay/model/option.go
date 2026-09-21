@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -198,10 +199,23 @@ func loadOptionsFromDatabase() {
 }
 
 func SyncOptions(frequency int) {
+	SyncOptionsWithContext(context.Background(), frequency)
+}
+
+func SyncOptionsWithContext(ctx context.Context, frequency int) {
+	if ctx == nil || frequency <= 0 {
+		return
+	}
+	ticker := time.NewTicker(time.Duration(frequency) * time.Second)
+	defer ticker.Stop()
 	for {
-		time.Sleep(time.Duration(frequency) * time.Second)
-		common.SysLog("syncing options from database")
-		loadOptionsFromDatabase()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			common.SysLog("syncing options from database")
+			loadOptionsFromDatabase()
+		}
 	}
 }
 

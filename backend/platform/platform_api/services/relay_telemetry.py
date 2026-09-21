@@ -31,6 +31,14 @@ from ..models import (
     utcnow,
 )
 from .errors import ConflictError, DomainError, NotFoundError
+from .provider_route_identity import (
+    IDENTITY_BOUND,
+    IDENTITY_LEGACY_UNKNOWN,
+    IDENTITY_UNASSIGNED,
+    bind_task_provider_route_identity,
+    identity_from_payload,
+    validate_provider_route_identity,
+)
 
 
 MAX_INT64 = 9_223_372_036_854_775_807
@@ -65,7 +73,7 @@ class StrictTelemetryModel(BaseModel):
 
 
 class RelayTaskStagePayload(StrictTelemetryModel):
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     company_id: UUID
     task_id: UUID
     relay_job_id: UUID
@@ -79,6 +87,16 @@ class RelayTaskStagePayload(StrictTelemetryModel):
         default=None, strict=True, ge=0, le=MAX_INT64
     )
     error_code: str = Field(default="", max_length=160)
+    identity_status: Literal["unassigned", "bound", "legacy_unknown"] | None = None
+    provider_name: str | None = Field(default=None, max_length=160)
+    provider_account_id: str | None = Field(default=None, max_length=160)
+    provider_channel_id: int | None = Field(default=None, strict=True)
+    provider_route_id: int | None = Field(default=None, strict=True)
+    provider_key_index: int | None = Field(default=None, strict=True)
+    provider_key_fingerprint: str | None = Field(default=None, max_length=64)
+    provider_credential_version: str | None = Field(default=None, max_length=36)
+    route_key: str | None = Field(default=None, max_length=160)
+    routing_release_sha256: str | None = Field(default=None, max_length=71)
 
     @field_validator("occurred_at")
     @classmethod
@@ -90,6 +108,19 @@ class RelayTaskStagePayload(StrictTelemetryModel):
         if bool(self.channel_key) != bool(self.channel_type):
             raise ValueError(
                 "channel_key and channel_type must both be assigned or both be empty"
+            )
+        identity = identity_from_payload(self)
+        if self.schema_version == 1:
+            if any(value is not None for value in identity.values()):
+                raise ValueError(
+                    "legacy task-stage payload cannot carry provider route identity"
+                )
+        else:
+            validate_provider_route_identity(
+                identity,
+                route_assigned=self.route_id is not None,
+                route_id=self.route_id,
+                route_key=self.channel_key,
             )
         return self
 
@@ -411,6 +442,19 @@ class RelayTelemetryService:
         if payload.occurred_at > delivery_timestamp + timedelta(minutes=5):
             raise ConflictError("task stage occurred_at is implausibly in the future")
 
+        identity = identity_from_payload(payload)
+        if payload.schema_version == 1:
+            identity = {
+                **identity,
+                "identity_status": (
+                    IDENTITY_LEGACY_UNKNOWN
+                    if payload.route_id is not None
+                    else IDENTITY_UNASSIGNED
+                ),
+            }
+        if identity["identity_status"] == IDENTITY_BOUND:
+            bind_task_provider_route_identity(task, identity)
+
         entry = RelayTaskStageEvent(
             id=event_id,
             schema_version=payload.schema_version,
@@ -424,6 +468,15 @@ class RelayTelemetryService:
                 ChannelType(payload.channel_type) if payload.channel_type else None
             ),
             route_id=payload.route_id,
+            provider_identity_status=identity["identity_status"],
+            provider_name=identity["provider_name"],
+            provider_account_id=identity["provider_account_id"],
+            provider_channel_id=identity["provider_channel_id"],
+            provider_route_id=identity["provider_route_id"],
+            provider_key_index=identity["provider_key_index"],
+            provider_key_fingerprint=identity["provider_key_fingerprint"],
+            provider_credential_version=identity["provider_credential_version"],
+            routing_release_sha256=identity["routing_release_sha256"],
             provider_task_id=payload.provider_task_id,
             duration_ms=payload.duration_ms,
             error_code=payload.error_code,

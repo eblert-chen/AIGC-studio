@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AdminOperationsConsole } from "./OperationsConsole.jsx";
 import { ShowcaseOperationsContainer } from "./showcase/ShowcaseOperationsContainer.jsx";
+import { PromptCollectionContainer } from "./promptCollection/PromptCollectionContainer.jsx";
 import {
   adaptAdminOperationsData,
   adaptRelayControlChannel,
@@ -36,9 +37,11 @@ import {
 
 const MATRIX_PAGE_SIZE = 100;
 const MAX_BATCH_CELLS = 500;
+const EMPTY_TASK_CONTENT_DEMO_ITEMS = Object.freeze([]);
 const OPERATIONS_SECTIONS = new Set([
   "cockpit",
   "task-operations",
+  "prompt-collection",
   "model-profit",
   "company-health",
   "entitlements",
@@ -58,6 +61,7 @@ const OPERATIONS_SOURCE_KEYS = [
   "relayChannels",
   "channelHealth",
   "relayUnknownSubmissions",
+  "relayProviderResultReconciliations",
   "relayCallbackDeadLetters",
   "exceptions",
   "matrix",
@@ -284,7 +288,7 @@ function positiveOrNull(value, label) {
   return number;
 }
 
-export function entitlementMutation({ companyId, product, grant, enabled }) {
+export function entitlementMutation({ companyId, company, product, grant, enabled }) {
   if (!product) throw new Error("未找到要变更的权益目录项，请刷新后重试。");
   const itemKind = product.kind === "model" ? "model" : "resource";
   const result = {
@@ -303,15 +307,28 @@ export function entitlementMutation({ companyId, product, grant, enabled }) {
     throw new Error("权益到期时间必须晚于生效时间。");
   }
   if (itemKind === "model") {
-    const price = positiveOrNull(grant?.priceCents, "企业单价");
+    const billingUnit = company?.billingUnit ?? grant?.billingUnit;
+    const billingVersion = Number(company?.billingVersion ?? grant?.billingVersion);
+    const isPointBilling = billingUnit === "POINT" && billingVersion === 2;
+    const isLegacyBilling = billingUnit === "CNY_CENT" && billingVersion === 1;
+    if (!isPointBilling && !isLegacyBilling) {
+      throw new Error(`企业“${company?.name || companyId}”的计费版本证据不完整，请刷新后重试。`);
+    }
+    const price = positiveOrNull(
+      grant?.priceAmount
+        ?? (isPointBilling ? grant?.pricePoints : grant?.priceCents),
+      isPointBilling ? "企业积分单价" : "企业历史分币单价",
+    );
     if (result.enabled && price == null) {
       throw new Error(`模型“${product.name}”尚未配置企业单价，请先单独配置。`);
     }
+    result.billing_unit = billingUnit;
+    result.billing_version = billingVersion;
     if (price != null) {
       if (product.billingMode === "per_second") {
-        result.price_per_second_cents = price;
+        result[isPointBilling ? "price_per_second_points" : "price_per_second_cents"] = price;
       } else if (product.billingMode === "per_item") {
-        result.price_per_item_cents = price;
+        result[isPointBilling ? "price_per_item_points" : "price_per_item_cents"] = price;
       } else {
         throw new Error(`模型“${product.name}”的计费方式未配置，不能开通。`);
       }
@@ -322,7 +339,7 @@ export function entitlementMutation({ companyId, product, grant, enabled }) {
 
 function requireReason(value) {
   const reason = String(value || "").trim();
-  if (reason.length < 3) throw new Error("变更原因至少填写 3 个字符。");
+  if (Array.from(reason).length < 3) throw new Error("变更原因至少填写 3 个字符。");
   return reason;
 }
 
@@ -378,6 +395,12 @@ async function loadLiveData(client, range, signal) {
     add("relayUnknownSubmissions", "Relay 未知提交", () => (
       client.listAdminRelayUnknownSubmissions({ page: 1, page_size: 100 }, { signal })
     ));
+    add("relayProviderResultReconciliations", "Relay 供应商结果证据核对", () => (
+      client.listAdminRelayProviderResultReconciliations(
+        { page: 1, page_size: 100 },
+        { signal },
+      )
+    ));
     add("relayCallbackDeadLetters", "Relay callback dead letters", () => (
       client.listAdminRelayCallbackDeadLetters({ page: 1, page_size: 100 }, { signal })
     ));
@@ -431,10 +454,15 @@ export function AdminOperationsContainer({
   demoMode: requestedDemoMode = false,
   demoIdentity,
   demoPersonaId,
+  initialPlatformIdentity = null,
   onDemoPersonaChange,
+  onOpenPersonalCreation,
+  personalCreationPending = false,
+  personalCreationErrorMessageId = "",
   onLogout,
   onSessionError,
   onOpenBasicConfig,
+  operationsVisible = true,
   operationsContext = {},
   onOperationsContextChange,
   skin = "paper",
@@ -447,7 +475,9 @@ export function AdminOperationsContainer({
   const range = internalRange;
   const activeSection = internalSection;
   const [data, setData] = useState(null);
-  const [identity, setIdentity] = useState(demoMode ? demoIdentity : null);
+  const [identity, setIdentity] = useState(
+    demoMode ? demoIdentity : initialPlatformIdentity,
+  );
   const [loading, setLoading] = useState(!demoMode);
   const [error, setError] = useState("");
   const loadSequence = useRef(0);
@@ -526,6 +556,8 @@ export function AdminOperationsContainer({
   const canManageAssetExceptions = demoMode
     || hasPermissions(identity, "platform.asset_exceptions.manage");
   const canReadAudit = demoMode || hasPermissions(identity, "platform.audit.read");
+  const canReadTaskContent = demoMode
+    || hasPermissions(identity, "platform.task_content.read");
   const canReadAdminAccess = demoMode
     || hasPermissions(identity, "platform.admin_access.read");
   const canReadEntitlements = demoMode
@@ -579,8 +611,10 @@ export function AdminOperationsContainer({
 
   const saveEntitlement = useCallback(async ({ companyId, productId, grant, reason }) => {
     const product = data?.entitlementProducts?.find((item) => item.id === productId);
+    const company = data?.companies?.find((item) => item.id === companyId);
     const change = entitlementMutation({
       companyId,
+      company,
       product,
       grant,
       enabled: grant.state === "enabled",
@@ -607,11 +641,13 @@ export function AdminOperationsContainer({
       }
       const changes = (preview.changes || []).map((item) => {
         const product = data?.entitlementProducts?.find((entry) => entry.id === item.productId);
+        const company = data?.companies?.find((entry) => entry.id === item.companyId);
         const grant = data?.entitlementGrants?.[
           buildEntitlementKey(item.companyId, item.productId)
         ];
         return entitlementMutation({
           companyId: item.companyId,
+          company,
           product,
           grant,
           enabled: preview.mode === "enable",
@@ -884,6 +920,9 @@ export function AdminOperationsContainer({
       ]}
       demoPersonaId={demoPersonaId}
       onDemoPersonaChange={onDemoPersonaChange}
+      onOpenPersonalCreation={onOpenPersonalCreation}
+      personalCreationPending={personalCreationPending}
+      personalCreationErrorMessageId={personalCreationErrorMessageId}
       onLogout={onLogout}
       skin={skin}
       onSkinChange={onSkinChange}
@@ -918,6 +957,17 @@ export function AdminOperationsContainer({
       onRelayCallbackDeadLetterRedrive={demoMode ? undefined : redriveRelayCallbackDeadLetter}
       canManageRelayCallbackDeadLetters={canManageRelayHealth}
       isPlatformOwner={isPlatformOwner}
+      promptCollectionContent={canReadTaskContent ? (
+        <PromptCollectionContainer
+          key={identity?.user_id || demoPersonaId || "pending-platform-admin"}
+          active={operationsVisible && activeSection === "prompt-collection"}
+          client={client}
+          range={range}
+          demoMode={demoMode}
+          demoItems={data?.taskContent?.items ?? EMPTY_TASK_CONTENT_DEMO_ITEMS}
+          onAuthenticationError={onSessionError}
+        />
+      ) : null}
       showcaseContent={isPlatformOwner ? (
         <ShowcaseOperationsContainer
           active={activeSection === "showcase"}

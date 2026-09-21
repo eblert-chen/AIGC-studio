@@ -276,6 +276,8 @@ func isKnownTaskField(field string) bool {
 		"mode":            true,
 		"image":           true,
 		"images":          true,
+		"videos":          true,
+		"audios":          true,
 		"size":            true,
 		"duration":        true,
 		"input_reference": true, // Sora 特有字段

@@ -8,6 +8,7 @@ import test from "node:test";
 
 import {
   CANDIDATE_UPSTREAM_GIT_REVISION,
+  FAULT_RESTORE_ASSERTION,
   REQUIRED_FAULT_SCENARIOS,
   canonicalJson,
   runAcceptance,
@@ -78,6 +79,7 @@ function relayServer(options = {}) {
   const jobs = new Map();
   const idempotency = new Map();
   let sequence = 1;
+  let readinessCalls = 0;
   const catalog = {
     api_version: "v1",
     schema_version: 1,
@@ -131,17 +133,69 @@ function relayServer(options = {}) {
       return;
     }
     if (request.method === "GET" && request.url === "/health/ready") {
+      const readinessOverride = Array.isArray(options.readinessSequence)
+        ? options.readinessSequence[Math.min(readinessCalls, options.readinessSequence.length - 1)] ?? {}
+        : {};
+      readinessCalls += 1;
+      const productionCutoverReady =
+        readinessOverride.productionCutoverReady ?? options.productionCutoverReady ?? true;
+      const costReadiness = {
+        cost_incomplete: 0,
+        cost_backlog: 0,
+        cost_dead_letter: 0,
+        cost_successful_relay_jobs: 1,
+        native_billing_reconciliation_jobs: 0,
+        cost_reconciliation_complete: true,
+        ...options.costReadiness,
+        ...readinessOverride.costReadiness,
+      };
+      const operationalReadiness = {
+        enabled: true,
+        monitor_fresh: true,
+        monitor_last_error_code: "",
+        active_alerts: 0,
+        unavailable_routes: 0,
+        alert_backlog: 0,
+        alert_dead_letter: 0,
+        task_stage_backlog: 0,
+        task_stage_dead_letter: 0,
+        operations_snapshot_backlog: 0,
+        operations_snapshot_dead_letter: 0,
+        provider_result_reconciliation_backlog: 0,
+        ...options.operationalReadiness,
+        ...readinessOverride.operationalReadiness,
+      };
       sendJson(
         response,
-        options.readinessStatus ?? 200,
-        { state: options.readinessState ?? "healthy", dependencies: [] },
+        readinessOverride.readinessStatus ?? options.readinessStatus ?? 200,
+        {
+          state: readinessOverride.readinessState ?? options.readinessState ?? "healthy",
+          dependencies: [
+            {
+              name: "provider_runtime",
+              state: productionCutoverReady ? "healthy" : "degraded",
+              details: {
+                production_cutover_ready: productionCutoverReady,
+                ...operationalReadiness,
+                ...costReadiness,
+              },
+            },
+          ],
+        },
         {
           ...authHeaders,
           "x-relay-upstream-revision":
-            options.readinessUpstreamGitRevision ?? authHeaders["x-relay-upstream-revision"],
+            readinessOverride.readinessUpstreamGitRevision ??
+            options.readinessUpstreamGitRevision ??
+            authHeaders["x-relay-upstream-revision"],
           "x-relay-source-revision":
-            options.readinessSourceGitRevision ?? authHeaders["x-relay-source-revision"],
-          "x-relay-image-digest": options.readinessImageDigest ?? authHeaders["x-relay-image-digest"],
+            readinessOverride.readinessSourceGitRevision ??
+            options.readinessSourceGitRevision ??
+            authHeaders["x-relay-source-revision"],
+          "x-relay-image-digest":
+            readinessOverride.readinessImageDigest ??
+            options.readinessImageDigest ??
+            authHeaders["x-relay-image-digest"],
         },
       );
       return;
@@ -297,12 +351,15 @@ function faultServer(options = {}) {
       const { body, acceptedAt } = runs.get(match[1]);
       const completedAt = new Date().toISOString();
       const rawEvidence = REQUIRED_FAULT_SCENARIOS[body.scenario].map((assertion, index) => {
+        const isRestoreEvidence = assertion === FAULT_RESTORE_ASSERTION;
         const core = {
           id: `evidence-${index + 1}`,
           observed_at_utc: completedAt,
-          kind: "test_observation",
-          action: assertion,
-          data: { observed: assertion, source: "bound-test-fixture" },
+          kind: isRestoreEvidence ? "fault_cleanup" : "test_observation",
+          action: isRestoreEvidence ? "restore" : assertion,
+          data: isRestoreEvidence
+            ? { restored: true, source: "bound-test-fixture" }
+            : { observed: assertion, source: "bound-test-fixture" },
         };
         return { ...core, sha256: digest(canonicalJson(core)) };
       });
@@ -422,17 +479,26 @@ test("dry validation is fail-closed and can never authorize Python production ad
 
   assert.equal(report.gates.configuration.status, "PASS");
   assert.equal(report.gates["contract.candidate_readiness"].status, "BLOCKED");
+  assert.equal(report.gates["contract.candidate_readiness_final"].status, "BLOCKED");
   assert.equal(report.gates["contract.models_etag"].status, "BLOCKED");
   assert.equal(report.gates["fault.worker_kill"].status, "BLOCKED");
   assert.equal(report.gates["real_channel.text_to_video"].status, "BLOCKED");
   assert.equal(report.overall.status, "BLOCKED");
   assert.equal(report.overall.technical_acceptance_passed, false);
   assert.equal(report.overall.decision, "NO-GO");
-  assert.equal(report.schema_version, 2);
+  assert.equal(report.schema_version, 3);
   assert.equal(report.overall.active_production_relay, "new-api-v1");
   assert.equal(report.overall.python_relay_artifact_mode, "offline_historical_oracle_only");
   assert.equal(report.overall.python_relay_production_admission_allowed, false);
-  assert.equal(report.execution.python_relay_changed, false);
+  assert.equal(report.execution.python_relay_source_or_deployment_changed, false);
+  assert.deepEqual(report.execution.python_oracle_runtime_mutation, {
+    request_attempted: false,
+    accepted_mutation_confirmed: false,
+    attempted_request_count: 0,
+    accepted_mutation_count: 0,
+  });
+  assert.equal(report.execution.mutation_tracking.request_attempted, false);
+  assert.equal(report.execution.mutation_tracking.accepted_mutation_confirmed, false);
   const { integrity, ...unsigned } = report;
   assert.equal(integrity.canonical_sha256, digest(canonicalJson(unsigned)));
 });
@@ -446,6 +512,7 @@ test("missing credentials and fault control stay BLOCKED even when execution is 
   });
 
   assert.equal(report.gates["contract.candidate_readiness"].status, "BLOCKED");
+  assert.equal(report.gates["contract.candidate_readiness_final"].status, "BLOCKED");
   assert.equal(report.gates["contract.auth"].status, "BLOCKED");
   for (const scenario of Object.keys(REQUIRED_FAULT_SCENARIOS)) {
     assert.equal(report.gates[`fault.${scenario}`].status, "BLOCKED");
@@ -508,6 +575,137 @@ test("fault PASS is rejected when raw evidence is absent", async (t) => {
   assert.match(report.gates["fault.lease_expiry"].summary, /no raw evidence/);
 });
 
+test("fault PASS is rejected unless cleanup and restore are explicitly evidenced", async (t) => {
+  const faults = faultServer({
+    mutateResult: (result) => ({
+      ...result,
+      raw_evidence: result.raw_evidence.map((entry) => {
+        if (entry.kind !== "fault_cleanup") return entry;
+        const core = {
+          id: entry.id,
+          observed_at_utc: entry.observed_at_utc,
+          kind: "test_observation",
+          action: FAULT_RESTORE_ASSERTION,
+          data: { observed: FAULT_RESTORE_ASSERTION },
+        };
+        return { ...core, sha256: digest(canonicalJson(core)) };
+      }),
+    }),
+  });
+  const faultUrl = await listen(faults);
+  t.after(() => close(faults));
+  const config = baseConfig();
+  config.faultInjection = {
+    controlBaseUrl: faultUrl,
+    tokenEnv: "TEST_FAULT_TOKEN",
+    confirmIsolatedEnvironment: true,
+    pollIntervalMs: 1,
+    timeoutMs: 2_000,
+  };
+  const report = await runAcceptance(config, {
+    executeFaults: true,
+    env: {
+      TEST_RELAY_KEY_A: "key-a",
+      TEST_RELAY_KEY_B: "key-b",
+      TEST_FAULT_TOKEN: "fault-token",
+    },
+  });
+
+  assert.equal(report.gates["fault.lease_expiry"].status, "FAIL");
+  assert.match(
+    report.gates["fault.lease_expiry"].summary,
+    /explicit fault cleanup\/restore evidence/,
+  );
+  assert.equal(report.overall.technical_acceptance_passed, false);
+});
+
+test("fault PASS rejects URL-bearing raw evidence without copying it into the report", async (t) => {
+  const providerUrl = "https://provider.example.test/result.mp4?X-Amz-Signature=do-not-upload";
+  const faults = faultServer({
+    mutateResult: (result) => ({
+      ...result,
+      raw_evidence: result.raw_evidence.map((entry, index) => {
+        if (index !== 0) return entry;
+        const core = {
+          id: entry.id,
+          observed_at_utc: entry.observed_at_utc,
+          kind: entry.kind,
+          action: entry.action,
+          data: { ...entry.data, provider_result_url: providerUrl },
+        };
+        return { ...core, sha256: digest(canonicalJson(core)) };
+      }),
+    }),
+  });
+  const faultUrl = await listen(faults);
+  t.after(() => close(faults));
+  const config = baseConfig();
+  config.faultInjection = {
+    controlBaseUrl: faultUrl,
+    tokenEnv: "TEST_FAULT_TOKEN",
+    confirmIsolatedEnvironment: true,
+    pollIntervalMs: 1,
+    timeoutMs: 2_000,
+  };
+  const report = await runAcceptance(config, {
+    executeFaults: true,
+    env: {
+      TEST_RELAY_KEY_A: "key-a",
+      TEST_RELAY_KEY_B: "key-b",
+      TEST_FAULT_TOKEN: "fault-token",
+    },
+  });
+
+  assert.equal(report.gates["fault.lease_expiry"].status, "FAIL");
+  assert.match(report.gates["fault.lease_expiry"].summary, /not secret-free/);
+  assert.equal(JSON.stringify(report).includes(providerUrl), false);
+  assert.equal(JSON.stringify(report).includes("do-not-upload"), false);
+});
+
+test("fault PASS rejects repeatedly encoded URL and credential material", async (t) => {
+  const providerUrl = "https://provider.example.test/result.mp4?X-Amz-Signature=fault-token";
+  const encodedProviderUrl = encodeURIComponent(encodeURIComponent(providerUrl));
+  const faults = faultServer({
+    mutateResult: (result) => ({
+      ...result,
+      raw_evidence: result.raw_evidence.map((entry, index) => {
+        if (index !== 0) return entry;
+        const core = {
+          id: entry.id,
+          observed_at_utc: entry.observed_at_utc,
+          kind: entry.kind,
+          action: entry.action,
+          data: { ...entry.data, opaque_reference: encodedProviderUrl },
+        };
+        return { ...core, sha256: digest(canonicalJson(core)) };
+      }),
+    }),
+  });
+  const faultUrl = await listen(faults);
+  t.after(() => close(faults));
+  const config = baseConfig();
+  config.faultInjection = {
+    controlBaseUrl: faultUrl,
+    tokenEnv: "TEST_FAULT_TOKEN",
+    confirmIsolatedEnvironment: true,
+    pollIntervalMs: 1,
+    timeoutMs: 2_000,
+  };
+  const report = await runAcceptance(config, {
+    executeFaults: true,
+    env: {
+      TEST_RELAY_KEY_A: "key-a",
+      TEST_RELAY_KEY_B: "key-b",
+      TEST_FAULT_TOKEN: "fault-token",
+    },
+  });
+
+  assert.equal(report.gates["fault.lease_expiry"].status, "FAIL");
+  assert.match(report.gates["fault.lease_expiry"].summary, /not secret-free/);
+  assert.equal(JSON.stringify(report).includes(encodedProviderUrl), false);
+  assert.equal(JSON.stringify(report).includes("fault-token"), false);
+});
+
 test("fault result replay is rejected when nonce or candidate build differs", async (t) => {
   const faults = faultServer({
     mutateResult: (result) => ({
@@ -566,6 +764,7 @@ test("contract comparison executes every required compatibility gate", async (t)
 
   for (const id of [
     "contract.candidate_readiness",
+    "contract.candidate_readiness_final",
     "contract.auth",
     "contract.models_etag",
     "contract.strict_fields",
@@ -579,6 +778,67 @@ test("contract comparison executes every required compatibility gate", async (t)
     assert.match(report.gates[id].evidence_sha256, /^sha256:[0-9a-f]{64}$/);
   }
   assert.equal(report.overall.status, "BLOCKED", "fault and real-channel evidence remain mandatory");
+  assert.deepEqual(
+    report.execution.mutation_tracking.by_target.python_oracle,
+    {
+      request_attempted: true,
+      accepted_mutation_confirmed: true,
+      attempted_request_count: 7,
+      accepted_mutation_count: 2,
+    },
+  );
+  assert.deepEqual(
+    report.execution.mutation_tracking.by_target.new_api_candidate,
+    {
+      request_attempted: true,
+      accepted_mutation_confirmed: true,
+      attempted_request_count: 7,
+      accepted_mutation_count: 2,
+    },
+  );
+  assert.equal(report.execution.mutation_tracking.by_target.fault_control.request_attempted, false);
+});
+
+test("a lost mutating response remains an attempted request without fabricating confirmed acceptance", async (t) => {
+  const oracle = relayServer();
+  const candidate = relayServer();
+  const oracleUrl = await listen(oracle);
+  const candidateUrl = await listen(candidate);
+  t.after(async () => {
+    await Promise.all([close(oracle), close(candidate)]);
+  });
+  const fetchWithLostCandidateMutationResponses = async (input, init) => {
+    const url = new URL(input);
+    const response = await fetch(input, init);
+    if (
+      url.origin === candidateUrl
+      && url.pathname === "/v1/generations"
+      && init?.method === "POST"
+    ) {
+      const body = JSON.parse(String(init.body || "{}"));
+      const strictFieldRequest = Object.hasOwn(body, "unexpected_contract_field")
+        || Object.hasOwn(body.inputs || {}, "unexpected_contract_field")
+        || Object.hasOwn(body.output || {}, "unexpected_contract_field");
+      if (!strictFieldRequest) {
+        await response.arrayBuffer();
+        throw new Error("synthetic response loss after the candidate received the request");
+      }
+    }
+    return response;
+  };
+  const report = await runAcceptance(baseConfig(oracleUrl, candidateUrl), {
+    executeContracts: true,
+    fetchImpl: fetchWithLostCandidateMutationResponses,
+    now: () => new Date(NOW),
+    env: { TEST_RELAY_KEY_A: "key-a", TEST_RELAY_KEY_B: "key-b" },
+  });
+
+  const candidateMutation = report.execution.mutation_tracking.by_target.new_api_candidate;
+  assert.equal(candidateMutation.request_attempted, true);
+  assert.equal(candidateMutation.accepted_mutation_confirmed, false);
+  assert(candidateMutation.attempted_request_count >= 1);
+  assert.equal(candidateMutation.accepted_mutation_count, 0);
+  assert.equal(report.gates["contract.idempotency"].status, "BLOCKED");
 });
 
 test("an explicit fault control plane plus complete real receipts can satisfy all gates", async (t) => {
@@ -603,10 +863,23 @@ test("an explicit fault control plane plus complete real receipts can satisfy al
     timeoutMs: 2_000,
   };
   await addRealEvidence(config, directory);
+  const networkEvents = [];
+  const tracedFetch = async (input, init = {}) => {
+    const url = new URL(input);
+    const headers = new Headers(init.headers);
+    networkEvents.push({
+      origin: url.origin,
+      path: url.pathname,
+      method: init.method ?? "GET",
+      requestId: headers.get("x-request-id"),
+    });
+    return fetch(input, init);
+  };
 
   const report = await runAcceptance(config, {
     executeContracts: true,
     executeFaults: true,
+    fetchImpl: tracedFetch,
     configDir: directory,
     now: () => new Date(NOW),
     env: {
@@ -620,28 +893,123 @@ test("an explicit fault control plane plus complete real receipts can satisfy al
   assert.equal(report.overall.technical_acceptance_passed, true);
   assert.equal(report.overall.python_relay_production_admission_allowed, false);
   assert.equal(report.overall.decision, "OFFLINE_PARITY_PASSED_REQUIRES_EXTERNAL_RELEASE_GATES");
-  assert.equal(report.execution.mutating_service_actions_performed, false);
+  assert.equal(report.gates["contract.candidate_readiness"].status, "PASS");
+  assert.equal(report.gates["contract.candidate_readiness_final"].status, "PASS");
+  assert.equal(
+    report.gates["contract.candidate_readiness"].evidence[1].phase,
+    "preflight",
+  );
+  assert.equal(
+    report.gates["contract.candidate_readiness_final"].evidence[1].phase,
+    "final",
+  );
+  assert.equal(networkEvents.at(-1)?.requestId, "accept-candidate-readiness-final");
+  const finalReadinessIndex = networkEvents.length - 1;
+  const lastFaultControlIndex = networkEvents.findLastIndex(
+    (event) => event.origin === faultUrl && event.path.startsWith("/v1/relay-fault-injections"),
+  );
+  assert(lastFaultControlIndex >= 0 && lastFaultControlIndex < finalReadinessIndex);
+  assert.equal(report.schema_version, 3);
+  assert.equal(report.execution.mutation_tracking.request_attempted, true);
+  assert.equal(report.execution.mutation_tracking.accepted_mutation_confirmed, true);
+  assert.equal(
+    report.execution.mutation_tracking.by_target.fault_control.attempted_request_count,
+    Object.keys(REQUIRED_FAULT_SCENARIOS).length,
+  );
+  assert.equal(
+    report.execution.mutation_tracking.by_target.fault_control.accepted_mutation_count,
+    Object.keys(REQUIRED_FAULT_SCENARIOS).length,
+  );
+  assert.deepEqual(
+    report.execution.python_oracle_runtime_mutation,
+    report.execution.mutation_tracking.by_target.python_oracle,
+  );
   assert.match(report.integrity.canonical_sha256, /^sha256:[0-9a-f]{64}$/);
   for (const scenario of Object.keys(REQUIRED_FAULT_SCENARIOS)) {
     assert.equal(report.gates[`fault.${scenario}`].status, "PASS");
   }
 });
 
-test("candidate readiness fails closed unless state and live provenance match", async (t) => {
+test("candidate cutover fails closed unless explicit cost readiness and live provenance match", async (t) => {
   const oracle = relayServer();
-  const degraded = relayServer({ readinessState: "degraded" });
+  const costIncomplete = relayServer({ readinessState: "healthy", productionCutoverReady: false });
+  const stagingFlagBypass = relayServer({
+    readinessState: "healthy",
+    productionCutoverReady: true,
+    costReadiness: {
+      cost_incomplete: 1,
+      cost_backlog: 1,
+      cost_successful_relay_jobs: 0,
+      cost_reconciliation_complete: false,
+    },
+  });
+  const missingCostField = relayServer({
+    readinessState: "healthy",
+    productionCutoverReady: true,
+    costReadiness: { cost_backlog: undefined },
+  });
+  const fractionalSuccessfulJobs = relayServer({
+    readinessState: "healthy",
+    productionCutoverReady: true,
+    costReadiness: { cost_successful_relay_jobs: 1.5 },
+  });
+  const zeroSuccessfulJobs = relayServer({
+    readinessState: "healthy",
+    productionCutoverReady: true,
+    costReadiness: { cost_successful_relay_jobs: 0 },
+  });
   const mismatched = relayServer({ readinessSourceGitRevision: "e".repeat(40) });
-  const [oracleUrl, degradedUrl, mismatchedUrl] = await Promise.all([
+  const [
+    oracleUrl,
+    costIncompleteUrl,
+    stagingFlagBypassUrl,
+    missingCostFieldUrl,
+    fractionalSuccessfulJobsUrl,
+    zeroSuccessfulJobsUrl,
+    mismatchedUrl,
+  ] = await Promise.all([
     listen(oracle),
-    listen(degraded),
+    listen(costIncomplete),
+    listen(stagingFlagBypass),
+    listen(missingCostField),
+    listen(fractionalSuccessfulJobs),
+    listen(zeroSuccessfulJobs),
     listen(mismatched),
   ]);
   t.after(async () => {
-    await Promise.all([close(oracle), close(degraded), close(mismatched)]);
+    await Promise.all([
+      close(oracle),
+      close(costIncomplete),
+      close(stagingFlagBypass),
+      close(missingCostField),
+      close(fractionalSuccessfulJobs),
+      close(zeroSuccessfulJobs),
+      close(mismatched),
+    ]);
   });
 
   for (const [label, candidateUrl, expectedSummary] of [
-    ["degraded", degradedUrl, /state is not healthy/],
+    ["cost incomplete", costIncompleteUrl, /production_cutover_ready is not true/],
+    [
+      "staging flag bypass",
+      stagingFlagBypassUrl,
+      /live cost reconciliation evidence is incomplete/,
+    ],
+    [
+      "missing live cost field",
+      missingCostFieldUrl,
+      /live cost reconciliation evidence is incomplete/,
+    ],
+    [
+      "fractional successful job count",
+      fractionalSuccessfulJobsUrl,
+      /live cost reconciliation evidence is incomplete/,
+    ],
+    [
+      "zero successful jobs",
+      zeroSuccessfulJobsUrl,
+      /live cost reconciliation evidence is incomplete/,
+    ],
     ["mismatched provenance", mismatchedUrl, /source revision does not match/],
   ]) {
     const report = await runAcceptance(baseConfig(oracleUrl, candidateUrl), {
@@ -654,6 +1022,119 @@ test("candidate readiness fails closed unless state and live provenance match", 
     assert.equal(report.overall.technical_acceptance_passed, false, label);
     assert.equal(report.overall.python_relay_production_admission_allowed, false, label);
   }
+});
+
+test("candidate cutover independently rejects every provider operational blocker", async (t) => {
+  const oracle = relayServer();
+  const oracleUrl = await listen(oracle);
+  const cases = [
+    ["runtime disabled", { enabled: false }],
+    ["monitor stale", { monitor_fresh: false }],
+    ["monitor worker error", { monitor_last_error_code: "monitor_cycle_failed" }],
+    ["active alert", { active_alerts: 1 }],
+    ["unavailable route", { unavailable_routes: 1 }],
+    ["alert backlog", { alert_backlog: 1 }],
+    ["alert dead letter", { alert_dead_letter: 1 }],
+    ["task-stage backlog", { task_stage_backlog: 1 }],
+    ["task-stage dead letter", { task_stage_dead_letter: 1 }],
+    ["operations-snapshot backlog", { operations_snapshot_backlog: 1 }],
+    ["operations-snapshot dead letter", { operations_snapshot_dead_letter: 1 }],
+    ["provider-result reconciliation backlog", { provider_result_reconciliation_backlog: 1 }],
+    ["missing operational field", { alert_backlog: undefined }],
+  ];
+  const candidates = [];
+  t.after(async () => {
+    await Promise.all([close(oracle), ...candidates.map((candidate) => close(candidate))]);
+  });
+
+  for (const [label, operationalReadiness] of cases) {
+    const candidate = relayServer({
+      productionCutoverReady: true,
+      operationalReadiness,
+    });
+    candidates.push(candidate);
+    const candidateUrl = await listen(candidate);
+    const report = await runAcceptance(baseConfig(oracleUrl, candidateUrl), {
+      executeContracts: true,
+      now: () => new Date(NOW),
+      env: { TEST_RELAY_KEY_A: "key-a", TEST_RELAY_KEY_B: "key-b" },
+    });
+
+    assert.equal(report.gates["contract.candidate_readiness"].status, "FAIL", label);
+    assert.match(
+      report.gates["contract.candidate_readiness"].summary,
+      /provider operational readiness evidence is incomplete/,
+      label,
+    );
+    assert.equal(report.overall.technical_acceptance_passed, false, label);
+  }
+});
+
+test("final candidate readiness re-attests state, cost, and provenance after all mutations", async (t) => {
+  const oracle = relayServer();
+  const oracleUrl = await listen(oracle);
+  const cases = [
+    ["HTTP status", { readinessStatus: 503 }, /final readiness returned HTTP 503/],
+    ["cutover flag", { productionCutoverReady: false }, /final production_cutover_ready is not true/],
+    [
+      "cost backlog",
+      {
+        costReadiness: {
+          cost_incomplete: 1,
+          cost_backlog: 1,
+          cost_dead_letter: 1,
+          cost_reconciliation_complete: false,
+        },
+      },
+      /final live cost reconciliation evidence is incomplete/,
+    ],
+    [
+      "provider operational backlog",
+      { operationalReadiness: { provider_result_reconciliation_backlog: 1 } },
+      /final provider operational readiness evidence is incomplete/,
+    ],
+    ["source revision", { readinessSourceGitRevision: "e".repeat(40) }, /final readiness source revision does not match/],
+    ["image digest", { readinessImageDigest: `sha256:${"f".repeat(64)}` }, /final readiness image digest does not match/],
+  ];
+  const candidates = [];
+  t.after(async () => {
+    await Promise.all([close(oracle), ...candidates.map((candidate) => close(candidate))]);
+  });
+
+  for (const [label, finalOverride, expectedSummary] of cases) {
+    const candidate = relayServer({ readinessSequence: [{}, finalOverride] });
+    candidates.push(candidate);
+    const candidateUrl = await listen(candidate);
+    const report = await runAcceptance(baseConfig(oracleUrl, candidateUrl), {
+      executeContracts: true,
+      now: () => new Date(NOW),
+      env: { TEST_RELAY_KEY_A: "key-a", TEST_RELAY_KEY_B: "key-b" },
+    });
+
+    assert.equal(report.gates["contract.candidate_readiness"].status, "PASS", label);
+    assert.equal(report.gates["contract.candidate_readiness_final"].status, "FAIL", label);
+    assert.match(report.gates["contract.candidate_readiness_final"].summary, expectedSummary, label);
+    assert.equal(report.overall.technical_acceptance_passed, false, label);
+    assert.equal(report.overall.status, "FAIL", label);
+  }
+});
+
+test("degraded runtime remains serviceable but cannot authorize production cutover", async (t) => {
+  const oracle = relayServer();
+  const candidate = relayServer({ readinessState: "degraded", productionCutoverReady: true });
+  const [oracleUrl, candidateUrl] = await Promise.all([listen(oracle), listen(candidate)]);
+  t.after(async () => Promise.all([close(oracle), close(candidate)]));
+
+  const report = await runAcceptance(baseConfig(oracleUrl, candidateUrl), {
+    executeContracts: true,
+    now: () => new Date(NOW),
+    env: { TEST_RELAY_KEY_A: "key-a", TEST_RELAY_KEY_B: "key-b" },
+  });
+  assert.equal(report.gates["contract.candidate_readiness"].status, "FAIL");
+  assert.match(report.gates["contract.candidate_readiness"].summary, /preflight readiness state is not healthy/);
+  assert.equal(report.gates["contract.candidate_readiness_final"].status, "FAIL");
+  assert.match(report.gates["contract.candidate_readiness_final"].summary, /final readiness state is not healthy/);
+  assert.equal(report.overall.technical_acceptance_passed, false);
 });
 
 test("real channel cost evidence requires occurrence time and conflict rejection proof", async () => {
@@ -676,6 +1157,25 @@ test("real channel cost evidence requires occurrence time and conflict rejection
     /providerCost\.idempotencyConflictRejectedVerified=true/,
   );
   assert.equal(report.overall.python_relay_production_admission_allowed, false);
+});
+
+test("real channel references reject provider URLs without copying them into the report", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "relay-url-evidence-test-"));
+  const config = baseConfig();
+  await addRealEvidence(config, directory);
+  const providerUrl = "https://provider.example.test/result.mp4?X-Amz-Signature=do-not-upload";
+  config.realChannelAcceptance[0].provider.taskReference = providerUrl;
+
+  const report = await runAcceptance(config, {
+    configDir: directory,
+    now: () => new Date(NOW),
+    env: { TEST_RELAY_KEY_A: "key-a", TEST_RELAY_KEY_B: "key-b" },
+  });
+
+  assert.equal(report.gates["real_channel.text_to_video"].status, "FAIL");
+  assert.match(report.gates["real_channel.text_to_video"].summary, /not secret-free/);
+  assert.equal(JSON.stringify(report).includes(providerUrl), false);
+  assert.equal(JSON.stringify(report).includes("do-not-upload"), false);
 });
 
 test("reports are create-only and never overwritten", async () => {

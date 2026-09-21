@@ -1,0 +1,15 @@
+# Reviewed runtime inputs. Regenerate with node scripts/lock-platform-dependencies.mjs.
+fastapi==0.136.3
+uvicorn[standard]==0.52.4
+sqlalchemy==2.0.36
+alembic==1.19.1
+pydantic==2.10.3
+pydantic-settings==2.15.0
+email-validator==2.3.0
+psycopg[binary]==3.3.4
+jsonschema==4.26.0
+httpx==0.28.1
+python-multipart==0.0.32
+Pillow==12.3.0
+cryptography==50.0.1
+tldextract==5.3.1

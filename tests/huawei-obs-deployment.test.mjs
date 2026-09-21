@@ -8,8 +8,8 @@ const platformPolicy = JSON.parse(read("deploy/huawei-obs-platform-policy.json")
 const relayPolicy = JSON.parse(read("deploy/huawei-obs-relay-policy.json"));
 
 const expectedEndpoint = "https://obs.cn-south-1.myhuaweicloud.com";
-const expectedBucket = "chen-aivideo";
-const expectedHost = "chen-aivideo.obs.cn-south-1.myhuaweicloud.com";
+const expectedBucket = "chen-aivideo-c7a5";
+const expectedHost = "chen-aivideo-c7a5.obs.cn-south-1.myhuaweicloud.com";
 
 function valueOf(name) {
   const match = env.match(new RegExp(`^${name}=(.*)$`, "m"));
@@ -74,6 +74,7 @@ test("keeps Platform and Relay OBS permissions prefix-scoped and non-destructive
   assert.deepEqual(
     actions(relayPolicy),
     new Set([
+      "obs:bucket:GetBucketVersioning",
       "obs:bucket:HeadBucket",
       "obs:object:GetObject",
       "obs:object:PutObject",

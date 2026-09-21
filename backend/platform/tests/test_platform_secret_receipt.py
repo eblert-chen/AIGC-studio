@@ -271,7 +271,7 @@ def test_marker_v2_bytes_match_the_go_cross_language_golden() -> None:
     }
     raw = platform_secret_receipt._go_commit_marker_bytes(marker)
     assert hashlib.sha256(raw).hexdigest() == (
-        "80df3044f8b70c36b106ebf3b32c50159e25bc8d7f97e682dcf82d1918729c17"
+        "ab35c59a6a9cd5cea210014a985b49b77934ae6a0a80d4fcb9aa81defe3c91a0"
     )
     assert (
         platform_secret_receipt.parse_platform_secret_isolation_commit_marker(

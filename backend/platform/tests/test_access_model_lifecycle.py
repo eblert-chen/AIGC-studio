@@ -13,6 +13,9 @@ from platform_api.models import AuditLog, CompanyModelGrant, MembershipRole, Rol
 from platform_api.services.companies import CompanyService
 
 from .conftest import bootstrap
+from .test_model_capability_v1_contract import (
+    _request_with_fixture_distribution_evidence,
+)
 
 
 def _admin_headers(client, suffix: str = "lifecycle") -> tuple[str, dict[str, str]]:
@@ -580,30 +583,42 @@ def test_platform_admin_model_catalog_full_lifecycle(client, app, tenant):
     )
     assert stale.status_code == 409
 
-    published = client.post(
-        f"/api/v1/platform-admin/models/{model['id']}/publish",
-        headers=admin_headers,
+    published = _request_with_fixture_distribution_evidence(
+        client,
+        model["id"],
+        lambda: client.post(
+            f"/api/v1/platform-admin/models/{model['id']}/publish",
+            headers=admin_headers,
+        ),
     )
     assert published.status_code == 200
     assert published.json()["status"] == "published"
     published_at = published.json()["published_at"]
     assert published_at
     assert (
-        client.post(
-            f"/api/v1/platform-admin/models/{model['id']}/publish",
-            headers=admin_headers,
+        _request_with_fixture_distribution_evidence(
+            client,
+            model["id"],
+            lambda: client.post(
+                f"/api/v1/platform-admin/models/{model['id']}/publish",
+                headers=admin_headers,
+            ),
         ).json()["published_at"]
         == published_at
     )
 
-    grant = client.put(
-        f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
-        headers=admin_headers,
-        json={
-            "model_id": model["id"],
-            "enabled": True,
-            "price_per_item_cents": 100,
-        },
+    grant = _request_with_fixture_distribution_evidence(
+        client,
+        model["id"],
+        lambda: client.put(
+            f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
+            headers=admin_headers,
+            json={
+                "model_id": model["id"],
+                "enabled": True,
+                "price_per_item_cents": 100,
+            },
+        ),
     )
     assert grant.status_code == 200, grant.text
     assert (
@@ -631,21 +646,27 @@ def test_platform_admin_model_catalog_full_lifecycle(client, app, tenant):
 
     revised_payload = {
         **update_payload,
+        "display_name": "Catalog Video Pro Revised",
         "expected_capability_version": 2,
-        "capabilities": [
-            {"key": "duration", "config": {"values": [5, 10, 15, 20]}},
-        ],
+        # This access-lifecycle test does not manufacture a wider Relay
+        # capability ceiling.  Preserve the approved capability payload while
+        # still exercising a second draft revision and republish.
+        "capabilities": update_payload["capabilities"],
     }
     revised = client.put(
         f"/api/v1/platform-admin/models/{model['id']}",
         headers=admin_headers,
         json=revised_payload,
     )
-    assert revised.status_code == 200
+    assert revised.status_code == 200, revised.text
     assert revised.json()["capability_version"] == 3
-    republished = client.post(
-        f"/api/v1/platform-admin/models/{model['id']}/publish",
-        headers=admin_headers,
+    republished = _request_with_fixture_distribution_evidence(
+        client,
+        model["id"],
+        lambda: client.post(
+            f"/api/v1/platform-admin/models/{model['id']}/publish",
+            headers=admin_headers,
+        ),
     )
     assert republished.status_code == 200
     assert republished.json()["published_at"] == published_at

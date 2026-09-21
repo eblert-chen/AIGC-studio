@@ -42,10 +42,18 @@ type testResult struct {
 	newAPIError *types.NewAPIError
 }
 
+func isVolcEngineSeedreamTest(channel *model.Channel, modelName string) bool {
+	return channel != nil && channel.Type == constant.ChannelTypeVolcEngine &&
+		strings.Contains(strings.ToLower(strings.TrimSpace(modelName)), "seedream")
+}
+
 func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointType string) string {
 	normalized := strings.TrimSpace(endpointType)
 	if normalized != "" {
 		return normalized
+	}
+	if isVolcEngineSeedreamTest(channel, modelName) {
+		return string(constant.EndpointTypeImageGeneration)
 	}
 	if strings.HasSuffix(modelName, ratio_setting.CompactModelSuffix) {
 		return string(constant.EndpointTypeOpenAIResponseCompact)
@@ -76,6 +84,13 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// UI-managed provider credentials are deliberately unreachable from the
+	// legacy channel-test surface.  Keep this guard before user-cache lookup,
+	// adaptor construction, credential selection, and every possible provider
+	// request so direct/unit callers are protected as well as HTTP handlers.
+	if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
+		return testResult{localErr: model.ErrProviderOnboardingManagedChannel}
 	}
 	tik := time.Now()
 	if !service.IsChannelTestSupported(channel.Type) {
@@ -697,6 +712,16 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 			}
 		case constant.EndpointTypeImageGeneration:
 			// 返回 ImageRequest
+			if isVolcEngineSeedreamTest(channel, model) {
+				return &dto.ImageRequest{
+					Model:          model,
+					Prompt:         "a cute cat",
+					Size:           "2K",
+					ResponseFormat: "url",
+					Stream:         lo.ToPtr(false),
+					Watermark:      lo.ToPtr(true),
+				}
+			}
 			return &dto.ImageRequest{
 				Model:  model,
 				Prompt: "a cute cat",
@@ -822,6 +847,9 @@ func TestChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if rejectNativeManagedProviderChannel(c, channelId) {
+		return
+	}
 	channel, err := model.CacheGetChannel(channelId)
 	if err != nil {
 		channel, err = model.GetChannelById(channelId, true)
@@ -910,7 +938,8 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 		if report != nil {
 			report(index, total) // channels completed before this one
 		}
-		if channel.Status == common.ChannelStatusManuallyDisabled {
+		if channel == nil || model.IsProviderOnboardingManagedChannel(channel) ||
+			channel.Status == common.ChannelStatusManuallyDisabled {
 			continue
 		}
 		isChannelEnabled := channel.Status == common.ChannelStatusEnabled
@@ -990,8 +1019,10 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 	if err != nil {
 		return channelTestSummary{}, err
 	}
-	channels, err := model.GetAllChannels(0, 0, true, false)
-	if err != nil {
+	var channels []*model.Channel
+	if err := model.ExcludeProviderOnboardingManagedChannels(
+		model.DB.Model(&model.Channel{}),
+	).Find(&channels).Error; err != nil {
 		return channelTestSummary{}, err
 	}
 	if strings.TrimSpace(mode) == "" {
@@ -1009,6 +1040,9 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 func selectChannelsForAutomaticTest(channels []*model.Channel, mode string) []*model.Channel {
 	selected := make([]*model.Channel, 0, len(channels))
 	for _, channel := range channels {
+		if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
+			continue
+		}
 		if channel.Status == common.ChannelStatusManuallyDisabled {
 			continue
 		}

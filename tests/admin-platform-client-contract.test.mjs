@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createPlatformClient } from "../src/api/platformClient.js";
+import {
+  createPlatformAdminApi,
+  RELAY_CHANNEL_TEST_TIMEOUT_MS,
+} from "../src/api/platformAdminApi.js";
+import { PlatformApiError } from "../src/api/platformCore.js";
 
 
 function jsonResponse(value = {}) {
@@ -27,6 +32,86 @@ function capturingClient() {
 }
 
 
+test("personal point grants use an owner-scoped idempotent write and paged history", async () => {
+  const { captured, client } = capturingClient();
+
+  await client.grantPersonalUserPoints("user/friend@example.cn", {
+    amountPoints: 1_200,
+    note: "封闭内测体验额度",
+    idempotencyKey: "personal-points-grant-20260828-1",
+  });
+  await client.listPersonalUserPointGrants(
+    "user/friend@example.cn",
+    { page: 2, page_size: 20 },
+  );
+
+  assert.deepEqual(captured.map(({ url }) => url), [
+    "https://platform.example/api/v1/platform-admin/users/user%2Ffriend%40example.cn/points-grants",
+    "https://platform.example/api/v1/platform-admin/users/user%2Ffriend%40example.cn/points-grants?page=2&page_size=20",
+  ]);
+  assert.deepEqual(captured.map(({ options }) => options.method), ["POST", "GET"]);
+  assert.deepEqual(JSON.parse(captured[0].options.body), {
+    amount_points: 1_200,
+    note: "封闭内测体验额度",
+    idempotency_key: "personal-points-grant-20260828-1",
+  });
+  assert.equal(
+    captured[0].options.headers["Idempotency-Key"],
+    "personal-points-grant-20260828-1",
+  );
+  assert.equal(captured[0].options.headers["X-Company-ID"], undefined);
+  assert.equal(captured[1].options.headers["X-Company-ID"], undefined);
+});
+
+
+test("personal point grants fail locally when the stable operation key is missing", () => {
+  const { captured, client } = capturingClient();
+
+  assert.throws(
+    () => client.grantPersonalUserPoints("user-1", {
+      amountPoints: 500,
+      note: "内测额度",
+      idempotencyKey: "",
+    }),
+    (error) => error?.code === "IDEMPOTENCY_KEY_REQUIRED",
+  );
+  assert.equal(captured.length, 0);
+});
+
+test("company point migration pins the reconciled cent balance and a stable operation key", async () => {
+  const { captured, client } = capturingClient();
+
+  await client.migrateAdminCompanyBillingToPoints("company/legacy", {
+    expectedAvailableCents: 12_345,
+    idempotencyKey: "company-points-migration-20260829-1",
+  });
+
+  assert.equal(
+    captured[0].url,
+    "https://platform.example/api/v1/platform-admin/companies/company%2Flegacy/billing/migrate-to-points",
+  );
+  assert.equal(captured[0].options.method, "POST");
+  assert.equal(captured[0].options.headers["X-Company-ID"], undefined);
+  assert.equal(
+    captured[0].options.headers["Idempotency-Key"],
+    "company-points-migration-20260829-1",
+  );
+  assert.deepEqual(JSON.parse(captured[0].options.body), {
+    expected_available_cents: 12_345,
+    idempotency_key: "company-points-migration-20260829-1",
+  });
+
+  assert.throws(
+    () => client.migrateAdminCompanyBillingToPoints("company-1", {
+      expectedAvailableCents: 1_000,
+      idempotencyKey: "",
+    }),
+    (error) => error?.code === "IDEMPOTENCY_KEY_REQUIRED",
+  );
+  assert.equal(captured.length, 1);
+});
+
+
 test("platform administrator analytics and entitlement reads preserve every query contract", async () => {
   const { captured, client } = capturingClient();
 
@@ -49,6 +134,7 @@ test("platform administrator analytics and entitlement reads preserve every quer
     page: 3,
     page_size: 40,
     low_balance_threshold_cents: 12000,
+    low_balance_threshold_points: 1200,
     inactivity_days: 21,
     stale_reservation_hours: 12,
     failure_rate_threshold: 0.35,
@@ -77,7 +163,7 @@ test("platform administrator analytics and entitlement reads preserve every quer
     "https://platform.example/api/v1/platform-admin/analytics/operating-series?start_time=2026-07-01T00%3A00%3A00.000Z&end_time=2026-08-01T00%3A00%3A00.000Z&granularity=week",
     "https://platform.example/api/v1/platform-admin/analytics/task-operations?start_time=2026-08-01T00%3A00%3A00.000Z&end_time=2026-08-08T00%3A00%3A00.000Z",
     "https://platform.example/api/v1/platform-admin/analytics/model-profitability?start_time=2026-07-08T00%3A00%3A00.000Z&end_time=2026-08-08T00%3A00%3A00.000Z&include_inactive=false",
-    "https://platform.example/api/v1/platform-admin/analytics/company-health?page=3&page_size=40&low_balance_threshold_cents=12000&inactivity_days=21&stale_reservation_hours=12&failure_rate_threshold=0.35&minimum_terminal_tasks=8&abnormal_spend_ratio=4.5",
+    "https://platform.example/api/v1/platform-admin/analytics/company-health?page=3&page_size=40&low_balance_threshold_cents=12000&low_balance_threshold_points=1200&inactivity_days=21&stale_reservation_hours=12&failure_rate_threshold=0.35&minimum_terminal_tasks=8&abnormal_spend_ratio=4.5",
     "https://platform.example/api/v1/platform-admin/analytics/channel-health?start_time=2026-08-01T00%3A00%3A00.000Z&end_time=2026-08-08T00%3A00%3A00.000Z",
     "https://platform.example/api/v1/platform-admin/analytics/data-readiness",
     "https://platform.example/api/v1/platform-admin/analytics/exceptions?limit_per_category=75",
@@ -283,12 +369,21 @@ test("Relay unknown-submission operations use fenced reads and a non-retrying re
   const jobId = "91c5cd71-bde2-4cf9-b6ed-b264b0841f51";
   const body = {
     outcome: "created",
-    upstream_task_id: "provider-task-8842",
+    upstream_task_id: `seedream:${"d".repeat(64)}`,
     expected_route_id: 208,
     expected_submission_attempt: 1,
     expected_reconciliation_token: `sha256:${"a".repeat(64)}`,
     verification_reference: "provider-console-event-7781",
     reason: "值班负责人已核对 Provider 控制台",
+    synchronous_result: {
+      provider_model_id: "doubao-seedream-5-0-260128",
+      provider_response_sha256: "d".repeat(64),
+      artifact_url: "https://provider.example/result.png?temporary=one-time",
+      provider_created_at: "2026-08-28T01:02:03Z",
+      generated_images: 1,
+      output_tokens: 144,
+      total_tokens: 160,
+    },
   };
 
   await client.listAdminRelayUnknownSubmissions({ page: 2, page_size: 50 });
@@ -312,6 +407,25 @@ test("Relay unknown-submission operations use fenced reads and a non-retrying re
   );
   assert.deepEqual(JSON.parse(captured[4].options.body), body);
   assert.equal(captured[4].options.headers["Idempotency-Key"], undefined);
+});
+
+test("provider-result reconciliation is exposed only through read-only Platform facade GETs", async () => {
+  const { captured, client } = capturingClient();
+  const jobId = "91c5cd71-bde2-4cf9-b6ed-b264b0841f51";
+
+  await client.listAdminRelayProviderResultReconciliations({ page: 2, page_size: 50 });
+  await client.getAdminRelayProviderResultReconciliation(jobId);
+
+  assert.deepEqual(captured.map(({ url }) => url), [
+    "https://platform.example/api/v1/platform-admin/relay/provider-result-reconciliation?page=2&page_size=50",
+    `https://platform.example/api/v1/platform-admin/relay/provider-result-reconciliation/${jobId}`,
+  ]);
+  assert.deepEqual(captured.map(({ options }) => options.method), ["GET", "GET"]);
+  for (const { url, options } of captured) {
+    assert.match(url, /^https:\/\/platform\.example\/api\/v1\/platform-admin\/relay\//);
+    assert.equal(options.body, undefined);
+    assert.equal(options.headers["Idempotency-Key"], undefined);
+  }
 });
 
 test("Relay callback dead-letter operations stay behind Platform and never transport-retry redrive", async () => {
@@ -358,6 +472,9 @@ test("Relay channel control and native-console authorization use only Platform f
     operationId: testOperationId,
     reason: "Run approved channel connectivity test",
     approved: true,
+    publicModelId: "seedance-1.5-pro",
+    routeId: "volcengine-seedance-primary-01",
+    mode: "image_to_video",
   });
   await client.setAdminRelayChannelStatus(channelId, {
     operationId: statusOperationId,
@@ -382,6 +499,9 @@ test("Relay channel control and native-console authorization use only Platform f
     operation_id: testOperationId,
     reason: "Run approved channel connectivity test",
     approved: true,
+    public_model_id: "seedance-1.5-pro",
+    route_id: "volcengine-seedance-primary-01",
+    mode: "image_to_video",
   });
   assert.deepEqual(JSON.parse(captured[4].options.body), {
     operation_id: statusOperationId,
@@ -394,6 +514,47 @@ test("Relay channel control and native-console authorization use only Platform f
   assert.equal(captured[3].options.headers["Idempotency-Key"], testOperationId);
   assert.equal(captured[4].options.headers["Idempotency-Key"], statusOperationId);
   assert.equal(captured[5].options.body, undefined);
+});
+
+test("Relay route tests fail locally without controlled identity and use only their dedicated timeout", async () => {
+  const captured = [];
+  const client = createPlatformAdminApi({
+    request: async (path, options) => {
+      captured.push({ path, options });
+      return {};
+    },
+    companyPath: () => "",
+    makeRequestId: () => "unused",
+    withQuery: (path) => path,
+    PlatformApiError,
+  });
+  const baseRequest = {
+    operationId: "relay-channel-test-timeout-20260828",
+    reason: "Run the controlled Seedance acceptance route",
+    approved: true,
+  };
+
+  assert.throws(
+    () => client.testAdminRelayChannel(17, baseRequest),
+    (error) => error?.code === "RELAY_ROUTE_IDENTITY_REQUIRED",
+  );
+  assert.equal(captured.length, 0);
+
+  await client.testAdminRelayChannel(17, {
+    ...baseRequest,
+    publicModelId: "video.seedance.2",
+    routeId: "volcengine-ark-seedance2-account-1",
+  });
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].options.timeoutMs, RELAY_CHANNEL_TEST_TIMEOUT_MS);
+  assert.equal(RELAY_CHANNEL_TEST_TIMEOUT_MS, 660_000);
+  assert.deepEqual(captured[0].options.body, {
+    operation_id: baseRequest.operationId,
+    reason: baseRequest.reason,
+    approved: true,
+    public_model_id: "video.seedance.2",
+    route_id: "volcengine-ark-seedance2-account-1",
+  });
 });
 
 test("native-console authorization preserves FastAPI detail errors and elevates step-up headers", async () => {

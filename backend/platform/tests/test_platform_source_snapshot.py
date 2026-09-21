@@ -71,6 +71,44 @@ def test_platform_source_snapshot_ignores_only_docker_excluded_bytecode(
     assert snapshot_module.compute_platform_source_snapshot(copied) == before
 
 
+@pytest.mark.parametrize("lock_name", ["requirements.txt", "requirements-obs.txt"])
+def test_platform_image_snapshot_binds_each_installable_dependency_lock(
+    tmp_path: Path, lock_name: str,
+) -> None:
+    assert lock_name in snapshot_module.INCLUDED_FILES
+    copied = tmp_path / "source"
+    copied.mkdir()
+    _copy_snapshot_inputs(copied)
+    before = snapshot_module.compute_platform_source_snapshot(copied)
+    lock = copied / lock_name
+    original = lock.read_bytes()
+    lock.write_bytes(original + b"\n# synthetic dependency-lock drift\n")
+    assert snapshot_module.compute_platform_source_snapshot(copied) != before
+    lock.write_bytes(original)
+    assert snapshot_module.compute_platform_source_snapshot(copied) == before
+
+
+@pytest.mark.parametrize("lock_name", ["requirements.txt", "requirements-obs.txt"])
+def test_platform_image_snapshot_rejects_missing_installable_dependency_lock(
+    tmp_path: Path, lock_name: str,
+) -> None:
+    copied = tmp_path / "source"
+    copied.mkdir()
+    _copy_snapshot_inputs(copied)
+    (copied / lock_name).unlink()
+    with pytest.raises(snapshot_module.SourceSnapshotError, match="unavailable"):
+        snapshot_module.compute_platform_source_snapshot(copied)
+
+
+def test_platform_image_snapshot_excludes_noninstalled_dependency_planning_inputs() -> None:
+    # These inputs are bound by the broader Platform/harness snapshots. They
+    # are not installed or COPYed into the runtime image's source staging area.
+    assert not set(snapshot_module.INCLUDED_FILES).intersection({
+        "requirements.in", "requirements-obs.in", "requirements-dev.in",
+        "requirements-dev.txt",
+    })
+
+
 def test_platform_source_snapshot_cli_fails_closed_on_wrong_expected_digest() -> None:
     assert (
         snapshot_module._main(

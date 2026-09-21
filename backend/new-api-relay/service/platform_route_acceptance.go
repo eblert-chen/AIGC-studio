@@ -18,11 +18,10 @@ import (
 )
 
 const (
-	platformRouteAcceptanceKind               = "relay_route_acceptance"
-	platformRouteAcceptanceSchemaVersion      = 1
-	platformRouteAcceptanceSignatureDomain    = "ai-video/new-api-relay/route-acceptance/v1\x00"
-	platformRouteAcceptanceMaximumLifetime    = 90 * 24 * time.Hour
-	platformRouteAcceptanceClockSkewAllowance = 5 * time.Minute
+	platformRouteAcceptanceKind            = "relay_route_acceptance"
+	platformRouteAcceptanceSchemaVersion   = 1
+	platformRouteAcceptanceSignatureDomain = "ai-video/new-api-relay/route-acceptance/v1\x00"
+	platformRouteAcceptanceMaximumLifetime = 90 * 24 * time.Hour
 )
 
 var (
@@ -42,31 +41,36 @@ var (
 // its normalized capability digest. The duplicated identities below make an
 // audit record useful without requiring the original route document.
 type PlatformRouteAcceptanceManifest struct {
-	SchemaVersion          int      `json:"schema_version"`
-	Kind                   string   `json:"kind"`
-	AcceptanceID           string   `json:"acceptance_id"`
-	KeyID                  string   `json:"key_id"`
-	Environment            string   `json:"environment"`
-	Model                  string   `json:"model"`
-	Modes                  []string `json:"modes"`
-	RouteID                string   `json:"route_id"`
-	ProviderName           string   `json:"provider_name"`
-	AccountID              string   `json:"account_id"`
-	ChannelID              int      `json:"channel_id"`
-	NativeChannelType      int      `json:"native_channel_type"`
-	KeyIndex               int      `json:"key_index"`
-	KeyFingerprint         string   `json:"key_fingerprint"`
-	ChannelClass           string   `json:"channel_class"`
-	UpstreamModel          string   `json:"upstream_model"`
-	RPMLimit               int      `json:"rpm_limit"`
-	ActiveTaskLimit        int      `json:"active_task_limit"`
-	CapabilitySHA256       string   `json:"capability_sha256"`
-	RouteDeclarationSHA256 string   `json:"route_declaration_sha256"`
-	SourceRevision         string   `json:"source_revision"`
-	SourceSnapshotSHA256   string   `json:"source_snapshot_sha256"`
-	ImageDigest            string   `json:"image_digest"`
-	NotBefore              string   `json:"not_before"`
-	NotAfter               string   `json:"not_after"`
+	SchemaVersion             int      `json:"schema_version"`
+	Kind                      string   `json:"kind"`
+	AcceptanceID              string   `json:"acceptance_id"`
+	KeyID                     string   `json:"key_id"`
+	Environment               string   `json:"environment"`
+	Model                     string   `json:"model"`
+	Modes                     []string `json:"modes"`
+	RouteID                   string   `json:"route_id"`
+	ProviderName              string   `json:"provider_name"`
+	AccountID                 string   `json:"account_id"`
+	ChannelID                 int      `json:"channel_id"`
+	NativeChannelType         int      `json:"native_channel_type"`
+	KeyIndex                  int      `json:"key_index"`
+	KeyFingerprint            string   `json:"key_fingerprint"`
+	ChannelClass              string   `json:"channel_class"`
+	UpstreamModel             string   `json:"upstream_model"`
+	RPMLimit                  int      `json:"rpm_limit"`
+	ActiveTaskLimit           int      `json:"active_task_limit"`
+	CapabilityProfileID       string   `json:"capability_profile_id,omitempty"`
+	CapabilityProfileRevision string   `json:"capability_profile_revision,omitempty"`
+	ModelReleaseID            string   `json:"model_release_id,omitempty"`
+	ModelReleaseRevision      string   `json:"model_release_revision,omitempty"`
+	ModelCapabilityRevision   string   `json:"model_capability_revision,omitempty"`
+	CapabilitySHA256          string   `json:"capability_sha256"`
+	RouteDeclarationSHA256    string   `json:"route_declaration_sha256"`
+	SourceRevision            string   `json:"source_revision"`
+	SourceSnapshotSHA256      string   `json:"source_snapshot_sha256"`
+	ImageDigest               string   `json:"image_digest"`
+	NotBefore                 string   `json:"not_before"`
+	NotAfter                  string   `json:"not_after"`
 }
 
 type PlatformRouteAcceptanceEvidence struct {
@@ -77,42 +81,59 @@ type PlatformRouteAcceptanceEvidence struct {
 // PlatformRouteAcceptanceAudit contains only public, secret-free proof
 // identities. It is returned by the internal runtime provenance endpoint.
 type PlatformRouteAcceptanceAudit struct {
-	SchemaVersion       int                                 `json:"schema_version"`
-	Kind                string                              `json:"kind"`
-	Environment         string                              `json:"environment"`
-	TrustKeysSHA256     string                              `json:"trust_keys_sha256"`
-	AcceptanceSetSHA256 string                              `json:"acceptance_set_sha256"`
-	Routes              []PlatformRouteAcceptanceAuditRoute `json:"routes"`
+	SchemaVersion       int    `json:"schema_version"`
+	Kind                string `json:"kind"`
+	Environment         string `json:"environment"`
+	TrustKeysSHA256     string `json:"trust_keys_sha256"`
+	AcceptanceSetSHA256 string `json:"acceptance_set_sha256"`
+	// RoutingReleaseSHA256 is the explicit internal route/acceptance release
+	// identity. It changes when a key, route, limit, profile implementation, or
+	// acceptance changes; public model capability revisions do not.
+	RoutingReleaseSHA256 string                              `json:"routing_release_sha256"`
+	Routes               []PlatformRouteAcceptanceAuditRoute `json:"routes"`
+	evidenceValidFrom    time.Time
 }
 
 type PlatformRouteAcceptanceAuditRoute struct {
-	Model             string   `json:"model"`
-	Modes             []string `json:"modes"`
-	RouteID           string   `json:"route_id"`
-	ChannelID         int      `json:"channel_id"`
-	NativeChannelType int      `json:"native_channel_type"`
-	AcceptanceID      string   `json:"acceptance_id"`
-	KeyID             string   `json:"key_id"`
-	EvidenceSHA256    string   `json:"evidence_sha256"`
-	NotAfter          string   `json:"not_after"`
+	Model                     string   `json:"model"`
+	Modes                     []string `json:"modes"`
+	RouteID                   string   `json:"route_id"`
+	ChannelID                 int      `json:"channel_id"`
+	NativeChannelType         int      `json:"native_channel_type"`
+	AcceptanceID              string   `json:"acceptance_id"`
+	KeyID                     string   `json:"key_id"`
+	EvidenceSHA256            string   `json:"evidence_sha256"`
+	NotAfter                  string   `json:"not_after"`
+	CapabilityProfileID       string   `json:"capability_profile_id,omitempty"`
+	CapabilityProfileRevision string   `json:"capability_profile_revision,omitempty"`
+	ModelReleaseID            string   `json:"model_release_id,omitempty"`
+	ModelReleaseRevision      string   `json:"model_release_revision,omitempty"`
+	ModelCapabilityRevision   string   `json:"model_capability_revision,omitempty"`
+	CanonicalPublicModel      string   `json:"canonical_public_model,omitempty"`
+	DeprecatedPublicAlias     bool     `json:"deprecated_public_alias,omitempty"`
 }
 
 type platformRouteAcceptanceBoundDeclaration struct {
-	SchemaVersion     int      `json:"schema_version"`
-	Model             string   `json:"model"`
-	Modes             []string `json:"modes"`
-	RouteID           string   `json:"route_id"`
-	ProviderName      string   `json:"provider_name"`
-	AccountID         string   `json:"account_id"`
-	ChannelID         int      `json:"channel_id"`
-	NativeChannelType int      `json:"native_channel_type"`
-	KeyIndex          int      `json:"key_index"`
-	KeyFingerprint    string   `json:"key_fingerprint"`
-	ChannelClass      string   `json:"channel_class"`
-	UpstreamModel     string   `json:"upstream_model"`
-	RPMLimit          int      `json:"rpm_limit"`
-	ActiveTaskLimit   int      `json:"active_task_limit"`
-	CapabilitySHA256  string   `json:"capability_sha256"`
+	SchemaVersion             int      `json:"schema_version"`
+	Model                     string   `json:"model"`
+	Modes                     []string `json:"modes"`
+	RouteID                   string   `json:"route_id"`
+	ProviderName              string   `json:"provider_name"`
+	AccountID                 string   `json:"account_id"`
+	ChannelID                 int      `json:"channel_id"`
+	NativeChannelType         int      `json:"native_channel_type"`
+	KeyIndex                  int      `json:"key_index"`
+	KeyFingerprint            string   `json:"key_fingerprint"`
+	ChannelClass              string   `json:"channel_class"`
+	UpstreamModel             string   `json:"upstream_model"`
+	RPMLimit                  int      `json:"rpm_limit"`
+	ActiveTaskLimit           int      `json:"active_task_limit"`
+	CapabilityProfileID       string   `json:"capability_profile_id,omitempty"`
+	CapabilityProfileRevision string   `json:"capability_profile_revision,omitempty"`
+	ModelReleaseID            string   `json:"model_release_id,omitempty"`
+	ModelReleaseRevision      string   `json:"model_release_revision,omitempty"`
+	ModelCapabilityRevision   string   `json:"model_capability_revision,omitempty"`
+	CapabilitySHA256          string   `json:"capability_sha256"`
 }
 
 type platformRouteAcceptanceVerifier struct {
@@ -229,21 +250,26 @@ func platformRouteAcceptanceBinding(modelID string, declaration PlatformRelayRou
 	}
 	sort.Strings(modes)
 	bound := platformRouteAcceptanceBoundDeclaration{
-		SchemaVersion:     platformRouteAcceptanceSchemaVersion,
-		Model:             modelID,
-		Modes:             modes,
-		RouteID:           declaration.RouteID,
-		ProviderName:      declaration.ProviderName,
-		AccountID:         declaration.AccountID,
-		ChannelID:         declaration.ChannelID,
-		NativeChannelType: declaration.NativeChannelType,
-		KeyIndex:          declaration.KeyIndex,
-		KeyFingerprint:    declaration.KeyFingerprint,
-		ChannelClass:      declaration.ChannelClass,
-		UpstreamModel:     declaration.UpstreamModel,
-		RPMLimit:          declaration.RPMLimit,
-		ActiveTaskLimit:   declaration.ActiveTaskLimit,
-		CapabilitySHA256:  capabilityDigest,
+		SchemaVersion:             platformRouteAcceptanceSchemaVersion,
+		Model:                     modelID,
+		Modes:                     modes,
+		RouteID:                   declaration.RouteID,
+		ProviderName:              declaration.ProviderName,
+		AccountID:                 declaration.AccountID,
+		ChannelID:                 declaration.ChannelID,
+		NativeChannelType:         declaration.NativeChannelType,
+		KeyIndex:                  declaration.KeyIndex,
+		KeyFingerprint:            declaration.KeyFingerprint,
+		ChannelClass:              declaration.ChannelClass,
+		UpstreamModel:             declaration.UpstreamModel,
+		RPMLimit:                  declaration.RPMLimit,
+		ActiveTaskLimit:           declaration.ActiveTaskLimit,
+		CapabilityProfileID:       declaration.ResolvedCapabilityProfileID,
+		CapabilityProfileRevision: declaration.ResolvedCapabilityProfileRevision,
+		ModelReleaseID:            declaration.ResolvedModelReleaseID,
+		ModelReleaseRevision:      declaration.ResolvedModelReleaseRevision,
+		ModelCapabilityRevision:   declaration.ResolvedModelCapabilityRevision,
+		CapabilitySHA256:          capabilityDigest,
 	}
 	canonical, err := platformRelayCanonicalJSON(bound)
 	if err != nil {
@@ -307,7 +333,10 @@ func BuildPlatformRouteAcceptanceManifest(
 	if err := validatePlatformCapability(modelID, declaration.Capabilities); err != nil {
 		return PlatformRouteAcceptanceManifest{}, err
 	}
-	if err := validatePlatformNativeTaskBridgeCapability(modelID, declaration.Capabilities); err != nil {
+	if err := resolvePlatformGenerationRouteProfile(modelID, declaration); err != nil {
+		return PlatformRouteAcceptanceManifest{}, err
+	}
+	if err := validatePlatformNativeTaskBridgeCapability(modelID, *declaration); err != nil {
 		return PlatformRouteAcceptanceManifest{}, err
 	}
 	declaration.Capabilities = normalizePlatformCapability(declaration.Capabilities)
@@ -327,31 +356,36 @@ func BuildPlatformRouteAcceptanceManifest(
 		return PlatformRouteAcceptanceManifest{}, fmt.Errorf("acceptance validity window is invalid")
 	}
 	return PlatformRouteAcceptanceManifest{
-		SchemaVersion:          platformRouteAcceptanceSchemaVersion,
-		Kind:                   platformRouteAcceptanceKind,
-		AcceptanceID:           acceptanceID,
-		KeyID:                  keyID,
-		Environment:            environment,
-		Model:                  bound.Model,
-		Modes:                  append([]string(nil), bound.Modes...),
-		RouteID:                bound.RouteID,
-		ProviderName:           bound.ProviderName,
-		AccountID:              bound.AccountID,
-		ChannelID:              bound.ChannelID,
-		NativeChannelType:      bound.NativeChannelType,
-		KeyIndex:               bound.KeyIndex,
-		KeyFingerprint:         bound.KeyFingerprint,
-		ChannelClass:           bound.ChannelClass,
-		UpstreamModel:          bound.UpstreamModel,
-		RPMLimit:               bound.RPMLimit,
-		ActiveTaskLimit:        bound.ActiveTaskLimit,
-		CapabilitySHA256:       capabilityDigest,
-		RouteDeclarationSHA256: routeDigest,
-		SourceRevision:         strings.ToLower(strings.TrimSpace(provenance.SourceGitRevision)),
-		SourceSnapshotSHA256:   strings.ToLower(strings.TrimSpace(provenance.SourceSnapshotSHA256)),
-		ImageDigest:            strings.ToLower(strings.TrimSpace(provenance.ImageDigest)),
-		NotBefore:              notBefore.Format(time.RFC3339),
-		NotAfter:               notAfter.Format(time.RFC3339),
+		SchemaVersion:             platformRouteAcceptanceSchemaVersion,
+		Kind:                      platformRouteAcceptanceKind,
+		AcceptanceID:              acceptanceID,
+		KeyID:                     keyID,
+		Environment:               environment,
+		Model:                     bound.Model,
+		Modes:                     append([]string(nil), bound.Modes...),
+		RouteID:                   bound.RouteID,
+		ProviderName:              bound.ProviderName,
+		AccountID:                 bound.AccountID,
+		ChannelID:                 bound.ChannelID,
+		NativeChannelType:         bound.NativeChannelType,
+		KeyIndex:                  bound.KeyIndex,
+		KeyFingerprint:            bound.KeyFingerprint,
+		ChannelClass:              bound.ChannelClass,
+		UpstreamModel:             bound.UpstreamModel,
+		RPMLimit:                  bound.RPMLimit,
+		ActiveTaskLimit:           bound.ActiveTaskLimit,
+		CapabilityProfileID:       bound.CapabilityProfileID,
+		CapabilityProfileRevision: bound.CapabilityProfileRevision,
+		ModelReleaseID:            bound.ModelReleaseID,
+		ModelReleaseRevision:      bound.ModelReleaseRevision,
+		ModelCapabilityRevision:   bound.ModelCapabilityRevision,
+		CapabilitySHA256:          capabilityDigest,
+		RouteDeclarationSHA256:    routeDigest,
+		SourceRevision:            strings.ToLower(strings.TrimSpace(provenance.SourceGitRevision)),
+		SourceSnapshotSHA256:      strings.ToLower(strings.TrimSpace(provenance.SourceSnapshotSHA256)),
+		ImageDigest:               strings.ToLower(strings.TrimSpace(provenance.ImageDigest)),
+		NotBefore:                 notBefore.Format(time.RFC3339),
+		NotAfter:                  notAfter.Format(time.RFC3339),
 	}, nil
 }
 
@@ -413,6 +447,11 @@ func (verifier *platformRouteAcceptanceVerifier) verify(
 		manifest.KeyIndex != bound.KeyIndex || manifest.KeyFingerprint != bound.KeyFingerprint ||
 		manifest.ChannelClass != bound.ChannelClass || manifest.UpstreamModel != bound.UpstreamModel ||
 		manifest.RPMLimit != bound.RPMLimit || manifest.ActiveTaskLimit != bound.ActiveTaskLimit ||
+		manifest.CapabilityProfileID != bound.CapabilityProfileID ||
+		manifest.CapabilityProfileRevision != bound.CapabilityProfileRevision ||
+		manifest.ModelReleaseID != bound.ModelReleaseID ||
+		manifest.ModelReleaseRevision != bound.ModelReleaseRevision ||
+		manifest.ModelCapabilityRevision != bound.ModelCapabilityRevision ||
 		manifest.CapabilitySHA256 != capabilityDigest || manifest.RouteDeclarationSHA256 != routeDigest {
 		return fmt.Errorf("Relay route %q acceptance manifest does not match the exact route and capability declaration", declaration.RouteID)
 	}
@@ -432,7 +471,7 @@ func (verifier *platformRouteAcceptanceVerifier) verify(
 	if !notAfter.After(notBefore) || notAfter.Sub(notBefore) > platformRouteAcceptanceMaximumLifetime {
 		return fmt.Errorf("Relay route %q acceptance validity window is invalid", declaration.RouteID)
 	}
-	if verifier.now.Add(platformRouteAcceptanceClockSkewAllowance).Before(notBefore) {
+	if verifier.now.Before(notBefore) {
 		return fmt.Errorf("Relay route %q acceptance evidence is not active yet", declaration.RouteID)
 	}
 	if !verifier.now.Before(notAfter) {
@@ -466,6 +505,7 @@ func (verifier *platformRouteAcceptanceVerifier) verify(
 	}
 	verifier.seenIDs[manifest.AcceptanceID] = evidenceDigest
 	declaration.AcceptanceDigest = evidenceDigest
+	declaration.AcceptanceNotBefore = notBefore
 	declaration.AcceptanceNotAfter = notAfter
 	declaration.StagingReady = verifier.environment == "staging"
 	declaration.ProductionReady = verifier.environment == "production"
@@ -503,32 +543,71 @@ func buildPlatformRouteAcceptanceAudit(
 	if environment == "" {
 		environment = "development"
 	}
+	secureEnvironment := environment == "staging" || environment == "production"
 	modelIDs := make([]string, 0, len(routes))
 	for modelID := range routes {
 		modelIDs = append(modelIDs, modelID)
 	}
 	sort.Strings(modelIDs)
 	auditRoutes := make([]PlatformRouteAcceptanceAuditRoute, 0)
+	routingReleaseRoutes := make([]map[string]string, 0)
+	var latestValidFrom time.Time
 	var earliestExpiry time.Time
 	for _, modelID := range modelIDs {
 		for _, route := range routes[modelID] {
+			_, _, routeDeclarationDigest, err := platformRouteAcceptanceBinding(modelID, route)
+			if err != nil {
+				return PlatformRouteAcceptanceAudit{}, time.Time{}, err
+			}
+			routingReleaseRoutes = append(routingReleaseRoutes, map[string]string{
+				"model":                    modelID,
+				"route_id":                 route.RouteID,
+				"route_declaration_sha256": routeDeclarationDigest,
+				"acceptance_sha256":        route.AcceptanceDigest,
+			})
+			if secureEnvironment && route.ModelRelease != nil && route.ModelRelease.Attestation != nil {
+				modelReleaseSignedAt, err := time.Parse(time.RFC3339, route.ModelRelease.Attestation.SignedAt)
+				if err != nil || route.ModelRelease.Attestation.SignedAt != modelReleaseSignedAt.UTC().Format(time.RFC3339) {
+					return PlatformRouteAcceptanceAudit{}, time.Time{}, fmt.Errorf("model release attestation start is invalid")
+				}
+				modelReleaseExpiry, err := time.Parse(time.RFC3339, route.ModelRelease.Attestation.NotAfter)
+				if err != nil || route.ModelRelease.Attestation.NotAfter != modelReleaseExpiry.UTC().Format(time.RFC3339) {
+					return PlatformRouteAcceptanceAudit{}, time.Time{}, fmt.Errorf("model release attestation expiry is invalid")
+				}
+				if latestValidFrom.IsZero() || modelReleaseSignedAt.After(latestValidFrom) {
+					latestValidFrom = modelReleaseSignedAt
+				}
+				if earliestExpiry.IsZero() || modelReleaseExpiry.Before(earliestExpiry) {
+					earliestExpiry = modelReleaseExpiry
+				}
+			}
 			if route.Acceptance == nil || route.AcceptanceDigest == "" {
 				continue
 			}
 			manifest := route.Acceptance.Manifest
 			auditRoutes = append(auditRoutes, PlatformRouteAcceptanceAuditRoute{
-				Model:             modelID,
-				Modes:             append([]string(nil), manifest.Modes...),
-				RouteID:           route.RouteID,
-				ChannelID:         route.ChannelID,
-				NativeChannelType: route.NativeChannelType,
-				AcceptanceID:      manifest.AcceptanceID,
-				KeyID:             manifest.KeyID,
-				EvidenceSHA256:    route.AcceptanceDigest,
-				NotAfter:          manifest.NotAfter,
+				Model:                     modelID,
+				Modes:                     append([]string(nil), manifest.Modes...),
+				RouteID:                   route.RouteID,
+				ChannelID:                 route.ChannelID,
+				NativeChannelType:         route.NativeChannelType,
+				AcceptanceID:              manifest.AcceptanceID,
+				KeyID:                     manifest.KeyID,
+				EvidenceSHA256:            route.AcceptanceDigest,
+				NotAfter:                  manifest.NotAfter,
+				CapabilityProfileID:       route.ResolvedCapabilityProfileID,
+				CapabilityProfileRevision: route.ResolvedCapabilityProfileRevision,
+				ModelReleaseID:            route.ResolvedModelReleaseID,
+				ModelReleaseRevision:      route.ResolvedModelReleaseRevision,
+				ModelCapabilityRevision:   route.ResolvedModelCapabilityRevision,
+				CanonicalPublicModel:      route.CanonicalPublicModel,
+				DeprecatedPublicAlias:     route.DeprecatedPublicAlias,
 			})
 			if earliestExpiry.IsZero() || route.AcceptanceNotAfter.Before(earliestExpiry) {
 				earliestExpiry = route.AcceptanceNotAfter
+			}
+			if latestValidFrom.IsZero() || route.AcceptanceNotBefore.After(latestValidFrom) {
+				latestValidFrom = route.AcceptanceNotBefore
 			}
 		}
 	}
@@ -536,7 +615,7 @@ func buildPlatformRouteAcceptanceAudit(
 	if !platformRelaySnapshotDigestPattern.MatchString(trustDigest) {
 		trustDigest = ""
 	}
-	canonical, err := platformRelayCanonicalJSON(map[string]any{
+	acceptanceCanonical, err := platformRelayCanonicalJSON(map[string]any{
 		"environment":       environment,
 		"trust_keys_sha256": trustDigest,
 		"routes":            auditRoutes,
@@ -544,12 +623,23 @@ func buildPlatformRouteAcceptanceAudit(
 	if err != nil {
 		return PlatformRouteAcceptanceAudit{}, time.Time{}, err
 	}
+	acceptanceSet := fmt.Sprintf("sha256:%x", sha256.Sum256(acceptanceCanonical))
+	routingCanonical, err := platformRelayCanonicalJSON(map[string]any{
+		"environment": environment,
+		"routes":      routingReleaseRoutes,
+	})
+	if err != nil {
+		return PlatformRouteAcceptanceAudit{}, time.Time{}, err
+	}
+	routingRelease := fmt.Sprintf("sha256:%x", sha256.Sum256(routingCanonical))
 	return PlatformRouteAcceptanceAudit{
-		SchemaVersion:       platformRouteAcceptanceSchemaVersion,
-		Kind:                "relay_route_acceptance_audit",
-		Environment:         environment,
-		TrustKeysSHA256:     trustDigest,
-		AcceptanceSetSHA256: fmt.Sprintf("sha256:%x", sha256.Sum256(canonical)),
-		Routes:              auditRoutes,
+		SchemaVersion:        platformRouteAcceptanceSchemaVersion,
+		Kind:                 "relay_route_acceptance_audit",
+		Environment:          environment,
+		TrustKeysSHA256:      trustDigest,
+		AcceptanceSetSHA256:  acceptanceSet,
+		RoutingReleaseSHA256: routingRelease,
+		Routes:               auditRoutes,
+		evidenceValidFrom:    latestValidFrom,
 	}, earliestExpiry, nil
 }

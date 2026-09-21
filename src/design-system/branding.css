@@ -1,9 +1,12 @@
 /**
- * Approved XuTian brand assets.
+ * Approved XuTian AI studio brand assets.
  *
- * The supplied metallic mark was designed for a dark presentation board.
- * Product chrome uses its approved graphite light-surface adaptation while
- * preserving the violet-cyan centre signal.
+ * Production assets are single-colour deep-ocean teal (#087B80), with no mint
+ * nodes or decorative circuit lines (user correction, 2026-08-31).
+ * Both assets share the slender 448:274 two-piece X: keep its zigzag separation
+ * and left-piece play cutout transparent; never stretch or thicken the compact X.
+ * The wordmark retains the camera-body 日 inside 旭 and the normal dot on the i
+ * in AI studio. The retired centre bar must not return.
  */
 
 .brand-logo {
@@ -47,8 +50,9 @@
 
 /* Studio */
 .app-shell[data-theme] > .topbar .brand {
-  min-width: 132px;
-  padding: 0;
+  width: auto;
+  min-width: 150px;
+  padding: 0 18px 0 0;
   border: 0;
   background: transparent;
 }
@@ -134,6 +138,8 @@
     width: 38px;
     min-width: 38px;
     flex-basis: 38px;
+    padding: 0;
+    border-inline-end: 0;
   }
 
   .app-shell[data-theme] > .topbar .brand .brand-logo--responsive {

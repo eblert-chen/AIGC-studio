@@ -3,7 +3,7 @@ import { downloadState } from "../../taskArtifacts.js";
 
 export function ScopeControl({ value, onChange, canViewCompany }) {
   return (
-    <div className="scope-control" aria-label="记录范围">
+    <div className="scope-control" role="group" aria-label="记录范围">
       <button
         className={value === "mine" ? "is-active" : ""}
         type="button"
@@ -45,7 +45,11 @@ export function PageControls({ page, pageSize, total, onChange }) {
 export function DownloadBadge({ source, issuedLocally = false }) {
   const state = downloadState(source, { issuedLocally });
   return (
-    <span className={`download-state is-${state.tone}`} title={state.detail}>
+    <span
+      className={`download-state is-${state.tone}`}
+      title={state.detail}
+      aria-label={`下载证明：${state.label}。${state.detail}`}
+    >
       {state.label}
     </span>
   );

@@ -10,6 +10,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from .auth import (
@@ -29,7 +30,9 @@ from .models import (
     ExternalIdentity,
     MembershipStatus,
     PlatformAdminActivity,
+    ProductContext,
     User,
+    UserAccountType,
     UserStatus,
 )
 from .services.authentication import (
@@ -40,6 +43,8 @@ from .services.authentication import (
     SessionService,
 )
 from .services.permissions import PermissionService
+from .services.account_partition import AccountPartitionService, AccountProductType
+from .services.admin import PlatformAdminService
 from .services.platform_admin_access import PlatformAdminAccessService
 from .platform_owner_identity import is_platform_owner_identity
 
@@ -49,6 +54,29 @@ def get_db(request: Request) -> Generator[Session, None, None]:
     try:
         yield session
         session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def get_finance_snapshot_db(request: Request) -> Generator[Session, None, None]:
+    """Separate from authentication writes and ordinary READ COMMITTED work."""
+    from .services.finance_snapshot import begin_finance_snapshot
+    from .services.errors import ConflictError
+
+    session = request.app.state.session_factory()
+    try:
+        begin_finance_snapshot(session)
+        yield session
+        session.commit()
+    except DBAPIError as exc:
+        session.rollback()
+        sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+        if sqlstate in {"40001", "40P01"}:
+            raise ConflictError("财务快照发生并发冲突，请使用原幂等键重试") from exc
+        raise
     except Exception:
         session.rollback()
         raise
@@ -116,6 +144,8 @@ class UserContext:
     cookie_principal: CookieSessionPrincipal | None = None
     authentication_time: float | None = None
     authentication_methods: tuple[str, ...] = ()
+    active_product_context: ProductContext | None = None
+    external_identity_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +158,7 @@ class AuthenticatedPrincipal:
     authentication_time: float | None
     authentication_methods: tuple[str, ...]
     platform_admin_claim: bool
+    active_product_context: ProductContext
     cookie_principal: CookieSessionPrincipal | None = None
 
     @property
@@ -194,6 +225,20 @@ def _authenticated_principal(
                 expected_origin=settings.frontend_origin,
                 pepper=settings.jwt_signing_secret,
             )
+        if (
+            cookie_principal.active_product_context == ProductContext.PERSONAL
+            and cookie_principal.user.account_type == UserAccountType.PLATFORM_ADMIN
+            and not is_platform_owner_identity(
+                issuer=cookie_principal.issuer,
+                subject=cookie_principal.subject,
+                configured_issuer=settings.oidc_issuer,
+                configured_subjects=settings.platform_owner_user_ids,
+            )
+        ):
+            cookie_principal.auth_session.revoked_at = datetime.now(timezone.utc)
+            cookie_principal.auth_session.revoked_reason = "owner_identity_removed"
+            session.flush()
+            raise HTTPException(status_code=401, detail="Session is missing or invalid")
         return AuthenticatedPrincipal(
             user=cookie_principal.user,
             source="cookie",
@@ -203,6 +248,7 @@ def _authenticated_principal(
             authentication_time=cookie_principal.authentication_time,
             authentication_methods=cookie_principal.authentication_methods,
             platform_admin_claim=cookie_principal.user.is_platform_admin,
+            active_product_context=cookie_principal.active_product_context,
             cookie_principal=cookie_principal,
         )
     principal = _production_principal(request, authorization)
@@ -228,6 +274,11 @@ def _authenticated_principal(
         authentication_time=principal.authentication_time,
         authentication_methods=principal.authentication_methods,
         platform_admin_claim=principal.platform_admin,
+        active_product_context={
+            UserAccountType.PERSONAL: ProductContext.PERSONAL,
+            UserAccountType.COMPANY: ProductContext.COMPANY,
+            UserAccountType.PLATFORM_ADMIN: ProductContext.PLATFORM,
+        }[user.account_type],
     )
 
 
@@ -276,6 +327,14 @@ def get_tenant_context(
     company = session.get(Company, company_id)
     if company is None or company.status != CompanyStatus.ACTIVE:
         raise HTTPException(status_code=404, detail="公司不存在或不可用")
+    user = session.get(User, x_user_id)
+    if user is None:
+        raise HTTPException(status_code=403, detail="账号不可用")
+    if (
+        AccountPartitionService.resolve(session, user=user)
+        != AccountProductType.COMPANY
+    ):
+        raise HTTPException(status_code=403, detail="当前账号不是企业账号")
     membership = session.scalar(
         select(CompanyMembership).where(
             CompanyMembership.company_id == company_id,
@@ -382,6 +441,8 @@ def require_platform_admin(
         authenticated = _authenticated_principal(request, session, authorization)
         if not authenticated.user.is_platform_admin:
             raise HTTPException(status_code=403, detail="不是平台管理员")
+        if authenticated.active_product_context != ProductContext.PLATFORM:
+            raise HTTPException(status_code=403, detail="当前会话未进入平台管理主体")
         if runtime_settings_are_protected(settings):
             accepted_methods = {
                 method.casefold() for method in settings.platform_admin_required_amr
@@ -424,7 +485,14 @@ def require_platform_admin(
     if not x_platform_admin_user_id:
         raise HTTPException(status_code=401, detail="缺少平台管理员身份")
     user = session.get(User, x_platform_admin_user_id)
-    if user is None or user.status != UserStatus.ACTIVE or not user.is_platform_admin:
+    if (
+        user is None
+        or user.status != UserStatus.ACTIVE
+        or not user.is_platform_admin
+        or user.account_type != UserAccountType.PLATFORM_ADMIN
+        or AccountPartitionService.resolve(session, user=user)
+        != AccountProductType.PLATFORM_ADMIN
+    ):
         raise HTTPException(status_code=403, detail="不是平台管理员")
     owner_user_ids = set(_owner_local_user_ids(session, settings))
     if (
@@ -435,14 +503,17 @@ def require_platform_admin(
     ):
         development_owner_ids = request.app.state.development_platform_owner_user_ids
         if not development_owner_ids:
-            first_admin_id = session.scalar(
-                select(User.id)
-                .where(User.is_platform_admin.is_(True))
-                .order_by(User.created_at.asc(), User.id.asc())
-                .limit(1)
+            first_admin = PlatformAdminService.first_unambiguous_platform_admin(
+                session
             )
-            if first_admin_id:
-                development_owner_ids.add(first_admin_id)
+            if (
+                first_admin is not None
+                and first_admin.status == UserStatus.ACTIVE
+                and first_admin.account_type == UserAccountType.PLATFORM_ADMIN
+                and AccountPartitionService.resolve(session, user=first_admin)
+                == AccountProductType.PLATFORM_ADMIN
+            ):
+                development_owner_ids.add(first_admin.id)
         owner_user_ids.update(development_owner_ids)
     is_platform_owner = (
         authenticated is not None
@@ -471,6 +542,24 @@ def require_platform_admin(
         user_id=user.id,
         is_platform_owner=is_platform_owner,
     )
+
+
+def get_admin_finance_snapshot_db(
+    _: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
+) -> Session:
+    """Reuse the completed admin-auth transaction's connection for read reports.
+
+    This dependency is restricted to read-only administrator reports. The only
+    preceding writes are successful authentication/activity evidence; commit
+    those before starting a separate, consistent report snapshot on the same
+    Session, so a request never waits for a second pool connection.
+    """
+    from .services.finance_snapshot import begin_finance_snapshot
+
+    session.commit()
+    begin_finance_snapshot(session)
+    return session
 
 
 def get_user_context(
@@ -519,4 +608,12 @@ def get_user_context(
         cookie_principal=authenticated.cookie_principal if authenticated else None,
         authentication_time=authenticated.authentication_time if authenticated else None,
         authentication_methods=authenticated.authentication_methods if authenticated else (),
+        active_product_context=(
+            authenticated.active_product_context if authenticated else None
+        ),
+        external_identity_id=(
+            authenticated.cookie_principal.identity.id
+            if authenticated and authenticated.cookie_principal is not None
+            else None
+        ),
     )

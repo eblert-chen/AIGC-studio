@@ -105,21 +105,22 @@ func platformChannelControlChannel(channel model.Channel) (dto.PlatformChannelCo
 		responseTimeMS = &response
 	}
 	return dto.PlatformChannelControlChannel{
-		ID:               channel.Id,
-		Name:             channel.Name,
-		Type:             channel.Type,
-		TypeLabel:        constant.GetChannelTypeName(channel.Type),
-		Status:           status,
-		TestSupported:    IsChannelTestSupported(channel.Type),
-		ConfiguredModels: configuredModels,
-		TestModel:        testModel,
-		Weight:           weight,
-		Priority:         priority,
-		AutoBan:          autoBan,
-		Tag:              tag,
-		CreatedAt:        createdAt,
-		LastTestedAt:     lastTestedAt,
-		ResponseTimeMS:   responseTimeMS,
+		ID:                        channel.Id,
+		Name:                      channel.Name,
+		Type:                      channel.Type,
+		TypeLabel:                 constant.GetChannelTypeName(channel.Type),
+		Status:                    status,
+		TestSupported:             IsChannelTestSupported(channel.Type),
+		ConfiguredModels:          configuredModels,
+		TestModel:                 testModel,
+		Weight:                    weight,
+		Priority:                  priority,
+		AutoBan:                   autoBan,
+		Tag:                       tag,
+		ProviderOnboardingManaged: model.IsProviderOnboardingManagedChannel(&channel),
+		CreatedAt:                 createdAt,
+		LastTestedAt:              lastTestedAt,
+		ResponseTimeMS:            responseTimeMS,
 		Credential: dto.PlatformChannelControlCredentialSummary{
 			Configured: channel.CredentialSetVersion != "" && keyCount > 0,
 			KeyCount:   keyCount,
@@ -181,8 +182,17 @@ func BeginPlatformChannelControlTest(
 	channelID int,
 	request dto.PlatformChannelControlTestRequest,
 	requestID string,
-) (dto.PlatformChannelControlOperation, bool, error) {
-	operation, execute, replay, err := model.BeginPlatformChannelTestOperation(model.PlatformChannelControlIntent{
+) (dto.PlatformChannelControlOperation, bool, *PlatformGenerationRouteTestBinding, error) {
+	if strings.TrimSpace(request.PublicModelID) != request.PublicModelID || request.PublicModelID == "" ||
+		strings.TrimSpace(request.RouteID) != request.RouteID || request.RouteID == "" ||
+		strings.TrimSpace(request.Mode) != request.Mode {
+		return dto.PlatformChannelControlOperation{}, false, nil, fmt.Errorf("Platform channel test requires an exact public_model_id and route_id binding")
+	}
+	binding, err := ResolvePlatformGenerationRouteTestBindingForMode(channelID, request.PublicModelID, request.RouteID, request.Mode)
+	if err != nil {
+		return dto.PlatformChannelControlOperation{}, false, nil, err
+	}
+	intent := model.PlatformChannelControlIntent{
 		OperationID: request.OperationID,
 		TenantID:    request.TenantID,
 		ChannelID:   channelID,
@@ -190,11 +200,92 @@ func BeginPlatformChannelControlTest(
 		RequestID:   requestID,
 		Actor:       request.Actor,
 		Reason:      request.Reason,
-	})
-	if err != nil {
-		return dto.PlatformChannelControlOperation{}, false, err
 	}
-	return platformChannelControlOperation(*operation, replay), execute, nil
+	intent.Model = binding.UpstreamModel
+	intent.PublicModelID = binding.PublicModelID
+	intent.RouteID = binding.RouteID
+	intent.Mode = binding.Mode
+	intent.UpstreamModel = binding.UpstreamModel
+	intent.CapabilityProfileID = binding.CapabilityProfileID
+	intent.CapabilityProfileRevision = binding.CapabilityProfileRevision
+	intent.ModelReleaseID = binding.ModelReleaseID
+	intent.ModelReleaseRevision = binding.ModelReleaseRevision
+	intent.CapabilityRevision = binding.CapabilityRevision
+	intent.RoutingReleaseSHA256 = binding.RoutingReleaseSHA256
+	intent.RouteBindingSHA256 = binding.RouteBindingSHA256
+	intent.CredentialFingerprintSHA256 = binding.CredentialFingerprintSHA256
+	intent.TransportRevision = binding.TransportRevision
+	intent.TransportSHA256 = binding.TransportSHA256
+	operation, execute, replay, err := model.BeginPlatformChannelTestOperation(intent)
+	if err != nil {
+		return dto.PlatformChannelControlOperation{}, false, nil, err
+	}
+	if binding != nil && operation.ProviderSubmissionState == model.PlatformChannelTestSubmissionSubmitted {
+		binding.ProviderTaskID = operation.ProviderTaskID
+	}
+	resume := operation.State == model.PlatformChannelControlOperationPending &&
+		(operation.ProviderSubmissionState == model.PlatformChannelTestSubmissionNotStarted ||
+			operation.ProviderSubmissionState == model.PlatformChannelTestSubmissionSubmitted)
+	return platformChannelControlOperation(*operation, replay), execute || resume, binding, nil
+}
+
+func ClaimPlatformChannelControlTestSubmission(tenantID string, operationID string) (bool, error) {
+	_, claimed, err := model.ClaimPlatformChannelTestSubmission(tenantID, operationID)
+	return claimed, err
+}
+
+func RecordPlatformChannelControlTestSubmitted(tenantID string, operationID string, providerTaskID string) error {
+	_, err := model.RecordPlatformChannelTestSubmitted(tenantID, operationID, providerTaskID)
+	return err
+}
+
+func RecordPlatformChannelControlTestBlocker(tenantID string, operationID string, errorCode string) error {
+	_, err := model.RecordPlatformChannelTestBlocker(tenantID, operationID, errorCode)
+	return err
+}
+
+func CompletePlatformChannelControlRouteTestSuccess(
+	tenantID string,
+	operationID string,
+	responseTimeMS int64,
+	evidence model.PlatformChannelTestArtifactEvidence,
+) (dto.PlatformChannelControlOperation, error) {
+	operation, err := model.CompletePlatformChannelRouteTestSuccess(tenantID, operationID, responseTimeMS, evidence)
+	if err != nil {
+		return dto.PlatformChannelControlOperation{}, err
+	}
+	return platformChannelControlOperation(*operation, false), nil
+}
+
+func CompletePlatformChannelControlRouteTestFailure(
+	tenantID string,
+	operationID string,
+	responseTimeMS int64,
+	errorCode string,
+	providerRequestStarted bool,
+) (dto.PlatformChannelControlOperation, error) {
+	operation, err := model.CompletePlatformChannelRouteTestFailure(
+		tenantID, operationID, responseTimeMS, errorCode, providerRequestStarted,
+	)
+	if err != nil {
+		return dto.PlatformChannelControlOperation{}, err
+	}
+	return platformChannelControlOperation(*operation, false), nil
+}
+
+func CompletePlatformChannelControlRouteTestProvenNoCreation(
+	tenantID string,
+	operationID string,
+	responseTimeMS int64,
+	errorCode string,
+) (dto.PlatformChannelControlOperation, error) {
+	operation, err := model.CompletePlatformChannelRouteTestProvenNoCreation(
+		tenantID, operationID, responseTimeMS, errorCode,
+	)
+	if err != nil {
+		return dto.PlatformChannelControlOperation{}, err
+	}
+	return platformChannelControlOperation(*operation, false), nil
 }
 
 func CompletePlatformChannelControlTest(
@@ -254,6 +345,25 @@ func GetPlatformChannelControlOperation(tenantID string, channelID int, operatio
 	return platformChannelControlOperation(*operation, false), nil
 }
 
+func ReconcilePlatformChannelControlTestNoCreation(
+	channelID int,
+	operationID string,
+	request dto.PlatformChannelControlReconcileNoCreationRequest,
+) (dto.PlatformChannelControlOperation, error) {
+	operation, err := model.ReconcilePlatformChannelTestNoCreation(
+		request.TenantID,
+		channelID,
+		operationID,
+		request.Actor,
+		request.Reason,
+		request.ConfirmedNoProviderCreation,
+	)
+	if err != nil {
+		return dto.PlatformChannelControlOperation{}, err
+	}
+	return platformChannelControlOperation(*operation, false), nil
+}
+
 func platformChannelControlOperation(operation model.PlatformChannelControlOperation, replay bool) dto.PlatformChannelControlOperation {
 	var result *dto.PlatformChannelControlOperationResult
 	if operation.ResultSuccess != nil || operation.ResultChanged != nil || operation.ResultErrorCode != "" ||
@@ -267,26 +377,42 @@ func platformChannelControlOperation(operation model.PlatformChannelControlOpera
 			Changed:        operation.ResultChanged,
 		}
 	}
+	createdAt := operation.CreatedAt.UTC()
+	var completedAt *time.Time
+	if operation.CompletedAt != nil {
+		value := operation.CompletedAt.UTC()
+		completedAt = &value
+	}
+	var reconciledAt *time.Time
+	if operation.ReconciledAt != nil {
+		value := operation.ReconciledAt.UTC()
+		reconciledAt = &value
+	}
 	return dto.PlatformChannelControlOperation{
-		APIVersion:       dto.PlatformRelayAPIVersion,
-		SchemaVersion:    dto.PlatformRelaySchemaVersion,
-		Object:           "relay.channel_control_operation",
-		OperationID:      operation.OperationID,
-		TenantID:         operation.TenantID,
-		ChannelID:        operation.ChannelID,
-		Kind:             operation.Kind,
-		State:            operation.State,
-		Actor:            operation.Actor,
-		Reason:           operation.Reason,
-		RequestID:        operation.RequestID,
-		IntentSHA256:     operation.IntentSHA256,
-		ExpectedRevision: operation.IntentExpectedRevision,
-		TargetStatus:     operation.IntentTargetStatus,
-		PreviousRevision: operation.PreviousRevision,
-		ResultRevision:   operation.ResultRevision,
-		Result:           result,
-		CreatedAt:        operation.CreatedAt,
-		CompletedAt:      operation.CompletedAt,
-		IdempotentReplay: replay,
+		APIVersion:              dto.PlatformRelayAPIVersion,
+		SchemaVersion:           dto.PlatformRelaySchemaVersion,
+		Object:                  "relay.channel_control_operation",
+		OperationID:             operation.OperationID,
+		TenantID:                operation.TenantID,
+		ChannelID:               operation.ChannelID,
+		Kind:                    operation.Kind,
+		State:                   operation.State,
+		Actor:                   operation.Actor,
+		Reason:                  operation.Reason,
+		RequestID:               operation.RequestID,
+		IntentSHA256:            operation.IntentSHA256,
+		ExpectedRevision:        operation.IntentExpectedRevision,
+		TargetStatus:            operation.IntentTargetStatus,
+		PreviousRevision:        operation.PreviousRevision,
+		ResultRevision:          operation.ResultRevision,
+		Result:                  result,
+		ProviderSubmissionState: operation.ProviderSubmissionState,
+		ProviderBlockerCode:     operation.ProviderBlockerCode,
+		ReconciliationActor:     operation.ReconciliationActor,
+		ReconciliationReason:    operation.ReconciliationReason,
+		ReconciledAt:            reconciledAt,
+		CreatedAt:               createdAt,
+		CompletedAt:             completedAt,
+		IdempotentReplay:        replay,
 	}
 }

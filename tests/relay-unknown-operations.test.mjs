@@ -8,6 +8,7 @@ import {
   assertRelayUnknownResultMatchesResolution,
   buildRelayUnknownResolution,
   refreshRelayUnknownWithReadback,
+  relayUnknownResolveFieldErrors,
   relayUnknownResolveErrorMessage,
   resolveRelayUnknownWithReadback,
 } from "../src/admin/relayUnknownOperations.js";
@@ -47,6 +48,29 @@ const createdForm = {
   approved: true,
 };
 
+const synchronousRawDetail = {
+  ...rawDetail,
+  model: "seedream-5.0",
+  mode: "text_to_image",
+  provider_upstream_model: "doubao-seedream-5-0-260128",
+};
+
+const synchronousForm = {
+  outcome: "created",
+  verificationReference: "provider-console-event-seedream-42",
+  reason: "值班负责人核对同步图片响应归档",
+  approved: true,
+  synchronousResult: {
+    providerModelId: "doubao-seedream-5-0-260128",
+    providerResponseSha256: "d".repeat(64),
+    artifactUrl: "https://provider.example/result.png?temporary=one-time",
+    providerCreatedAt: "2026-08-28T01:02:03Z",
+    generatedImages: "1",
+    outputTokens: "144",
+    totalTokens: "160",
+  },
+};
+
 function createdReceipt(overrides = {}) {
   return {
     api_version: "v1",
@@ -73,6 +97,25 @@ function createdReceipt(overrides = {}) {
     resolved_at: "2026-08-11T08:18:00Z",
     ...overrides,
   };
+}
+
+function synchronousReceipt(overrides = {}) {
+  return createdReceipt({
+    outcome: "created",
+    upstream_task_id: `seedream:${"d".repeat(64)}`,
+    verification_reference: synchronousForm.verificationReference,
+    approval_reason: synchronousForm.reason,
+    synchronous_result: {
+      provider_model_id: synchronousForm.synchronousResult.providerModelId,
+      provider_response_sha256: synchronousForm.synchronousResult.providerResponseSha256,
+      artifact_url_sha256: "e".repeat(64),
+      provider_created_at: synchronousForm.synchronousResult.providerCreatedAt,
+      generated_images: 1,
+      output_tokens: 144,
+      total_tokens: 160,
+    },
+    ...overrides,
+  });
 }
 
 test("Relay unknown list and detail preserve the provider route fencing evidence", () => {
@@ -140,6 +183,109 @@ test("created resolution pins the freshly-read route, attempt and token", () => 
       expected_reconciliation_token: rawDetail.reconciliation_token,
       verification_reference: "provider-console-event-7781",
       reason: "值班负责人已完成双人核对",
+    },
+  );
+});
+
+test("created text-to-image reconciliation derives its identity and sends strict synchronous evidence", () => {
+  const detail = adaptRelayUnknownSubmission(synchronousRawDetail);
+  const resolution = buildRelayUnknownResolution(detail, synchronousForm);
+
+  assert.equal(resolution.upstream_task_id, `seedream:${"d".repeat(64)}`);
+  assert.deepEqual(resolution.synchronous_result, {
+    provider_model_id: "doubao-seedream-5-0-260128",
+    provider_response_sha256: "d".repeat(64),
+    artifact_url: "https://provider.example/result.png?temporary=one-time",
+    provider_created_at: "2026-08-28T01:02:03Z",
+    generated_images: 1,
+    output_tokens: 144,
+    total_tokens: 160,
+  });
+
+  for (const synchronousResult of [
+    { ...synchronousForm.synchronousResult, artifactUrl: "http://provider.example/result.png" },
+    { ...synchronousForm.synchronousResult, providerCreatedAt: "2026-08-28T01:02:03+00:00" },
+    { ...synchronousForm.synchronousResult, generatedImages: "17" },
+    { ...synchronousForm.synchronousResult, totalTokens: "143" },
+  ]) {
+    assert.throws(
+      () => buildRelayUnknownResolution(detail, { ...synchronousForm, synchronousResult }),
+      /HTTPS|UTC|生成图片数|总 token 数/,
+    );
+  }
+});
+
+test("not-created text-to-image reconciliation never sends synchronous evidence", () => {
+  const detail = adaptRelayUnknownSubmission(synchronousRawDetail);
+  const resolution = buildRelayUnknownResolution(detail, {
+    ...synchronousForm,
+    outcome: "not_created",
+    upstreamTaskId: "must-not-leak",
+  });
+
+  assert.equal(resolution.upstream_task_id, "");
+  assert.equal(Object.hasOwn(resolution, "synchronous_result"), false);
+  assert.doesNotMatch(JSON.stringify(resolution), /temporary=one-time/);
+});
+
+test("text-to-image receipts contain only a digest and must match submitted evidence", () => {
+  const detail = adaptRelayUnknownSubmission(synchronousRawDetail);
+  const resolution = buildRelayUnknownResolution(detail, synchronousForm);
+  const receipt = assertRelayUnknownResultMatchesResolution(
+    synchronousReceipt(),
+    detail,
+    resolution,
+  );
+
+  assert.equal(receipt.synchronousResult.artifactUrlSha256, "e".repeat(64));
+  assert.equal(JSON.stringify(receipt).includes("temporary=one-time"), false);
+  assert.throws(
+    () => assertRelayUnknownResultMatchesResolution(
+      synchronousReceipt({
+        synchronous_result: {
+          ...synchronousReceipt().synchronous_result,
+          total_tokens: 161,
+        },
+      }),
+      detail,
+      resolution,
+    ),
+    /receipt 与本次审批证据不一致/,
+  );
+  assert.throws(
+    () => assertRelayUnknownResultMatchesResolution(
+      synchronousReceipt({
+        synchronous_result: {
+          ...synchronousReceipt().synchronous_result,
+          artifact_url: synchronousForm.synchronousResult.artifactUrl,
+        },
+      }),
+      detail,
+      resolution,
+    ),
+    /签名元数据或最终状态无效/,
+  );
+});
+
+test("Platform validation locations become field-level reconciliation errors", () => {
+  assert.deepEqual(
+    relayUnknownResolveFieldErrors({
+      details: {
+        validationErrors: [
+          {
+            loc: ["body", "synchronous_result", "artifact_url"],
+            msg: "artifact_url must be an absolute credential-free HTTPS URL",
+          },
+          {
+            loc: ["body", "reason"],
+            msg: "String should have at least 3 characters",
+          },
+        ],
+      },
+    }),
+    {
+      artifact_url: "artifact_url must be an absolute credential-free HTTPS URL",
+      reason: "String should have at least 3 characters",
     },
   );
 });

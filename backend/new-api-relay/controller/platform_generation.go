@@ -21,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 const platformGenerationRequestBodyLimit = 1 << 20
@@ -57,9 +58,121 @@ type platformRelayHealthResponse struct {
 	Dependencies []platformRelayDependencyHealth `json:"dependencies"`
 }
 
+type platformRelayConcurrentReadinessResult struct {
+	slot         string
+	dependencies []platformRelayDependencyHealth
+	unavailable  bool
+	degraded     bool
+}
+
+// collectPlatformRelayConcurrentReadinessResults observes one bounded result
+// per readiness slot while the request budget is live. The result channel is
+// sized for every launched child, so returning at the hard deadline cannot
+// block a context-aware child while it unwinds and publishes its final result.
+// Database/Redis checks receive the same context; in-memory checks do not own
+// resources that need a request-side join.
+func collectPlatformRelayConcurrentReadinessResults(
+	ctx context.Context,
+	slotOrder []string,
+	results <-chan platformRelayConcurrentReadinessResult,
+) (map[string]platformRelayConcurrentReadinessResult, bool, error) {
+	collected := make(map[string]platformRelayConcurrentReadinessResult, len(slotOrder))
+	allowed := make(map[string]struct{}, len(slotOrder))
+	for _, slot := range slotOrder {
+		allowed[slot] = struct{}{}
+	}
+	var collectionErr error
+	for received := 0; received < len(slotOrder); received++ {
+		if ctx.Err() != nil {
+			return collected, true, collectionErr
+		}
+		var result platformRelayConcurrentReadinessResult
+		select {
+		case result = <-results:
+		case <-ctx.Done():
+			return collected, true, collectionErr
+		}
+		if _, exists := allowed[result.slot]; !exists {
+			collectionErr = errors.Join(collectionErr, fmt.Errorf("unknown Relay readiness slot %q", result.slot))
+			continue
+		}
+		if _, duplicate := collected[result.slot]; duplicate {
+			collectionErr = errors.Join(collectionErr, fmt.Errorf("duplicate Relay readiness slot %q", result.slot))
+			continue
+		}
+		collected[result.slot] = result
+	}
+	if len(collected) != len(slotOrder) {
+		collectionErr = errors.Join(collectionErr, errors.New("Relay readiness child result set is incomplete"))
+	}
+	return collected, false, collectionErr
+}
+
+func launchPlatformRelayReadinessChild(
+	ctx context.Context,
+	slot string,
+	fallback platformRelayConcurrentReadinessResult,
+	results chan<- platformRelayConcurrentReadinessResult,
+	check func(context.Context) platformRelayConcurrentReadinessResult,
+) {
+	go func() {
+		fallback.slot = slot
+		result := fallback
+		defer func() {
+			if recover() != nil {
+				// Never include the recovered value: a provider SDK panic can carry
+				// request or credential material. The canonical slot result is enough.
+				common.SysError("Relay readiness child failed unexpectedly: " + slot)
+			}
+			results <- result
+		}()
+		if ctx == nil {
+			common.SysError("Relay readiness child context is unavailable: " + slot)
+			return
+		}
+		if check != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			candidate := check(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			wellFormed := len(candidate.dependencies) == len(fallback.dependencies)
+			dependencyUnavailable := false
+			dependencyDegraded := false
+			if wellFormed {
+				for index := range fallback.dependencies {
+					dependency := candidate.dependencies[index]
+					if dependency.Name != fallback.dependencies[index].Name || dependency.Details == nil ||
+						(dependency.State != "healthy" && dependency.State != "degraded" && dependency.State != "unavailable") {
+						wellFormed = false
+						break
+					}
+					dependencyUnavailable = dependencyUnavailable || dependency.State == "unavailable"
+					dependencyDegraded = dependencyDegraded || dependency.State == "degraded"
+				}
+			}
+			if wellFormed && (candidate.unavailable != dependencyUnavailable || candidate.degraded != dependencyDegraded) {
+				wellFormed = false
+			}
+			if wellFormed {
+				result = candidate
+				result.slot = slot
+			} else {
+				common.SysError("Relay readiness child returned malformed evidence: " + slot)
+			}
+		}
+	}()
+}
+
 // Keep the process-local state lookup replaceable in controller tests without
 // weakening the production service boundary.
 var getPlatformGenerationWorkerRuntimeState = service.GetPlatformGenerationWorkerRuntimeState
+var getProtectedPlatformRelayAPIReadiness = service.GetProtectedPlatformRelayAPIReadiness
+var getPlatformProviderReadinessSummary = service.GetPlatformProviderReadinessSummary
+var getPlatformArtifactReadinessStatus = service.GetPlatformArtifactReadinessStatus
+var getPlatformRelayModelCatalogReadinessStatus = service.GetPlatformRelayModelCatalogReadinessStatus
 
 func SubmitPlatformGeneration(c *gin.Context) {
 	principal, ok := middleware.GetPlatformRelayPrincipal(c)
@@ -258,6 +371,56 @@ func ListPlatformGenerationSubmissionUnknown(c *gin.Context) {
 	writePlatformGenerationError(c, http.StatusInternalServerError, model.PlatformGenerationErrorInternal, "The relay could not complete the request", true, nil)
 }
 
+func ListPlatformGenerationProviderResultReconciliations(c *gin.Context) {
+	tenantID := c.Query("tenant_id")
+	if !service.AuthenticatePlatformGenerationOperationsCredential(
+		c.GetHeader("X-Relay-Operations-Token"),
+		tenantID,
+	) {
+		writePlatformGenerationError(c, http.StatusUnauthorized, model.PlatformGenerationErrorOperationsUnauthorized, "Operations credential is not authorized", false, nil)
+		return
+	}
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 || page > 1_000_000 {
+		writePlatformGenerationError(c, http.StatusUnprocessableEntity, model.PlatformGenerationErrorRequestValidation, "Request validation failed", false, nil)
+		return
+	}
+	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", "50"))
+	if err != nil || pageSize < 1 || pageSize > 100 {
+		writePlatformGenerationError(c, http.StatusUnprocessableEntity, model.PlatformGenerationErrorRequestValidation, "Request validation failed", false, nil)
+		return
+	}
+	result, err := service.ListPlatformGenerationProviderResultReconciliations(tenantID, page, pageSize)
+	if err == nil {
+		c.JSON(http.StatusOK, result)
+		return
+	}
+	common.SysError("list Platform generation provider-result reconciliations: " + err.Error())
+	writePlatformGenerationError(c, http.StatusInternalServerError, model.PlatformGenerationErrorInternal, "The relay could not complete the request", true, nil)
+}
+
+func GetPlatformGenerationProviderResultReconciliation(c *gin.Context) {
+	tenantID := c.Query("tenant_id")
+	if !service.AuthenticatePlatformGenerationOperationsCredential(
+		c.GetHeader("X-Relay-Operations-Token"),
+		tenantID,
+	) {
+		writePlatformGenerationError(c, http.StatusUnauthorized, model.PlatformGenerationErrorOperationsUnauthorized, "Operations credential is not authorized", false, nil)
+		return
+	}
+	result, err := service.GetPlatformGenerationProviderResultReconciliation(tenantID, c.Param("job_id"))
+	if err == nil {
+		c.JSON(http.StatusOK, result)
+		return
+	}
+	if service.IsPlatformGenerationNotFound(err) {
+		writePlatformGenerationError(c, http.StatusNotFound, model.PlatformGenerationErrorJobNotFound, "Generation job does not exist", false, nil)
+		return
+	}
+	common.SysError("get Platform generation provider-result reconciliation: " + err.Error())
+	writePlatformGenerationError(c, http.StatusInternalServerError, model.PlatformGenerationErrorInternal, "The relay could not complete the request", true, nil)
+}
+
 func GetPlatformGenerationSubmissionUnknown(c *gin.Context) {
 	tenantID := c.Query("tenant_id")
 	if !service.AuthenticatePlatformGenerationOperationsCredential(
@@ -291,10 +454,14 @@ func ResolvePlatformGenerationSubmissionUnknown(c *gin.Context) {
 		writePlatformGenerationError(c, http.StatusUnprocessableEntity, model.PlatformGenerationErrorRequestValidation, "Request validation failed", false, nil)
 		return
 	}
+	if err := common.RejectDuplicateJSONKeys(body); err != nil {
+		writePlatformGenerationError(c, http.StatusUnprocessableEntity, model.PlatformGenerationErrorRequestValidation, "Request validation failed", false, nil)
+		return
+	}
 	root, err := decodePlatformJSONObject(
 		json.RawMessage(body),
 		[]string{"body"},
-		[]string{"operation_id", "tenant_id", "outcome", "upstream_task_id", "expected_route_id", "expected_submission_attempt", "expected_reconciliation_token", "verification_reference", "approved_by", "approval_reason", "approval_key_id", "approval_signature"},
+		[]string{"operation_id", "tenant_id", "outcome", "upstream_task_id", "expected_route_id", "expected_submission_attempt", "expected_reconciliation_token", "verification_reference", "approved_by", "approval_reason", "approval_key_id", "approval_signature", "synchronous_result"},
 		[]string{"operation_id", "tenant_id", "outcome", "upstream_task_id", "expected_route_id", "expected_submission_attempt", "expected_reconciliation_token", "verification_reference", "approved_by", "approval_reason", "approval_key_id", "approval_signature"},
 	)
 	if err != nil {
@@ -313,12 +480,37 @@ func ResolvePlatformGenerationSubmissionUnknown(c *gin.Context) {
 			return
 		}
 	}
+	if synchronousRaw, present := root["synchronous_result"]; present {
+		synchronous, nestedErr := decodePlatformJSONObject(
+			synchronousRaw,
+			[]string{"body", "synchronous_result"},
+			[]string{"provider_model_id", "provider_response_sha256", "artifact_url", "provider_created_at", "generated_images", "output_tokens", "total_tokens"},
+			[]string{"provider_model_id", "provider_response_sha256", "artifact_url", "provider_created_at", "generated_images", "output_tokens", "total_tokens"},
+		)
+		if nestedErr != nil {
+			writePlatformGenerationError(c, http.StatusUnprocessableEntity, model.PlatformGenerationErrorRequestValidation, "Request validation failed", false, nil)
+			return
+		}
+		for _, field := range []string{"provider_model_id", "provider_response_sha256", "artifact_url", "provider_created_at"} {
+			if requirePlatformJSONType(synchronous[field], "string", []string{"body", "synchronous_result", field}) != nil {
+				writePlatformGenerationError(c, http.StatusUnprocessableEntity, model.PlatformGenerationErrorRequestValidation, "Request validation failed", false, nil)
+				return
+			}
+		}
+		for _, field := range []string{"generated_images", "output_tokens", "total_tokens"} {
+			if requirePlatformJSONType(synchronous[field], "number", []string{"body", "synchronous_result", field}) != nil {
+				writePlatformGenerationError(c, http.StatusUnprocessableEntity, model.PlatformGenerationErrorRequestValidation, "Request validation failed", false, nil)
+				return
+			}
+		}
+	}
 	var request dto.PlatformGenerationReconciliationRequest
 	if common.Unmarshal(body, &request) != nil ||
 		!platformGenerationOperationIDPattern.MatchString(request.OperationID) ||
 		(request.Outcome != "created" && request.Outcome != "not_created") ||
 		(request.Outcome == "created" && strings.TrimSpace(request.UpstreamTaskID) == "") ||
 		(request.Outcome == "not_created" && request.UpstreamTaskID != "") ||
+		(request.Outcome == "not_created" && request.SynchronousResult != nil) ||
 		strings.TrimSpace(request.UpstreamTaskID) != request.UpstreamTaskID ||
 		len(request.UpstreamTaskID) > 191 ||
 		request.ExpectedRouteID <= 0 || request.ExpectedSubmissionAttempt <= 0 ||
@@ -478,9 +670,31 @@ func PlatformRelayRuntimeBuildIdentity(c *gin.Context) {
 	})
 }
 
+// PlatformRelayModelReleaseEvidence exposes only server-computed, secret-free
+// release readiness. It shares the internal runtime admission boundary and is
+// never authenticated by a browser or a new-api operator session.
+func PlatformRelayModelReleaseEvidence(c *gin.Context) {
+	if !service.AuthenticatePlatformRelayRuntimeIdentity(
+		c.GetHeader(constant.HeaderPlatformGenerationInternalAdmission),
+	) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid runtime identity admission"})
+		return
+	}
+	projection, err := service.GetPlatformModelReleaseEvidenceProjection()
+	if err != nil {
+		common.SysError("read Platform Relay model release evidence: " + err.Error())
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "relay model release evidence is unavailable"})
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, projection)
+}
+
 func PlatformRelayReady(c *gin.Context) {
 	setPlatformRelayReadyInstanceHeader(c)
 	setPlatformRelayBuildHeaders(c)
+	readinessContext, cancelReadiness := context.WithTimeout(c.Request.Context(), 2500*time.Millisecond)
+	defer cancelReadiness()
 	state := "healthy"
 	status := http.StatusOK
 	dependencies := make([]platformRelayDependencyHealth, 0, 10)
@@ -493,10 +707,45 @@ func PlatformRelayReady(c *gin.Context) {
 			state = "degraded"
 		}
 	}
+	var readinessDB = model.DB
+	if readinessDB != nil {
+		readinessDB = readinessDB.WithContext(readinessContext)
+	}
+	readinessDBForChild := func(ctx context.Context) *gorm.DB {
+		if readinessDB == nil || ctx == nil {
+			return nil
+		}
+		return readinessDB.WithContext(ctx)
+	}
 
 	databaseState := "healthy"
-	if err := model.PingDB(); err != nil {
+	schemaState := "unavailable"
+	schemaDetails := make(map[string]any)
+	databaseRole := model.RelayRuntimeDatabaseRoleStatus{
+		Required: model.RelayDatabaseRoleAttestationRequired(), State: "healthy",
+	}
+	var schemaStatus model.RelaySchemaStatus
+	var databaseEvidenceErr error
+	if databaseRole.Required {
+		schemaStatus, databaseRole, databaseEvidenceErr = getProtectedPlatformRelayAPIReadiness(readinessContext)
+	} else if model.DB == nil {
+		databaseEvidenceErr = errors.New("Relay database is unavailable")
+	} else {
+		requestDB := readinessDB
+		sqlDB, err := requestDB.DB()
+		if err != nil {
+			databaseEvidenceErr = err
+		} else if err := sqlDB.PingContext(readinessContext); err != nil {
+			databaseEvidenceErr = err
+		} else if schemaStatus, err = model.GetRelaySchemaStatus(requestDB); err != nil {
+			databaseEvidenceErr = err
+		} else if databaseRole, err = model.GetRelayRuntimeDatabaseRoleStatus(requestDB); err != nil {
+			databaseEvidenceErr = err
+		}
+	}
+	if databaseEvidenceErr != nil {
 		databaseState = "unavailable"
+		databaseRole.State = "unavailable"
 		markUnavailable()
 	}
 	dependencies = append(dependencies, platformRelayDependencyHealth{
@@ -505,10 +754,7 @@ func PlatformRelayReady(c *gin.Context) {
 		Details: make(map[string]any),
 	})
 
-	schemaState := "unavailable"
-	schemaDetails := make(map[string]any)
-	schemaStatus, schemaErr := model.GetRelaySchemaStatus(model.DB)
-	if schemaErr == nil {
+	if databaseEvidenceErr == nil {
 		schemaDetails = map[string]any{
 			"classification":          schemaStatus.Classification,
 			"current_version":         schemaStatus.CurrentVersion,
@@ -539,9 +785,8 @@ func PlatformRelayReady(c *gin.Context) {
 		Details: schemaDetails,
 	})
 
-	databaseRole, databaseRoleErr := model.GetRelayRuntimeDatabaseRoleStatus(model.DB)
 	databaseRoleState := databaseRole.State
-	if databaseRoleErr != nil {
+	if databaseEvidenceErr != nil {
 		databaseRoleState = "unavailable"
 		markUnavailable()
 	}
@@ -551,65 +796,6 @@ func PlatformRelayReady(c *gin.Context) {
 		Details: map[string]any{
 			"required": databaseRole.Required,
 			"role":     databaseRole.Role,
-		},
-	})
-
-	codexLifecycleState := "healthy"
-	codexRefreshEnabled, codexRefreshErr := service.CodexCredentialAutoRefreshEnabled()
-	if codexRefreshErr != nil || service.ValidateCodexCredentialAutoRefreshLifecycle(
-		codexRefreshEnabled, model.RelayDatabaseRoleAttestationRequired(),
-	) != nil {
-		codexLifecycleState = "unavailable"
-		markUnavailable()
-	}
-	dependencies = append(dependencies, platformRelayDependencyHealth{
-		Name:  "codex_credential_lifecycle",
-		State: codexLifecycleState,
-		Details: map[string]any{
-			"auto_refresh_enabled": codexRefreshEnabled,
-			"protected":            model.RelayDatabaseRoleAttestationRequired(),
-		},
-	})
-
-	nativeBillingState := "healthy"
-	if err := service.ValidateProtectedPlatformNativeBillingState(); err != nil {
-		nativeBillingState = "unavailable"
-		markUnavailable()
-	}
-	dependencies = append(dependencies, platformRelayDependencyHealth{
-		Name:  "native_billing_lifecycle",
-		State: nativeBillingState,
-		Details: map[string]any{
-			"protected": model.RelayDatabaseRoleAttestationRequired(),
-		},
-	})
-
-	servicePrincipalState := "healthy"
-	if err := service.ValidateProtectedPlatformRelayServicePrincipals(); err != nil {
-		servicePrincipalState = "unavailable"
-		markUnavailable()
-	}
-	dependencies = append(dependencies, platformRelayDependencyHealth{
-		Name:  "platform_service_principals",
-		State: servicePrincipalState,
-		Details: map[string]any{
-			"protected": model.RelayDatabaseRoleAttestationRequired(),
-		},
-	})
-
-	setupRequired := common.IsProductionEnvironment() || model.RelayDatabaseRoleAttestationRequired()
-	setupState := "healthy"
-	setupReady := !setupRequired || model.SetupReady()
-	if !setupReady {
-		setupState = "unavailable"
-		markUnavailable()
-	}
-	dependencies = append(dependencies, platformRelayDependencyHealth{
-		Name:  "production_setup",
-		State: setupState,
-		Details: map[string]any{
-			"required": setupRequired,
-			"ready":    setupReady,
 		},
 	})
 
@@ -623,254 +809,346 @@ func PlatformRelayReady(c *gin.Context) {
 		"worker_runtime_state":   workerRuntimeState,
 		"worker_runtime_running": workerRuntimeRunning,
 	}
-	compatState := "healthy"
-	if compatEnabled {
-		catalog, err := service.GetPlatformRelayModelCatalog()
-		if err != nil {
-			compatState = "unavailable"
-			compatDetails["configured"] = false
-			markUnavailable()
-		} else {
-			compatDetails["configured"] = true
-			compatDetails["model_count"] = len(catalog.Data)
-			if len(catalog.Data) == 0 {
-				compatState = "unavailable"
-				markUnavailable()
-			}
-		}
-		workerConfigurationErr := service.ValidatePlatformGenerationWorkerConfiguration()
-		workerConfigurationValid := workerConfigurationErr == nil && workersEnabled
-		compatDetails["worker_configuration_valid"] = workerConfigurationValid
-		if !workerConfigurationValid || !workerRuntimeRunning {
-			compatState = "unavailable"
-			markUnavailable()
-		}
-	} else {
-		compatState = "degraded"
-		markDegraded()
+
+	protectedRuntime := model.RelayDatabaseRoleAttestationRequired()
+	concurrentSlotOrder := []string{
+		"codex", "native_billing", "principals", "setup",
+		"model_catalog", "redis", "artifacts", "callbacks", "provider",
 	}
-	dependencies = append(dependencies, platformRelayDependencyHealth{
-		Name:    "platform_relay_compat",
-		State:   compatState,
-		Details: compatDetails,
-	})
-
-	redisState := "degraded"
-	redisDetails := map[string]any{"enabled": common.RedisEnabled}
-	redisRequired := compatEnabled && workersEnabled && service.PlatformRelayProductionSecurityEnabled()
-	redisDetails["required"] = redisRequired
-	if common.RedisEnabled {
-		redisState = "healthy"
-		if common.RDB == nil {
-			redisState = "unavailable"
-			markUnavailable()
-		} else {
-			ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-			_, err := common.RDB.Ping(ctx).Result()
-			cancel()
-			if err != nil {
-				redisState = "unavailable"
-				markUnavailable()
-			}
-		}
-	} else if redisRequired {
-		redisState = "unavailable"
-		markUnavailable()
-	} else {
-		markDegraded()
+	concurrentFallbacks := map[string]platformRelayConcurrentReadinessResult{
+		"codex": {unavailable: true, dependencies: []platformRelayDependencyHealth{{
+			Name: "codex_credential_lifecycle", State: "unavailable", Details: map[string]any{"protected": protectedRuntime},
+		}}},
+		"native_billing": {unavailable: true, dependencies: []platformRelayDependencyHealth{{
+			Name: "native_billing_lifecycle", State: "unavailable", Details: map[string]any{"protected": protectedRuntime},
+		}}},
+		"principals": {unavailable: true, dependencies: []platformRelayDependencyHealth{{
+			Name: "platform_service_principals", State: "unavailable", Details: map[string]any{"protected": protectedRuntime},
+		}}},
+		"setup": {unavailable: true, dependencies: []platformRelayDependencyHealth{{
+			Name: "production_setup", State: "unavailable", Details: map[string]any{"required": true, "ready": false},
+		}}},
+		"model_catalog": {unavailable: true, dependencies: []platformRelayDependencyHealth{{
+			Name: "platform_relay_compat", State: "unavailable", Details: compatDetails,
+		}}},
+		"redis": {unavailable: true, dependencies: []platformRelayDependencyHealth{{
+			Name: "redis", State: "unavailable", Details: map[string]any{"enabled": common.RedisEnabled},
+		}}},
+		"artifacts": {unavailable: true, dependencies: []platformRelayDependencyHealth{
+			{Name: "artifact_store", State: "unavailable", Details: map[string]any{"required": true, "configured": false}},
+			{Name: "artifact_cleanup", State: "unavailable", Details: map[string]any{"enabled": true}},
+		}},
+		"callbacks": {unavailable: true, dependencies: []platformRelayDependencyHealth{{
+			Name: "generation_callbacks", State: "unavailable", Details: map[string]any{"enabled": compatEnabled && workersEnabled},
+		}}},
+		"provider": {degraded: true, dependencies: []platformRelayDependencyHealth{{
+			Name: "provider_runtime", State: "degraded", Details: map[string]any{"enabled": compatEnabled, "inspection_available": false},
+		}}},
 	}
-	dependencies = append(dependencies, platformRelayDependencyHealth{
-		Name:    "redis",
-		State:   redisState,
-		Details: redisDetails,
+	concurrentResults := make(chan platformRelayConcurrentReadinessResult, len(concurrentSlotOrder))
+	launchPlatformRelayReadinessChild(readinessContext, "codex", concurrentFallbacks["codex"], concurrentResults, func(childContext context.Context) platformRelayConcurrentReadinessResult {
+		state := "healthy"
+		enabled, err := service.CodexCredentialAutoRefreshEnabled()
+		if err != nil || service.ValidateCodexCredentialAutoRefreshLifecycleWithDB(readinessDBForChild(childContext), enabled, protectedRuntime) != nil {
+			state = "unavailable"
+		}
+		return platformRelayConcurrentReadinessResult{
+			unavailable: state == "unavailable",
+			dependencies: []platformRelayDependencyHealth{{
+				Name: "codex_credential_lifecycle", State: state,
+				Details: map[string]any{"auto_refresh_enabled": enabled, "protected": protectedRuntime},
+			}},
+		}
 	})
-
-	artifactIntentCounts, artifactIntentCountsErr := model.GetPlatformArtifactUploadIntentCounts()
-	artifactMaintenanceRequired := artifactIntentCountsErr == nil &&
-		platformArtifactCleanupMaintenanceRequired(artifactIntentCounts)
-	artifactStoreRequired := (compatEnabled && workersEnabled) || artifactMaintenanceRequired
-
-	artifactState := "healthy"
-	artifactDetails := map[string]any{"required": artifactStoreRequired}
-	if artifactStoreRequired {
-		store, err := service.NewPlatformArtifactStoreFromEnvironment()
-		if err != nil {
-			artifactState = "unavailable"
-			artifactDetails["configured"] = false
-			markUnavailable()
-		} else {
-			artifactDetails["configured"] = true
-			artifactDetails["kind"] = store.Kind()
-			artifactDetails["binding_id"] = store.BindingID()
-			persistent := store.Persistent()
-			artifactDetails["persistent"] = persistent
-			ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-			healthErr := store.Healthcheck(ctx)
-			cancel()
-			if closer, ok := store.(interface{ Close() }); ok {
-				closer.Close()
+	launchPlatformRelayReadinessChild(readinessContext, "native_billing", concurrentFallbacks["native_billing"], concurrentResults, func(childContext context.Context) platformRelayConcurrentReadinessResult {
+		state := "healthy"
+		if service.ValidateProtectedPlatformNativeBillingStateWithDB(readinessDBForChild(childContext)) != nil {
+			state = "unavailable"
+		}
+		return platformRelayConcurrentReadinessResult{
+			unavailable: state == "unavailable",
+			dependencies: []platformRelayDependencyHealth{{
+				Name: "native_billing_lifecycle", State: state, Details: map[string]any{"protected": protectedRuntime},
+			}},
+		}
+	})
+	launchPlatformRelayReadinessChild(readinessContext, "principals", concurrentFallbacks["principals"], concurrentResults, func(childContext context.Context) platformRelayConcurrentReadinessResult {
+		state := "healthy"
+		if service.ValidateProtectedPlatformRelayServicePrincipalsWithDB(readinessDBForChild(childContext)) != nil {
+			state = "unavailable"
+		}
+		return platformRelayConcurrentReadinessResult{
+			unavailable: state == "unavailable",
+			dependencies: []platformRelayDependencyHealth{{
+				Name: "platform_service_principals", State: state, Details: map[string]any{"protected": protectedRuntime},
+			}},
+		}
+	})
+	launchPlatformRelayReadinessChild(readinessContext, "setup", concurrentFallbacks["setup"], concurrentResults, func(childContext context.Context) platformRelayConcurrentReadinessResult {
+		required := common.IsProductionEnvironment() || protectedRuntime
+		ready := !required || model.SetupReadyWithDB(readinessDBForChild(childContext))
+		state := "healthy"
+		if !ready {
+			state = "unavailable"
+		}
+		return platformRelayConcurrentReadinessResult{
+			unavailable: state == "unavailable",
+			dependencies: []platformRelayDependencyHealth{{
+				Name: "production_setup", State: state, Details: map[string]any{"required": required, "ready": ready},
+			}},
+		}
+	})
+	launchPlatformRelayReadinessChild(readinessContext, "model_catalog", concurrentFallbacks["model_catalog"], concurrentResults, func(context.Context) platformRelayConcurrentReadinessResult {
+		result := platformRelayConcurrentReadinessResult{slot: "model_catalog"}
+		compatState := "healthy"
+		details := map[string]any{
+			"enabled":                compatEnabled,
+			"workers_enabled":        workersEnabled,
+			"worker_runtime_state":   workerRuntimeState,
+			"worker_runtime_running": workerRuntimeRunning,
+		}
+		if compatEnabled {
+			catalog := getPlatformRelayModelCatalogReadinessStatus()
+			details["configured"] = catalog.Configured
+			details["model_count"] = catalog.ModelCount
+			details["catalog_revision"] = catalog.CatalogRevision
+			details["config_generation"] = catalog.ConfigGeneration
+			details["proof_current"] = catalog.Current
+			details["proof_error"] = catalog.ErrorCode
+			if !catalog.VerifiedAt.IsZero() {
+				details["verified_at"] = catalog.VerifiedAt
 			}
-			if healthErr != nil || !persistent {
-				artifactState = "unavailable"
-				markUnavailable()
+			if !catalog.EvidenceExpiresAt.IsZero() {
+				details["evidence_expires_at"] = catalog.EvidenceExpiresAt
+			}
+			// StartPlatformGenerationWorkers performs the full Redis/OBS/provider
+			// configuration gate before publishing Running. Readiness consumes
+			// that evidence plus the lock-free catalog proof; it never reloads.
+			workerConfigurationValid := workersEnabled && workerRuntimeRunning
+			details["worker_configuration_valid"] = workerConfigurationValid
+			if !catalog.Current || !catalog.Configured || catalog.ModelCount < 1 || !workerConfigurationValid {
+				compatState, result.unavailable = "unavailable", true
+			}
+		} else {
+			compatState, result.degraded = "degraded", true
+		}
+		result.dependencies = []platformRelayDependencyHealth{{
+			Name: "platform_relay_compat", State: compatState, Details: details,
+		}}
+		return result
+	})
+	launchPlatformRelayReadinessChild(readinessContext, "redis", concurrentFallbacks["redis"], concurrentResults, func(childContext context.Context) platformRelayConcurrentReadinessResult {
+		redisState := "degraded"
+		redisDetails := map[string]any{"enabled": common.RedisEnabled}
+		redisRequired := compatEnabled && workersEnabled && service.PlatformRelayProductionSecurityEnabled()
+		redisDetails["required"] = redisRequired
+		result := platformRelayConcurrentReadinessResult{slot: "redis"}
+		if common.RedisEnabled {
+			redisState = "healthy"
+			if common.RDB == nil {
+				redisState, result.unavailable = "unavailable", true
+			} else if _, err := common.RDB.Ping(childContext).Result(); err != nil {
+				redisState, result.unavailable = "unavailable", true
+			}
+		} else if redisRequired {
+			redisState, result.unavailable = "unavailable", true
+		} else {
+			result.degraded = true
+		}
+		result.dependencies = []platformRelayDependencyHealth{{Name: "redis", State: redisState, Details: redisDetails}}
+		return result
+	})
+	launchPlatformRelayReadinessChild(readinessContext, "artifacts", concurrentFallbacks["artifacts"], concurrentResults, func(childContext context.Context) platformRelayConcurrentReadinessResult {
+		result := platformRelayConcurrentReadinessResult{slot: "artifacts"}
+		artifactReadiness, artifactReadinessErr := getPlatformArtifactReadinessStatus()
+		generationStoreRequired := compatEnabled && workersEnabled
+		artifactState := "healthy"
+		artifactDetails := map[string]any{
+			"required": artifactReadiness.Required, "configured": artifactReadiness.Configured,
+			"kind": artifactReadiness.Kind, "binding_id": artifactReadiness.BindingID,
+			"persistent":           artifactReadiness.Persistent,
+			"current":              artifactReadiness.Current,
+			"verified_at":          artifactReadiness.VerifiedAt,
+			"store_health_healthy": artifactReadiness.StoreHealthHealthy,
+			"store_health_fresh":   artifactReadiness.StoreHealthFresh,
+			"store_health_error":   artifactReadiness.StoreHealthCurrentErrorCode,
+			"store_health_at":      artifactReadiness.LastStoreHealthAt,
+		}
+		// This getter is process-memory only. Startup and the supervised cleanup
+		// worker own store construction, live health, freshness, and binding CAS.
+		if artifactReadinessErr != nil || !artifactReadiness.Current ||
+			(generationStoreRequired && !artifactReadiness.Required) {
+			artifactState, result.unavailable = "unavailable", true
+		}
+		cleanupState := "healthy"
+		cleanupDetails := map[string]any{
+			"enabled": true, "required": artifactReadiness.Required,
+			"generation_enabled": compatEnabled && workersEnabled,
+		}
+		cleanupDetails["worker_running"] = artifactReadiness.CleanupWorkerRunning
+		cleanupDetails["worker_stale"] = artifactReadiness.CleanupWorkerStale
+		cleanupDetails["worker_current_error"] = artifactReadiness.CleanupWorkerCurrentErrorCode
+		if !artifactReadiness.CleanupWorkerLastHeartbeatAt.IsZero() {
+			cleanupDetails["worker_last_heartbeat_at"] = artifactReadiness.CleanupWorkerLastHeartbeatAt
+		}
+		if artifactReadinessErr != nil || !artifactReadiness.CleanupWorkerRunning ||
+			artifactReadiness.CleanupWorkerStale || artifactReadiness.CleanupWorkerCurrentErrorCode != "" {
+			cleanupState, result.unavailable = "unavailable", true
+		}
+		result.dependencies = []platformRelayDependencyHealth{
+			{Name: "artifact_store", State: artifactState, Details: artifactDetails},
+			{Name: "artifact_cleanup", State: cleanupState, Details: cleanupDetails},
+		}
+		return result
+	})
+	launchPlatformRelayReadinessChild(readinessContext, "callbacks", concurrentFallbacks["callbacks"], concurrentResults, func(childContext context.Context) platformRelayConcurrentReadinessResult {
+		result := platformRelayConcurrentReadinessResult{slot: "callbacks"}
+		callbackState := "degraded"
+		callbackDetails := map[string]any{"enabled": compatEnabled && workersEnabled}
+		if compatEnabled && workersEnabled {
+			var counts model.PlatformGenerationCallbackCounts
+			var err error
+			childDB := readinessDBForChild(childContext)
+			if childDB == nil {
+				err = errors.New("generation callback database is unavailable")
 			} else {
-				artifactState = "healthy"
+				counts, err = model.GetPlatformGenerationCallbackCountsWithDB(childDB)
 			}
+			if err != nil {
+				callbackState, result.unavailable = "unavailable", true
+			} else {
+				callbackDetails["pending"], callbackDetails["claimed"] = counts.Pending, counts.Claimed
+				callbackDetails["delivered"], callbackDetails["dead_letter"] = counts.Delivered, counts.DeadLetter
+				if counts.Pending+counts.Claimed+counts.DeadLetter > 0 {
+					result.degraded = true
+				} else {
+					callbackState = "healthy"
+				}
+			}
+		} else {
+			result.degraded = true
 		}
-	} else {
-		artifactDetails["configured"] = false
-	}
-	dependencies = append(dependencies, platformRelayDependencyHealth{
-		Name:    "artifact_store",
-		State:   artifactState,
-		Details: artifactDetails,
+		result.dependencies = []platformRelayDependencyHealth{{Name: "generation_callbacks", State: callbackState, Details: callbackDetails}}
+		return result
+	})
+	launchPlatformRelayReadinessChild(readinessContext, "provider", concurrentFallbacks["provider"], concurrentResults, func(childContext context.Context) platformRelayConcurrentReadinessResult {
+		result := platformRelayConcurrentReadinessResult{slot: "provider"}
+		providerState := "degraded"
+		providerDetails := map[string]any{"enabled": false}
+		if compatEnabled {
+			summary, err := getPlatformProviderReadinessSummary(childContext)
+			if err != nil {
+				// Provider-only observability loss must not remove the Relay API
+				// from service. The independent database/schema/role proof above
+				// remains fail-closed for an actual core database failure.
+				providerState, result.degraded = "degraded", true
+				providerDetails["enabled"] = true
+				providerDetails["inspection_available"] = false
+			} else {
+				var productionCutoverReady bool
+				providerState, productionCutoverReady = platformRelayProviderRuntimeClassification(summary)
+				providerDetails = platformRelayProviderRuntimeDetails(summary, productionCutoverReady)
+				result.degraded = providerState == "degraded"
+			}
+		} else {
+			result.degraded = true
+		}
+		result.dependencies = []platformRelayDependencyHealth{{Name: "provider_runtime", State: providerState, Details: providerDetails}}
+		return result
 	})
 
-	artifactCleanupState := "degraded"
-	artifactCleanupDetails := map[string]any{
-		"enabled":              true,
-		"maintenance_required": artifactMaintenanceRequired,
-		"generation_enabled":   compatEnabled && workersEnabled,
-	}
-	workerStatus := service.GetPlatformArtifactCleanupWorkerStatus()
-	artifactCleanupDetails["worker_started"] = workerStatus.Started
-	artifactCleanupDetails["worker_running"] = workerStatus.Running
-	artifactCleanupDetails["worker_stale"] = workerStatus.Stale
-	artifactCleanupDetails["worker_current_error"] = workerStatus.CurrentErrorCode
-	artifactCleanupDetails["worker_consecutive_errors"] = workerStatus.ConsecutiveErrors
-	if !workerStatus.StartedAt.IsZero() {
-		artifactCleanupDetails["worker_started_at"] = workerStatus.StartedAt
-	}
-	if !workerStatus.LastHeartbeatAt.IsZero() {
-		artifactCleanupDetails["worker_last_heartbeat_at"] = workerStatus.LastHeartbeatAt
-	}
-	if !workerStatus.LastSuccessAt.IsZero() {
-		artifactCleanupDetails["worker_last_success_at"] = workerStatus.LastSuccessAt
-	}
-	if !workerStatus.LastErrorAt.IsZero() {
-		artifactCleanupDetails["worker_last_error_at"] = workerStatus.LastErrorAt
-	}
-	if artifactIntentCountsErr != nil {
-		artifactCleanupState = "unavailable"
+	resultsBySlot, readinessTimedOut, readinessCollectionErr := collectPlatformRelayConcurrentReadinessResults(
+		readinessContext, concurrentSlotOrder, concurrentResults,
+	)
+	if readinessTimedOut || readinessCollectionErr != nil || readinessContext.Err() != nil {
 		markUnavailable()
-	} else {
-		artifactCleanupDetails["pending"] = artifactIntentCounts.Pending
-		artifactCleanupDetails["claimed"] = artifactIntentCounts.Claimed
-		artifactCleanupDetails["quarantined"] = artifactIntentCounts.Quarantined
-		artifactCleanupDetails["cleaned"] = artifactIntentCounts.Cleaned
-		artifactCleanupDetails["published"] = artifactIntentCounts.Published
-		artifactCleanupDetails["due"] = artifactIntentCounts.Due
-		artifactCleanupDetails["dead_letter"] = artifactIntentCounts.DeadLetter
-		artifactCleanupDetails["binding_mismatch_dead_letter"] = artifactIntentCounts.BindingMismatchDeadLetter
-		artifactCleanupDetails["retrying"] = artifactIntentCounts.Retrying
-		artifactCleanupDetails["retrying_binding_mismatch"] = artifactIntentCounts.RetryingBindingMismatch
-		artifactCleanupDetails["cleaned_retrying"] = artifactIntentCounts.CleanedRetrying
-		artifactCleanupDetails["cleaned_binding_mismatch"] = artifactIntentCounts.CleanedBindingMismatch
-		artifactCleanupState = platformArtifactCleanupReadinessState(
-			artifactIntentCounts,
-			workerStatus,
-			service.PlatformRelayProductionSecurityEnabled(),
-		)
-		switch artifactCleanupState {
-		case "unavailable":
+	}
+	appendConcurrentResult := func(slot string) {
+		result, exists := resultsBySlot[slot]
+		if !exists {
+			// A malformed/duplicate result must never shorten the stable 13-item
+			// wire contract. Render the canonical fail-closed slot evidence.
+			result = concurrentFallbacks[slot]
+		}
+		dependencies = append(dependencies, result.dependencies...)
+		if result.unavailable {
 			markUnavailable()
-		case "degraded":
+		} else if result.degraded {
 			markDegraded()
 		}
 	}
-	dependencies = append(dependencies, platformRelayDependencyHealth{
-		Name:    "artifact_cleanup",
-		State:   artifactCleanupState,
-		Details: artifactCleanupDetails,
-	})
-
-	callbackState := "degraded"
-	callbackDetails := map[string]any{"enabled": compatEnabled && workersEnabled}
-	if compatEnabled && workersEnabled {
-		counts, err := model.GetPlatformGenerationCallbackCounts()
-		if err != nil {
-			callbackState = "unavailable"
-			markUnavailable()
-		} else {
-			callbackDetails["pending"] = counts.Pending
-			callbackDetails["claimed"] = counts.Claimed
-			callbackDetails["delivered"] = counts.Delivered
-			callbackDetails["dead_letter"] = counts.DeadLetter
-			if counts.Pending+counts.Claimed+counts.DeadLetter > 0 {
-				callbackState = "degraded"
-				markDegraded()
-			} else {
-				callbackState = "healthy"
-			}
-		}
-	} else {
-		markDegraded()
+	for _, slot := range concurrentSlotOrder[:4] {
+		appendConcurrentResult(slot)
 	}
-	dependencies = append(dependencies, platformRelayDependencyHealth{
-		Name:    "generation_callbacks",
-		State:   callbackState,
-		Details: callbackDetails,
-	})
-
-	providerState := "degraded"
-	providerDetails := map[string]any{"enabled": false}
-	if compatEnabled {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-		summary, err := service.GetPlatformProviderReadinessSummary(ctx)
-		cancel()
-		if err != nil {
-			providerState = "unavailable"
-			markUnavailable()
-		} else {
-			providerDetails = map[string]any{
-				"enabled":                            summary.Enabled,
-				"monitor_fresh":                      summary.MonitorFresh,
-				"monitor_last_completed_at":          summary.MonitorLastCompletedAt,
-				"monitor_freshness_seconds":          summary.MonitorFreshnessSeconds,
-				"monitor_last_error_code":            summary.MonitorLastWorkerErrorCode,
-				"active_alerts":                      summary.ActiveAlerts,
-				"unavailable_routes":                 summary.UnavailableRoutes,
-				"alert_backlog":                      summary.AlertBacklog,
-				"alert_dead_letter":                  summary.AlertDeadLetter,
-				"cost_incomplete":                    summary.CostIncomplete,
-				"cost_backlog":                       summary.CostBacklog,
-				"cost_dead_letter":                   summary.CostDeadLetter,
-				"cost_successful_relay_jobs":         summary.CostSuccessfulRelayJobs,
-				"cost_explicit_relay_jobs":           summary.CostExplicitRelayJobs,
-				"native_billing_reconciliation_jobs": summary.NativeBillingReconciliationJobs,
-				"cost_reconciliation_complete":       summary.CostReconciliationComplete,
-				"task_stage_backlog":                 summary.TaskStageBacklog,
-				"task_stage_dead_letter":             summary.TaskStageDeadLetter,
-				"operations_snapshot_backlog":        summary.OperationsSnapshotBacklog,
-				"operations_snapshot_dead_letter":    summary.OperationsSnapshotDeadLetter,
-			}
-			costEvidenceUnavailable := service.PlatformRelayProductionSecurityEnabled() &&
-				(summary.CostIncomplete > 0 || summary.NativeBillingReconciliationJobs > 0 ||
-					summary.CostDeadLetter > 0 || !summary.CostReconciliationComplete)
-			if costEvidenceUnavailable {
-				// Production must never be admitted as ready while successful
-				// provider work lacks an evidence-backed cost fact. Provider
-				// outages remain degraded, but incomplete financial truth is a
-				// cutover blocker.
-				providerState = "unavailable"
-				markUnavailable()
-			} else if summary.Degraded {
-				providerState = "degraded"
-				markDegraded()
-			} else {
-				providerState = "healthy"
-			}
-		}
-	} else {
-		markDegraded()
+	appendConcurrentResult("model_catalog")
+	for _, slot := range concurrentSlotOrder[5:] {
+		appendConcurrentResult(slot)
 	}
-	dependencies = append(dependencies, platformRelayDependencyHealth{
-		Name:    "provider_runtime",
-		State:   providerState,
-		Details: providerDetails,
-	})
 
 	c.JSON(status, platformRelayHealthResponse{State: state, Dependencies: dependencies})
+}
+
+// platformRelayProviderRuntimeDetails keeps the readiness wire contract in one
+// place. The migration acceptance gate consumes these exact snake_case names.
+func platformRelayProviderRuntimeDetails(
+	summary service.PlatformProviderReadinessSummary,
+	productionCutoverReady bool,
+) map[string]any {
+	return map[string]any{
+		"enabled":                                summary.Enabled,
+		"monitor_fresh":                          summary.MonitorFresh,
+		"monitor_last_completed_at":              summary.MonitorLastCompletedAt,
+		"monitor_freshness_seconds":              summary.MonitorFreshnessSeconds,
+		"monitor_last_error_code":                summary.MonitorLastWorkerErrorCode,
+		"active_alerts":                          summary.ActiveAlerts,
+		"unavailable_routes":                     summary.UnavailableRoutes,
+		"alert_backlog":                          summary.AlertBacklog,
+		"alert_dead_letter":                      summary.AlertDeadLetter,
+		"cost_incomplete":                        summary.CostIncomplete,
+		"cost_backlog":                           summary.CostBacklog,
+		"cost_dead_letter":                       summary.CostDeadLetter,
+		"cost_successful_relay_jobs":             summary.CostSuccessfulRelayJobs,
+		"cost_explicit_relay_jobs":               summary.CostExplicitRelayJobs,
+		"native_billing_reconciliation_jobs":     summary.NativeBillingReconciliationJobs,
+		"cost_reconciliation_complete":           summary.CostReconciliationComplete,
+		"task_stage_backlog":                     summary.TaskStageBacklog,
+		"task_stage_dead_letter":                 summary.TaskStageDeadLetter,
+		"operations_snapshot_backlog":            summary.OperationsSnapshotBacklog,
+		"operations_snapshot_dead_letter":        summary.OperationsSnapshotDeadLetter,
+		"provider_result_reconciliation_backlog": summary.ProviderResultReconciliationBacklog,
+		"production_cutover_ready":               productionCutoverReady,
+	}
+}
+
+// platformRelayProviderRuntimeClassification separates service readiness from
+// the stricter production cutover gate. Cost evidence remains visible and
+// blocks release promotion, but it cannot make the Platform receiver wait on
+// the Relay that must deliver that same evidence.
+func platformRelayProviderRuntimeClassification(
+	summary service.PlatformProviderReadinessSummary,
+) (state string, productionCutoverReady bool) {
+	// Cutover evidence is environment-independent. In particular, a staging
+	// candidate may not promote merely because it is not the final production
+	// process: it must prove the same delivered provider-cost lifecycle first.
+	// The health endpoint remains available as degraded while that evidence is
+	// absent, which avoids a Relay/Platform cold-start dependency cycle.
+	operationalReady := summary.Enabled &&
+		summary.MonitorFresh && summary.MonitorLastWorkerErrorCode == "" &&
+		summary.ActiveAlerts == 0 && summary.UnavailableRoutes == 0 &&
+		summary.AlertBacklog == 0 && summary.AlertDeadLetter == 0 &&
+		summary.TaskStageBacklog == 0 && summary.TaskStageDeadLetter == 0 &&
+		summary.OperationsSnapshotBacklog == 0 && summary.OperationsSnapshotDeadLetter == 0 &&
+		summary.ProviderResultReconciliationBacklog == 0
+	costReady := summary.CostIncomplete == 0 &&
+		summary.CostBacklog == 0 && summary.CostDeadLetter == 0 &&
+		summary.NativeBillingReconciliationJobs == 0 &&
+		summary.CostSuccessfulRelayJobs > 0 &&
+		summary.CostReconciliationComplete
+	productionCutoverReady = !summary.Degraded && operationalReady && costReady
+	if summary.Degraded || !productionCutoverReady {
+		return "degraded", productionCutoverReady
+	}
+	return "healthy", productionCutoverReady
 }
 
 func platformArtifactCleanupReadinessState(

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"mime"
 	"net"
@@ -89,8 +91,22 @@ type PlatformArtifactDownloadConfig struct {
 }
 
 type PlatformArtifactDownloadExpectation struct {
-	SizeBytes *int64
-	SHA256    string
+	SizeBytes           *int64
+	SHA256              string
+	ExpectedContentType string
+	ExpectedImageWidth  int
+	ExpectedImageHeight int
+}
+
+// PlatformArtifactDownloadAuthorization is a transient, host-bound provider
+// credential used only while copying a private provider artifact into the
+// Platform-owned artifact store. It must never be serialized, logged, placed
+// in a URL, or forwarded to a redirect. Today the only reviewed use is Google's
+// x-goog-api-key header for Gemini Files downloads.
+type PlatformArtifactDownloadAuthorization struct {
+	HeaderName  string
+	HeaderValue string
+	AllowedHost string
 }
 
 type PlatformDownloadedArtifact struct {
@@ -138,6 +154,10 @@ type PlatformArtifactDownloader struct {
 	config      PlatformArtifactDownloadConfig
 	resolver    platformArtifactResolver
 	dialContext platformArtifactDialContext
+	// tlsConfig is intentionally unexported. Production constructors leave it
+	// nil and therefore use the host trust store; same-package integration tests
+	// can install a private CA while still exercising HTTPS and hostname checks.
+	tlsConfig *tls.Config
 }
 
 func NewPlatformArtifactDownloader(config PlatformArtifactDownloadConfig) (*PlatformArtifactDownloader, error) {
@@ -214,6 +234,28 @@ func (downloader *PlatformArtifactDownloader) Download(
 	sourceURL string,
 	expectation PlatformArtifactDownloadExpectation,
 ) (*PlatformDownloadedArtifact, error) {
+	return downloader.download(ctx, sourceURL, expectation, nil)
+}
+
+// DownloadAuthorized applies one narrowly-scoped provider header after the
+// URL, host, DNS, TLS and redirect policy have been validated. Keeping this as
+// a separate call makes accidental credential attachment to ordinary artifact
+// URLs impossible.
+func (downloader *PlatformArtifactDownloader) DownloadAuthorized(
+	ctx context.Context,
+	sourceURL string,
+	expectation PlatformArtifactDownloadExpectation,
+	authorization PlatformArtifactDownloadAuthorization,
+) (*PlatformDownloadedArtifact, error) {
+	return downloader.download(ctx, sourceURL, expectation, &authorization)
+}
+
+func (downloader *PlatformArtifactDownloader) download(
+	ctx context.Context,
+	sourceURL string,
+	expectation PlatformArtifactDownloadExpectation,
+	authorization *PlatformArtifactDownloadAuthorization,
+) (*PlatformDownloadedArtifact, error) {
 	if downloader == nil {
 		return nil, fmt.Errorf("%w: downloader is not configured", ErrPlatformArtifactDownload)
 	}
@@ -234,6 +276,7 @@ func (downloader *PlatformArtifactDownloader) Download(
 		ctx,
 		sourceURL,
 		io.MultiWriter(temporary, prefix),
+		authorization,
 	)
 	if err != nil {
 		return nil, err
@@ -256,6 +299,9 @@ func (downloader *PlatformArtifactDownloader) Download(
 	if err := validatePlatformArtifactMedia(ctx, temporary, contentType, sizeBytes, prefix.data); err != nil {
 		return nil, err
 	}
+	if err := validatePlatformArtifactExpectation(temporary, contentType, expectation); err != nil {
+		return nil, err
+	}
 	if _, err := temporary.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("%w: could not rewind download spool", ErrPlatformArtifactDownload)
 	}
@@ -266,18 +312,119 @@ func (downloader *PlatformArtifactDownloader) Download(
 	return artifact, nil
 }
 
+func validatePlatformArtifactExpectation(
+	content *os.File,
+	contentType string,
+	expectation PlatformArtifactDownloadExpectation,
+) error {
+	if expectation.ExpectedContentType != "" && contentType != expectation.ExpectedContentType {
+		return fmt.Errorf("%w: provider MIME type did not match the expected artifact type", ErrPlatformArtifactIntegrity)
+	}
+	if expectation.ExpectedImageWidth == 0 && expectation.ExpectedImageHeight == 0 {
+		return nil
+	}
+	if expectation.ExpectedImageWidth <= 0 || expectation.ExpectedImageHeight <= 0 ||
+		expectation.ExpectedContentType != "image/png" || contentType != "image/png" {
+		return fmt.Errorf("%w: image dimension expectation requires an exact PNG contract", ErrPlatformArtifactIntegrity)
+	}
+	var dimensions [8]byte
+	// PNG begins with the 8-byte signature followed by the 8-byte IHDR chunk
+	// header. Width and height are the first two big-endian uint32 values in
+	// IHDR, at byte offset 16. Structural PNG validation has already succeeded.
+	if err := readPlatformArtifactAt(content, 16, dimensions[:]); err != nil {
+		return fmt.Errorf("%w: PNG dimensions could not be read", ErrPlatformArtifactIntegrity)
+	}
+	width := binary.BigEndian.Uint32(dimensions[:4])
+	height := binary.BigEndian.Uint32(dimensions[4:])
+	if uint64(width) != uint64(expectation.ExpectedImageWidth) ||
+		uint64(height) != uint64(expectation.ExpectedImageHeight) {
+		return fmt.Errorf("%w: PNG dimensions did not match the expected artifact size", ErrPlatformArtifactIntegrity)
+	}
+	if _, err := content.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("%w: PNG could not be rewound for complete decoding", ErrPlatformArtifactIntegrity)
+	}
+	decoded, err := png.Decode(content)
+	if err != nil {
+		return fmt.Errorf("%w: PNG failed complete decoding: %v", ErrPlatformArtifactIntegrity, err)
+	}
+	decodedBounds := decoded.Bounds()
+	if decodedBounds.Dx() != expectation.ExpectedImageWidth || decodedBounds.Dy() != expectation.ExpectedImageHeight {
+		return fmt.Errorf("%w: decoded PNG dimensions did not match the expected artifact size", ErrPlatformArtifactIntegrity)
+	}
+	return nil
+}
+
 func (downloader *PlatformArtifactDownloader) downloadTo(
 	ctx context.Context,
 	sourceURL string,
 	destination io.Writer,
+	authorization *PlatformArtifactDownloadAuthorization,
 ) (string, int64, string, error) {
 	parsed, port, err := downloader.validateAndResolveURL(ctx, sourceURL)
 	if err != nil {
 		return "", 0, "", err
 	}
+	if err := downloader.validateDownloadAuthorization(parsed, authorization); err != nil {
+		return "", 0, "", err
+	}
+	downloadContext, cancel := context.WithTimeout(ctx, downloader.config.Timeout)
+	defer cancel()
+
+	currentURL := parsed
+	currentPort := port
+	currentAuthorization := authorization
+	redirected := false
+	for {
+		response, closeTransport, requestErr := downloader.requestPinnedArtifact(
+			downloadContext,
+			currentURL,
+			currentPort,
+			currentAuthorization,
+		)
+		if requestErr != nil {
+			return "", 0, "", requestErr
+		}
+
+		if response.StatusCode >= 300 && response.StatusCode < 400 {
+			location := response.Header.Values("Location")
+			_ = response.Body.Close()
+			closeTransport()
+			if authorization == nil {
+				return "", 0, "", fmt.Errorf("%w: redirects are forbidden", ErrPlatformArtifactSecurity)
+			}
+			if redirected {
+				return "", 0, "", fmt.Errorf("%w: provider redirect chains are forbidden", ErrPlatformArtifactSecurity)
+			}
+			redirectURL, redirectPort, redirectErr := downloader.validateAuthorizedRedirectURL(downloadContext, location)
+			if redirectErr != nil {
+				return "", 0, "", redirectErr
+			}
+			currentURL = redirectURL
+			currentPort = redirectPort
+			// The Google API key authenticates only the Files endpoint. The
+			// redirect Location is already a provider-issued signed URL, so the
+			// second request is deliberately constructed without the key.
+			currentAuthorization = nil
+			redirected = true
+			continue
+		}
+
+		contentType, sizeBytes, digest, copyErr := downloader.copyPlatformArtifactResponse(response, destination)
+		_ = response.Body.Close()
+		closeTransport()
+		return contentType, sizeBytes, digest, copyErr
+	}
+}
+
+func (downloader *PlatformArtifactDownloader) requestPinnedArtifact(
+	ctx context.Context,
+	parsed *url.URL,
+	port int,
+	authorization *PlatformArtifactDownloadAuthorization,
+) (*http.Response, func(), error) {
 	addresses, err := downloader.resolvePublicAddresses(ctx, parsed.Hostname())
 	if err != nil {
-		return "", 0, "", err
+		return nil, func() {}, err
 	}
 
 	pinnedHost := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
@@ -288,6 +435,7 @@ func (downloader *PlatformArtifactDownloader) downloadTo(
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   min(downloader.config.Timeout, 10*time.Second),
 		ResponseHeaderTimeout: min(downloader.config.Timeout, 30*time.Second),
+		TLSClientConfig:       clonePlatformArtifactTLSConfig(downloader.tlsConfig),
 		DialContext: func(dialCtx context.Context, network, address string) (net.Conn, error) {
 			host, requestedPort, splitErr := net.SplitHostPort(address)
 			if splitErr != nil {
@@ -320,7 +468,6 @@ func (downloader *PlatformArtifactDownloader) downloadTo(
 			return nil, fmt.Errorf("%w: no usable pinned address", ErrPlatformArtifactSecurity)
 		},
 	}
-	defer transport.CloseIdleConnections()
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   downloader.config.Timeout,
@@ -330,17 +477,28 @@ func (downloader *PlatformArtifactDownloader) downloadTo(
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return "", 0, "", fmt.Errorf("%w: invalid request", ErrPlatformArtifactDownload)
+		transport.CloseIdleConnections()
+		return nil, func() {}, fmt.Errorf("%w: invalid request", ErrPlatformArtifactDownload)
 	}
 	request.Header.Set("Accept-Encoding", "identity")
 	request.Header.Set("User-Agent", "new-api-platform-artifact-transfer/1")
+	if authorization != nil {
+		request.Header.Set(authorization.HeaderName, authorization.HeaderValue)
+	}
 	response, err := client.Do(request)
 	if err != nil {
-		return "", 0, "", fmt.Errorf("%w: provider request failed", ErrPlatformArtifactDownload)
+		transport.CloseIdleConnections()
+		return nil, func() {}, fmt.Errorf("%w: provider request failed", ErrPlatformArtifactDownload)
 	}
-	defer response.Body.Close()
-	if response.StatusCode >= 300 && response.StatusCode < 400 {
-		return "", 0, "", fmt.Errorf("%w: redirects are forbidden", ErrPlatformArtifactSecurity)
+	return response, transport.CloseIdleConnections, nil
+}
+
+func (downloader *PlatformArtifactDownloader) copyPlatformArtifactResponse(
+	response *http.Response,
+	destination io.Writer,
+) (string, int64, string, error) {
+	if response == nil || response.Body == nil {
+		return "", 0, "", fmt.Errorf("%w: provider response is invalid", ErrPlatformArtifactDownload)
 	}
 	if response.StatusCode != http.StatusOK {
 		return "", 0, "", fmt.Errorf("%w: provider returned status %d", ErrPlatformArtifactDownload, response.StatusCode)
@@ -375,6 +533,75 @@ func (downloader *PlatformArtifactDownloader) downloadTo(
 		return "", 0, "", fmt.Errorf("%w: provider stream could not be completed", ErrPlatformArtifactDownload)
 	}
 	return contentType, written, hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func (downloader *PlatformArtifactDownloader) validateAuthorizedRedirectURL(
+	ctx context.Context,
+	locations []string,
+) (*url.URL, int, error) {
+	if len(locations) != 1 || locations[0] == "" || locations[0] != strings.TrimSpace(locations[0]) {
+		return nil, 0, fmt.Errorf("%w: provider redirect Location is invalid", ErrPlatformArtifactSecurity)
+	}
+	parsed, err := url.Parse(locations[0])
+	if err != nil || !parsed.IsAbs() || parsed.Opaque != "" || strings.ToLower(parsed.Scheme) != "https" ||
+		parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" {
+		return nil, 0, fmt.Errorf("%w: provider redirect URL is invalid", ErrPlatformArtifactSecurity)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != strings.TrimSuffix(host, ".") || !platformGoogleArtifactRedirectHostAllowed(host) {
+		return nil, 0, fmt.Errorf("%w: provider redirect host is not reviewed", ErrPlatformArtifactSecurity)
+	}
+	validated, port, err := downloader.validateAndResolveURL(ctx, parsed.String())
+	if err != nil {
+		return nil, 0, err
+	}
+	if port != 443 {
+		return nil, 0, fmt.Errorf("%w: provider redirect must use HTTPS port 443", ErrPlatformArtifactSecurity)
+	}
+	return validated, port, nil
+}
+
+func platformGoogleArtifactRedirectHostAllowed(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if host == "storage.googleapis.com" {
+		return true
+	}
+	// Google Files may issue a signed, credential-free download URL on a
+	// service-specific googleusercontent.com hostname. The leading label is
+	// required so a lookalike suffix or the registrable domain itself cannot be
+	// accepted. No other googleapis.com service is part of this redirect policy.
+	const googleUserContentSuffix = ".googleusercontent.com"
+	return len(host) > len(googleUserContentSuffix) && strings.HasSuffix(host, googleUserContentSuffix)
+}
+
+func (downloader *PlatformArtifactDownloader) validateDownloadAuthorization(
+	parsed *url.URL,
+	authorization *PlatformArtifactDownloadAuthorization,
+) error {
+	if authorization == nil {
+		return nil
+	}
+	if parsed == nil || authorization.HeaderName != "x-goog-api-key" ||
+		authorization.HeaderValue == "" || authorization.HeaderValue != strings.TrimSpace(authorization.HeaderValue) ||
+		len(authorization.HeaderValue) > 4096 || strings.ContainsAny(authorization.HeaderValue, "\x00\r\n") {
+		return fmt.Errorf("%w: artifact authorization is invalid", ErrPlatformArtifactSecurity)
+	}
+	allowedHost := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(authorization.AllowedHost)), ".")
+	requestedHost := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if allowedHost == "" || strings.ContainsAny(allowedHost, "/:@") || requestedHost != allowedHost {
+		return fmt.Errorf("%w: artifact authorization host is invalid", ErrPlatformArtifactSecurity)
+	}
+	if downloader.config.Production && allowedHost != "generativelanguage.googleapis.com" {
+		return fmt.Errorf("%w: production artifact authorization host is not reviewed", ErrPlatformArtifactSecurity)
+	}
+	return nil
+}
+
+func clonePlatformArtifactTLSConfig(config *tls.Config) *tls.Config {
+	if config == nil {
+		return nil
+	}
+	return config.Clone()
 }
 
 func validatePlatformArtifactMedia(

@@ -20,6 +20,9 @@ export type VerificationMethod = '2fa' | 'passkey'
 
 export type SecurityProofScope =
   | 'channel.key.read'
+  | 'provider.credential.write'
+  | 'provider.lifecycle.disable'
+  | 'provider.lifecycle.resume'
   | 'passkey.register'
   | 'passkey.delete'
 
@@ -28,6 +31,15 @@ export interface SecurityProof {
   expires_at: number
   method: VerificationMethod
   scope: SecurityProofScope
+}
+
+export interface SecurityProofBinding {
+  action: SecurityProofScope
+  provider: string
+  http_method: 'POST'
+  http_path: string
+  body_sha256: `sha256:${string}`
+  expected_revision?: string
 }
 
 export interface VerificationMethods {
@@ -39,6 +51,7 @@ export interface VerificationMethods {
 export interface SecureVerificationState {
   method: VerificationMethod | null
   scope?: SecurityProofScope
+  binding?: SecurityProofBinding
   loading: boolean
   code: string
   title?: string
@@ -54,6 +67,7 @@ export interface UseSecureVerificationOptions {
 
 export interface StartVerificationOptions {
   scope: SecurityProofScope
+  binding?: SecurityProofBinding
   preferredMethod?: VerificationMethod
   title?: string
   description?: string

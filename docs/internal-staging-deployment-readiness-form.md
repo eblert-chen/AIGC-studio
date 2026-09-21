@@ -84,11 +84,12 @@ flowchart LR
 | new-api upstream revision | `________________` |
 | 发布 tag | `________________` |
 | Relay 镜像 digest | `sha256:________________` |
-| Platform 迁移 head | 必须为 `0040_showcase_management` |
-| Platform direct predecessor | 必须为 `0039_new_api_relay_defaults` |
+| Platform 迁移 head | 必须为 `0045_system_audit_actor` |
+| Platform direct predecessor | 必须为 `0044_account_product_partition` |
+| Platform model-capability predecessor | 必须保留 `0041_model_capability_releases` |
 | Platform download-evidence predecessor | 必须保留 `0038_download_evidence_checks` |
 | Platform auth predecessor | 必须保留 `0037_production_auth_lifecycle` |
-| Platform protected v5 catalog | 必须为 `ecd5b3faae20595e66396c59d37327d1e6e5b742c3d70697aaf6f109866591e6` |
+| Platform protected v10 catalog (PostgreSQL 16) | 必须为 `7ce8849ecc4be298fe9889bdeaeb7ea17932a51c9ff9eeb024cc55bbcad44142` |
 | 活动生产 Relay | 必须为 `new-api-v1 / generations.v1`，且受保护配置中只能有这一个 backend |
 | 候选源码 snapshot SHA-256 | `________________` |
 | Platform snapshot SHA-256 | `________________` |
@@ -208,11 +209,12 @@ Platform 已原生实现 OIDC Authorization Code + PKCE、浏览器绑定且单�
 
 ### 商用整改
 
-Platform/BFF 当前使用固定且严格校验的 OIDC HTTPS 端点、PKCE S256 与 RS256 JWKS；每次回调读取 JWKS，遇到未知 `kid` 时仅额外刷新一次并再次验签。它使用 `HttpOnly + Secure + SameSite=Lax` 服务端会话，不向浏览器发长期 refresh token，并建立 `(issuer, sub)` 映射、邀请激活、个人/公司上下文、离职禁用和全局吊销；MFA、passkey、密码与恢复由目标 IdP 提供并通过 account-management URL 进入。
+Platform/BFF 当前使用固定且严格校验的 OIDC HTTPS 端点、PKCE S256 与 RS256 JWKS；每次回调读取 JWKS，遇到未知 `kid` 时仅额外刷新一次并再次验签。它使用 `HttpOnly + Secure + SameSite=Lax` 服务端会话，不向浏览器发长期 refresh token，并建立 `(issuer, sub)` 映射、邀请激活、互斥的个人/企业/平台管理员产品账号、企业内多公司上下文、离职禁用和全局吊销。共享 IdP tenant 不会创建个人/企业双空间；MFA、passkey、密码与恢复由目标 IdP 提供并通过 account-management URL 进入。
 
 ### 验收清单
 
 - [ ] 合法成员只能进入授权公司。
+- [ ] 个人账号只进入个人 Studio，企业账号只进入企业 Studio，平台管理员只进入 Platform；企业账号只能在有效 membership 覆盖的公司之间切换，个人/企业冲突邀请失败关闭。
 - [ ] 错 issuer/audience/azp/signature/alg/kid/exp/nbf/sub/nonce 全部拒绝；state 跨浏览器、重放或 callback 前换值也拒绝。
 - [ ] 跨公司和停用成员返回 403/404，不泄露对象存在。
 - [ ] owner 的 WebAuthn `amr` 且 `auth_time≤300s` 才能写；陈旧认证返回 `X-Auth-Required: step-up`。
@@ -542,20 +544,38 @@ docker compose \
   --exit-code-from platform-migrate platform-migrate
 ```
 
-预期：networked `platform-db-role-pre` 仅消费 role-admin DSN、七个 role password
+预期：networked `platform-db-role-pre` 仅消费 role-admin DSN、八个 role password
 file、Platform CA 与自己的 global receipt，并独占写入固定
 `/run/platform-database-release-proof/attestation.json`；随后 DB-only
 `platform-migrate` 从同一 named volume 只读验证该证明并成功到达
-`0040_showcase_management (head)`，随后 `platform-api` 才允许启动。冻结前序 `0037`
+`0045_system_audit_actor (head)`，随后 `platform-api` 和 `relay-catalog-sync` 才允许启动。
+0045 为用户/系统审计主体增加显式互斥字段，并给周期目录对账进程增加专用最小权限数据库
+principal；0044 持久化互斥的个人、企业和平台管理员账号类型，保留历史钱包、账本、任务、产物和成员证据，只停用不属于
+该账号类型的入口，并以数据库约束和 trigger 阻止静默跨类型；0043 仅持久加入只读提示词
+收集权限 `platform.task_content.read`，不提供 manage、编辑或删除能力，并保持 0042 的表与
+ACL 投影；0042 要求企业授权 journal 的全局 key 唯一，API 仅有 SELECT/INSERT/UPDATE，
+旧审计 key 已冻结且不可自动重放；冻结前序 `0037`
 新增全局账号、外部身份、可撤销会话、OIDC transaction、邀请和只追加安全事件；`0038`
 统一下载证据 CHECK 名称并补齐 SHA-256 形状约束；`0039` 只把新 task/outbox 的 server
 default 冻结到 `new-api-v1 / generations.v1`，绝不重写历史 affinity；`0040` 新增仅
-Platform Owner 可管理的首页精选案例草稿、不可变发布版本、发布指针和紧急下线事件。
-protected v5 catalog fingerprint 必须与真实 PostgreSQL 16 资格化值
-`ecd5b3faae20595e66396c59d37327d1e6e5b742c3d70697aaf6f109866591e6` 及代码常量精确一致；
+Platform Owner 可管理的首页精选案例草稿、不可变发布版本、发布指针和紧急下线事件；
+`0041` 分离 Relay capability candidate 与最后批准 ceiling。
+当前 v10 为 `relay-catalog-sync` 新增独立 principal；它只能 SELECT/INSERT/UPDATE
+`model_definitions`、SELECT/INSERT `model_capabilities` 和 INSERT `audit_logs`，不得读取用户表，
+也不得批准、发布、定价或分发模型。protected v10 catalog fingerprint 必须与真实
+PostgreSQL 16 资格化值
+`7ce8849ecc4be298fe9889bdeaeb7ea17932a51c9ff9eeb024cc55bbcad44142` 及代码常量精确一致；
+v9/0044 的 `64640e8ccf7069fc6ca0773af64def56babfdb80101ea9cd22e6b8e7fc00c167` 只可作为当前迁移的
+历史 source，更早 hash 也不得替代 v10 当前证明；
 未应用 protected default ACL 的普通 catalog 结果不得替代该发布值。迁移容器不得挂载
 API/worker bundle，日志不得包含 DSN；额外的 `alembic check/current` 必须复用同一
 DB-only image entrypoint，不能把 DSN 复制到环境变量或 shell 参数。
+
+目录对账验收还必须证明：专用 `relay-catalog-sync` 定时以 ETag 条件请求
+`GET /v1/models`；管理页面打开只读 Platform 数据库；Relay `304` 或目录无语义变化时模型表
+和审计表均无新增写入；真实变化以 `actor_kind=system`、`actor_key=relay-catalog-sync` 记录，
+新模型仅成为未发布草稿。能力批准、发布、计费方式/价格和个人/企业分发必须继续由
+Platform Owner 人工完成。
 
 #### 16.3.1 离线 Python 行为 oracle（不属于部署）
 
@@ -636,7 +656,7 @@ docker compose \
 
 保存 secret-free JSON 回执（root schema 包含 kind/schema/state/username，
 principal schema 包含 kind/schema/state/count）后立即销毁 root password host file。
-post-root global 回执必须为 14 consumers 的 `root-proof-present` generation；随后三条
+post-root global 回执必须为 15 consumers 的 `root-proof-present` generation；随后三条
 Relay 数据库 one-shot 必须全部成功并重签同代 release proof，之后才执行 16.3。
 `relay-new-api-database-release-proof` 与 `platform-database-release-proof` 都是非密
 named volume：各自 role-pre 独占写入，其余迁移/运行进程只读挂载并在同一物理连接复核。

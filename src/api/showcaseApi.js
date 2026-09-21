@@ -10,7 +10,6 @@ function releaseReason(value) {
   return String(value || "").trim();
 }
 
-const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const DIRECT_UPLOAD_MEDIA_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 function showcaseItemBody(source, expectedDraftVersion) {
@@ -115,27 +114,23 @@ export function createShowcaseApi(core) {
       const sourceTaskArtifactId = String(
         structured.sourceTaskArtifactId || structured.source_task_artifact_id || "",
       ).trim();
-      if (Boolean(file) === Boolean(sourceTaskArtifactId)) {
-        throw new PlatformApiError("请选择一个本地文件或一个本人作品 Artifact ID", {
+      if (sourceTaskArtifactId) {
+        throw new PlatformApiError("平台内容管理不允许读取个人作品 Artifact", {
+          code: "SHOWCASE_ARTIFACT_IMPORT_UNAVAILABLE",
+        });
+      }
+      if (!file) {
+        throw new PlatformApiError("请选择一个本地图片文件", {
           code: "SHOWCASE_MEDIA_REQUIRED",
         });
       }
-      if (sourceTaskArtifactId && !CANONICAL_UUID.test(sourceTaskArtifactId)) {
-        throw new PlatformApiError("本人作品 Artifact ID 格式无效，不能使用媒体网址", {
-          code: "INVALID_SHOWCASE_ARTIFACT_ID",
-        });
-      }
       if (file && !DIRECT_UPLOAD_MEDIA_TYPES.has(String(file.type || "").toLowerCase())) {
-        throw new PlatformApiError("本地上传仅支持 JPEG、PNG 或 WebP 图片；视频请从本人已验证作品导入", {
+        throw new PlatformApiError("本地上传仅支持 JPEG、PNG 或 WebP 图片", {
           code: "UNSUPPORTED_SHOWCASE_DIRECT_UPLOAD",
         });
       }
       const form = new FormData();
-      if (file) {
-        form.append("file", file, file?.name || "showcase-upload.bin");
-      } else {
-        form.append("source_task_artifact_id", sourceTaskArtifactId);
-      }
+      form.append("file", file, file?.name || "showcase-upload.bin");
       const stableIdempotencyKey = idempotencyKey || makeRequestId();
       const media = await request("/api/v1/platform-admin/showcase/media", {
         method: "POST",

@@ -668,8 +668,15 @@ func ApplyPlatformProviderIncidentDecisions(token string, decisions []PlatformPr
 }
 
 func GetPlatformProviderMonitorLease() (*PlatformProviderMonitorLease, error) {
+	return GetPlatformProviderMonitorLeaseWithDB(DB)
+}
+
+func GetPlatformProviderMonitorLeaseWithDB(db *gorm.DB) (*PlatformProviderMonitorLease, error) {
 	var lease PlatformProviderMonitorLease
-	err := DB.Where("name = ?", platformProviderMonitorLeaseName).First(&lease).Error
+	if db == nil {
+		return &lease, errors.New("provider monitor database is unavailable")
+	}
+	err := db.Where("name = ?", platformProviderMonitorLeaseName).First(&lease).Error
 	return &lease, err
 }
 

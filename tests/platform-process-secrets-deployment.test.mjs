@@ -21,6 +21,7 @@ const entrypoints = new Map([
   ["platform-api", read("backend/platform/platform_api/main.py")],
   ["dispatcher", read("backend/platform/platform_api/dispatcher.py")],
   ["relay-sync", read("backend/platform/platform_api/relay_sync_worker.py")],
+  ["relay-catalog-sync", read("backend/platform/platform_api/relay_catalog_sync_worker.py")],
   ["timeout-worker", read("backend/platform/platform_api/timeout_worker.py")],
   ["publishing-worker", read("backend/platform/platform_api/publishing_worker.py")],
   [
@@ -46,6 +47,11 @@ const roles = [
   ["platform-api", "platform-api", "PLATFORM_API_RUNTIME_SECRETS_FILE"],
   ["platform-dispatcher", "dispatcher", "PLATFORM_DISPATCHER_RUNTIME_SECRETS_FILE"],
   ["platform-relay-sync", "relay-sync", "PLATFORM_RELAY_SYNC_RUNTIME_SECRETS_FILE"],
+  [
+    "platform-relay-catalog-sync",
+    "relay-catalog-sync",
+    "PLATFORM_RELAY_CATALOG_SYNC_RUNTIME_SECRETS_FILE",
+  ],
   ["platform-timeout-worker", "timeout-worker", "PLATFORM_TIMEOUT_WORKER_RUNTIME_SECRETS_FILE"],
   ["platform-publishing-worker", "publishing-worker", "PLATFORM_PUBLISHING_WORKER_RUNTIME_SECRETS_FILE"],
   [
@@ -84,8 +90,12 @@ const rawSecretNames = [
 
 test("publishes one closed role-discriminated Platform secret schema", () => {
   assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema");
-  assert.equal(schema.oneOf.length, 7);
+  assert.equal(schema.oneOf.length, 8);
   assert.equal(schema.$defs.apiDocument.properties.process_role.const, "platform-api");
+  assert.equal(
+    schema.$defs.relayCatalogSyncDocument.properties.process_role.const,
+    "relay-catalog-sync",
+  );
   assert.equal(
     schema.$defs.downloadGatewayDocument.properties.process_role.const,
     "download-gateway-registration-worker",
@@ -204,7 +214,7 @@ test("secure Compose mounts one minimum typed bundle per Platform process", () =
   }
 });
 
-test("role-pre receives only its nine committed database sources", () => {
+test("role-pre receives only its ten committed database sources", () => {
   const block = serviceBlock("platform-db-role-pre");
   assert.match(block, /build:\s*!reset null/);
   assert.match(
@@ -225,13 +235,14 @@ test("role-pre receives only its nine committed database sources", () => {
     "API",
     "DISPATCHER",
     "RELAY_SYNC",
+    "RELAY_CATALOG_SYNC",
     "TIMEOUT_WORKER",
     "PUBLISHING_WORKER",
     "DOWNLOAD_GATEWAY_WORKER",
   ]) {
     assert.match(block, new RegExp(`PLATFORM_${source}_DATABASE_PASSWORD_FILE:`));
   }
-  assert.equal((block.match(/type:\s*bind/g) || []).length, 9);
+  assert.equal((block.match(/type:\s*bind/g) || []).length, 10);
   assert.doesNotMatch(block, /PLATFORM_PROCESS_RUNTIME_SECRETS_FILE/);
   assert.doesNotMatch(block, /RUNTIME_SECRETS_FILE:/);
   assert.match(block, /relay-new-api-secret-isolation-platform-db-role-pre:\/run\/relay-secret-isolation:ro/);
@@ -345,7 +356,7 @@ test("Python and Go share the exact Platform raw-secret environment manifest", (
   const names = (source) =>
     [...source.matchAll(/"([A-Z][A-Z0-9_]*)"/g)].map((match) => match[1]).sort();
   assert.deepEqual(names(pythonBlock[1]), names(goBlock[1]));
-  assert.equal(names(pythonBlock[1]).length, 48);
+  assert.equal(names(pythonBlock[1]).length, 49);
   assert.match(loader, /name\.casefold\(\)\.startswith\("pg"\)/);
   assert.match(rawEnvironmentManifest, /strings\.HasPrefix\(upperName, "PG"\)/);
 });

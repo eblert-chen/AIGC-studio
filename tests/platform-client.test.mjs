@@ -78,6 +78,67 @@ test("uses company-scoped paths with an explicit Bearer identity", async () => {
   }
 });
 
+test("personal endpoint responses expose the route-owned POINT v2 contract", async () => {
+  const client = createPlatformClient({
+    baseUrl: "https://platform.example/",
+    accessToken: "token-1",
+    fetcher: async (url, options) => {
+      const path = new URL(url).pathname;
+      const method = options.method || "GET";
+      let payload;
+      if (path.endsWith("/personal/wallet")) {
+        payload = { workspace_id: "personal-1", available_points: 40, reserved_points: 2 };
+      } else if (path.endsWith("/personal/models")) {
+        payload = [{ id: "model-1", unit_price_points: 6 }];
+      } else if (path.endsWith("/personal/tasks") && method === "POST") {
+        payload = { id: "task-created", quote_points: 6, reserved_points: 6 };
+      } else if (path.endsWith("/personal/tasks")) {
+        payload = {
+          page: 1,
+          page_size: 20,
+          total: 1,
+          items: [{ id: "task-1", quote_points: 6, reserved_points: 0 }],
+        };
+      } else if (path.endsWith("/personal/artworks")) {
+        payload = {
+          page: 1,
+          page_size: 20,
+          total: 1,
+          items: [{ artifact_id: "artwork-1", actual_cost_points: 6 }],
+        };
+      } else {
+        throw new Error(`unexpected personal endpoint: ${method} ${path}`);
+      }
+      return new Response(JSON.stringify(payload), {
+        status: method === "POST" ? 201 : 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  const [wallet, models, tasks, artworks, created] = await Promise.all([
+    client.getPersonalWallet(),
+    client.listPersonalModels(),
+    client.listPersonalTasks(),
+    client.listPersonalArtworks(),
+    client.createPersonalTask(
+      {
+        modelId: "model-1",
+        requestPayload: { prompt: "test" },
+        expectedCapabilityVersion: 1,
+        expectedQuoteRevision: `sha256:${"a".repeat(64)}`,
+      },
+      { idempotencyKey: "personal-task-1" },
+    ),
+  ]);
+
+  for (const record of [wallet, models[0], tasks, tasks.items[0], artworks, artworks.items[0], created]) {
+    assert.equal(record.billing_unit, "POINT");
+    assert.equal(record.billing_version, 2);
+    assert.equal(record.billing_scope, "personal");
+  }
+});
+
 test("creates a company task using the backend contract and idempotency identifiers", async () => {
   let captured;
   const client = createPlatformClient({
@@ -387,6 +448,40 @@ test("reads public runtime hints without trusting browser-stored bearer identity
     companyId: "company-hint",
     accessToken: "",
   });
+});
+
+test("preserves field locations from FastAPI validation errors without retaining sensitive inputs", async () => {
+  const secretUrl = "https://provider.example/result.png?secret=must-not-survive";
+  const client = createPlatformClient({
+    baseUrl: "https://platform.example",
+    companyId: "company-1",
+    accessToken: "token-1",
+    fetcher: async () => new Response(
+      JSON.stringify({
+        detail: [{
+          type: "value_error",
+          loc: ["body", "synchronous_result", "artifact_url"],
+          msg: "artifact_url must be an absolute credential-free HTTPS URL",
+          input: secretUrl,
+        }],
+      }),
+      { status: 422, headers: { "content-type": "application/json" } },
+    ),
+  });
+
+  await assert.rejects(
+    () => client.listModels(),
+    (error) => {
+      assert.equal(error.status, 422);
+      assert.deepEqual(error.details?.validationErrors, [{
+        type: "value_error",
+        loc: ["body", "synchronous_result", "artifact_url"],
+        msg: "artifact_url must be an absolute credential-free HTTPS URL",
+      }]);
+      assert.equal(JSON.stringify(error.details).includes(secretUrl), false);
+      return true;
+    },
+  );
 });
 
 test("legacy bearer identity requires an explicit non-production runtime opt-in", () => {
@@ -1049,9 +1144,14 @@ test("uses platform-admin model lifecycle without inventing a browser identity",
   });
 
   await client.getPlatformAdminMe();
+  await client.reconcileAdminRelayModels();
   await client.listAdminRelayModels();
   await client.approveAdminRelayCapability("model/a", {
     expectedCapabilityVersion: 7,
+    expectedCatalogRevision: `sha256:${"a".repeat(64)}`,
+    expectedCapabilityRevision: `sha256:${"b".repeat(64)}`,
+    expectedRoutingReleaseSha256: `sha256:${"c".repeat(64)}`,
+    reason: "批准已核验的 Relay 能力与路由发布",
   });
   const canonicalCapability = {
     schema_version: 1,
@@ -1110,6 +1210,7 @@ test("uses platform-admin model lifecycle without inventing a browser identity",
     captured.map(({ url }) => url),
     [
       "https://platform.example/api/v1/platform-admin/me",
+      "https://platform.example/api/v1/platform-admin/relay-models/reconcile",
       "https://platform.example/api/v1/platform-admin/relay-models",
       "https://platform.example/api/v1/platform-admin/models/model%2Fa/relay-capability",
       "https://platform.example/api/v1/platform-admin/models",
@@ -1118,17 +1219,23 @@ test("uses platform-admin model lifecycle without inventing a browser identity",
       "https://platform.example/api/v1/platform-admin/models/model%2Fa/disable",
     ],
   );
-  assert.deepEqual(JSON.parse(captured[2].options.body), {
-    expected_capability_version: 7,
-  });
+  assert.equal(captured[1].options.method, "POST");
+  assert.equal(captured[1].options.body, undefined);
   assert.deepEqual(JSON.parse(captured[3].options.body), {
+    expected_capability_version: 7,
+    expected_catalog_revision: `sha256:${"a".repeat(64)}`,
+    expected_capability_revision: `sha256:${"b".repeat(64)}`,
+    expected_routing_release_sha256: `sha256:${"c".repeat(64)}`,
+    reason: "批准已核验的 Relay 能力与路由发布",
+  });
+  assert.deepEqual(JSON.parse(captured[4].options.body), {
     slug: "video-v1",
     display_name: "Video V1",
     provider_key: "provider-a",
     billing_mode: "per_item",
     capabilities,
   });
-  assert.deepEqual(JSON.parse(captured[4].options.body), {
+  assert.deepEqual(JSON.parse(captured[5].options.body), {
     display_name: "Video V1 revised",
     provider_key: "provider-a",
     billing_mode: "per_item",
@@ -1151,6 +1258,41 @@ test("accepts successful empty responses for destructive lifecycle operations", 
 
   assert.equal(await client.deleteRole("role-1"), null);
   assert.equal(await client.deleteAdminModel("model-draft-1"), null);
+});
+
+test("candidate sync never serializes the approval-only routing release field", async () => {
+  let captured;
+  const client = createPlatformClient({
+    baseUrl: "https://platform.example",
+    companyId: "company-1",
+    accessToken: "token-admin",
+    fetcher: async (url, options) => {
+      captured = { url, options };
+      return new Response(JSON.stringify({ changed: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  await client.syncAdminRelayCapabilityCandidate("model/a", {
+    expectedCapabilityVersion: 7,
+    expectedCatalogRevision: `sha256:${"a".repeat(64)}`,
+    expectedCapabilityRevision: `sha256:${"b".repeat(64)}`,
+    expectedRoutingReleaseSha256: `sha256:${"c".repeat(64)}`,
+    reason: "同步候选能力版本",
+  });
+
+  assert.equal(
+    captured.url,
+    "https://platform.example/api/v1/platform-admin/models/model%2Fa/relay-capability/sync",
+  );
+  assert.deepEqual(JSON.parse(captured.options.body), {
+    expected_capability_version: 7,
+    expected_catalog_revision: `sha256:${"a".repeat(64)}`,
+    expected_capability_revision: `sha256:${"b".repeat(64)}`,
+    reason: "同步候选能力版本",
+  });
 });
 
 test("uses the company publishing contract without exposing provider credentials", async () => {
@@ -1196,6 +1338,7 @@ test("uses the company publishing contract without exposing provider credentials
     errorCode: "CHANNEL_CONFIRMED_MISSING",
     errorMessage: "渠道后台未找到作品",
   });
+  await client.getPublishingReadiness();
 
   assert.deepEqual(captured.map(({ url }) => url), [
     "https://platform.example/api/v1/companies/company%2Fa/publishing/connections",
@@ -1210,6 +1353,7 @@ test("uses the company publishing contract without exposing provider credentials
     "https://platform.example/api/v1/companies/company%2Fa/publishing/jobs/job%2Fa/retry",
     "https://platform.example/api/v1/companies/company%2Fa/publishing/jobs/job%2Fa/reconcile",
     "https://platform.example/api/v1/companies/company%2Fa/publishing/jobs/job%2Fb/reconcile",
+    "https://platform.example/api/v1/companies/company%2Fa/publishing/readiness",
   ]);
   assert.deepEqual(JSON.parse(captured[2].options.body), { provider: "douyin" });
   assert.deepEqual(JSON.parse(captured[5].options.body), {
@@ -1232,7 +1376,7 @@ test("uses the company publishing contract without exposing provider credentials
     error_code: "CHANNEL_CONFIRMED_MISSING",
     error_message: "渠道后台未找到作品",
   });
-  assert.deepEqual(captured.slice(7).map(({ options }) => options.method), ["POST", "POST", "POST", "POST", "POST"]);
+  assert.deepEqual(captured.slice(7, 12).map(({ options }) => options.method), ["POST", "POST", "POST", "POST", "POST"]);
   assert.deepEqual(captured.slice(7, 10).map(({ options }) => options.body), [undefined, undefined, undefined]);
   assert.equal(captured.some(({ options }) => JSON.stringify(options).includes("access_token")), false);
 });

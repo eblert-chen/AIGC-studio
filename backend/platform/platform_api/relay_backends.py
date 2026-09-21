@@ -28,6 +28,7 @@ class RelayBackendConfiguration(BaseModel):
     base_url: str = Field(min_length=1)
     client_id: str = Field(min_length=1, max_length=120)
     api_key: SecretStr
+    internal_admission_token: SecretStr | None = None
     contract_revision: str = Field(
         default=DEFAULT_RELAY_CONTRACT_REVISION,
         pattern=RELAY_CONTRACT_REVISION_PATTERN,
@@ -214,6 +215,11 @@ def build_relay_backend_registry(
                 base_url=configuration.base_url,
                 client_id=configuration.client_id,
                 api_key=configuration.api_key.get_secret_value(),
+                internal_admission_token=(
+                    configuration.internal_admission_token.get_secret_value()
+                    if configuration.internal_admission_token is not None
+                    else None
+                ),
                 allow_local_http=allow_local_http,
             ),
         )

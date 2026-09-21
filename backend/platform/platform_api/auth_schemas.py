@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from .models import CompanyInvitationStatus, UserStatus
 
@@ -23,13 +23,29 @@ class AuthUserResponse(StrictModel):
 
 class AuthSessionResponse(StrictModel):
     authenticated: bool
+    login_available: bool
     csrf_token: str | None = None
     user: AuthUserResponse | None = None
     account_management_url: str | None = None
     session_expires_at: datetime | None = None
+    account_type: Literal[
+        "personal", "company", "platform_admin", "unavailable"
+    ] | None = None
     personal: dict | None = None
     companies: list[dict] = Field(default_factory=list)
     platform_admin: bool = False
+    active_product_context: Literal["personal", "company", "platform"] | None = None
+    available_product_contexts: list[
+        Literal["personal", "company", "platform"]
+    ] = Field(default_factory=list)
+
+
+class ProductContextSwitchRequest(StrictModel):
+    target_context: Literal["personal", "platform"]
+
+
+class ProductContextSwitchResponse(StrictModel):
+    session: AuthSessionResponse
 
 
 class LogoutRequest(StrictModel):
@@ -154,9 +170,14 @@ class PlatformUserStatusUpdateRequest(StrictModel):
 
 
 class PlatformUserStatusResponse(AuthUserResponse):
+    account_type: Literal["personal", "company", "platform_admin", "unavailable"]
     last_login_at: datetime | None
     deactivated_at: datetime | None
     updated_at: datetime
+    personal_workspace_id: str | None
+    personal_workspace_active: bool | None
+    available_points: int | None
+    reserved_points: int | None
 
 
 class PlatformUserPageResponse(StrictModel):
@@ -164,6 +185,53 @@ class PlatformUserPageResponse(StrictModel):
     page: int
     page_size: int
     total: int
+
+
+class PlatformPersonalPointsGrantRequest(StrictModel):
+    amount_points: int = Field(strict=True, gt=0, le=9_000_000_000_000_000)
+    # The server adds ``platform-owner-grant:`` before writing the shared
+    # personal ledger idempotency column (120 characters maximum).
+    idempotency_key: str = Field(min_length=8, max_length=99)
+    note: str = Field(min_length=1, max_length=240)
+
+    @field_validator("idempotency_key", "note", mode="before")
+    @classmethod
+    def strip_transaction_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class PlatformPersonalPointsWalletResponse(StrictModel):
+    workspace_id: str
+    available_points: int
+    reserved_points: int
+
+
+class PlatformPersonalPointsLedgerEntryResponse(StrictModel):
+    id: str
+    workspace_id: str
+    kind: str
+    amount_points: int
+    available_delta_points: int
+    reserved_delta_points: int
+    task_id: str | None
+    note: str
+    created_at: datetime
+
+
+class PlatformPersonalPointsGrantResponse(StrictModel):
+    user_id: str
+    workspace_id: str
+    wallet: PlatformPersonalPointsWalletResponse
+    ledger_entry: PlatformPersonalPointsLedgerEntryResponse
+    created: bool
+
+
+class PlatformPersonalPointsGrantPageResponse(StrictModel):
+    items: list[PlatformPersonalPointsLedgerEntryResponse]
+    page: int
+    page_size: int
+    total: int
+    total_amount_points: int
 
 
 class OwnerOnboardingReissueRequest(StrictModel):

@@ -47,6 +47,11 @@ const evidenceKind = "relay_platform_cross_service_cost_acceptance";
 const snapshotFormat = "sorted-portable-path-nul-content-nul-v1";
 const postgresImage = "postgres:16-alpine";
 const redisImage = "redis:7-alpine";
+const relayWorkerRecoveryFenceKey = "{new-api-relay:platform-generation-delay}:recovery:v1";
+const relayWorkerScheduledKey = "{new-api-relay:platform-generation-delay}:scheduled:v1";
+const relayWorkerInflightKey = "{new-api-relay:platform-generation-delay}:inflight:v1";
+const relayWorkerLeaseTokenKey = "{new-api-relay:platform-generation-delay}:lease-tokens:v1";
+const relayWorkerRecoveryFenceTTLMilliseconds = 60_000;
 const ignoredPlatformDirectories = new Set([
   ".git",
   ".mypy_cache",
@@ -816,7 +821,17 @@ async function assertRelayStillRunning(container, forbiddenValues) {
   });
   const text = `${logs.stdout}\n${logs.stderr}`;
   assertNoForbiddenText(text, forbiddenValues);
-  throw new Error(`candidate Relay exited during startup (${classifyRelayStartupFailure(text)})`);
+  const failure = new Error(`candidate Relay exited during startup (${classifyRelayStartupFailure(text)})`);
+  const diagnostic = redactAcceptanceDiagnostic(logs.stdout, logs.stderr, forbiddenValues);
+  if (diagnostic) {
+    Object.defineProperty(failure, redactedDiagnosticProperty, {
+      configurable: false,
+      enumerable: false,
+      value: diagnostic,
+      writable: false,
+    });
+  }
+  throw failure;
 }
 
 async function waitForRelayRuntimeBound(
@@ -850,6 +865,40 @@ async function waitForRelayRuntimeBound(
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   throw new Error("candidate Relay runtime identity did not become available");
+}
+
+async function waitForRelayGenerationWorkersRunning(
+  url,
+  container,
+  forbiddenValues,
+  timeoutMs = 30_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await assertRelayStillRunning(container, forbiddenValues);
+    try {
+      const result = await fetchJSON(`${url}/health/ready`);
+      const dependencies = Array.isArray(result.body?.dependencies)
+        ? result.body.dependencies
+        : [];
+      const compatibility = dependencies.find(
+        (dependency) => dependency?.name === "platform_relay_compat",
+      );
+      if (
+        compatibility?.details?.enabled === true &&
+        compatibility.details.workers_enabled === true &&
+        compatibility.details.worker_runtime_state === "running" &&
+        compatibility.details.worker_runtime_running === true
+      ) {
+        return;
+      }
+    } catch {
+      // The process/runtime checks above remain authoritative while readiness
+      // converges. Never submit the fixture until worker state is explicit.
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  throw new Error("candidate Relay generation workers did not become ready");
 }
 
 async function assertRuntimeIdentityIsProtected(url, relaySnapshot) {
@@ -913,6 +962,70 @@ async function redisFingerprint(container) {
   return parseRedisInfo(stdout);
 }
 
+function relayWorkerRecoveryFenceMetrics(raw) {
+  const values = raw.trim().split(/\r?\n/).map((value) => Number(value));
+  if (values.length !== 4 || values.some((value) => !Number.isSafeInteger(value))) {
+    throw new Error("Relay worker recovery fence returned malformed metrics");
+  }
+  const [ttlMilliseconds, scheduled, inflight, leaseTokens] = values;
+  if (
+    ttlMilliseconds < 55_000 ||
+    ttlMilliseconds > relayWorkerRecoveryFenceTTLMilliseconds ||
+    scheduled !== 0 ||
+    inflight !== 0 ||
+    leaseTokens !== 0
+  ) {
+    throw new Error("Relay worker recovery fence is not isolated");
+  }
+  return { ttlMilliseconds, scheduled, inflight, leaseTokens };
+}
+
+async function installRelayWorkerRecoveryFence(container) {
+  const command = [
+    "set -eu",
+    `recovery_key='${relayWorkerRecoveryFenceKey}'`,
+    `scheduled_key='${relayWorkerScheduledKey}'`,
+    `inflight_key='${relayWorkerInflightKey}'`,
+    `lease_token_key='${relayWorkerLeaseTokenKey}'`,
+    'if [ "$(redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --raw EXISTS "$recovery_key")" != "0" ] || [ "$(redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --raw ZCARD "$scheduled_key")" != "0" ] || [ "$(redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --raw ZCARD "$inflight_key")" != "0" ] || [ "$(redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --raw HLEN "$lease_token_key")" != "0" ]; then echo "Relay worker recovery Redis fixture was not fresh" >&2; exit 41; fi',
+    `result="$(redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --raw SET "$recovery_key" "$COST_ACCEPTANCE_DELAY_RECOVERY_FENCE_TOKEN" PX ${relayWorkerRecoveryFenceTTLMilliseconds} NX)"`,
+    'if [ "$result" != "OK" ]; then echo "Relay worker recovery fence could not be installed" >&2; exit 42; fi',
+    'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --raw PTTL "$recovery_key"',
+    'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --raw ZCARD "$scheduled_key"',
+    'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --raw ZCARD "$inflight_key"',
+    'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --raw HLEN "$lease_token_key"',
+  ].join("\n");
+  const { stdout } = await runCommand(
+    "docker",
+    ["exec", container, "sh", "-ec", command],
+    { failure: "Relay worker recovery fence could not be installed" },
+  );
+  return relayWorkerRecoveryFenceMetrics(stdout);
+}
+
+async function renewRelayWorkerRecoveryFence(container) {
+  const lua = [
+    "local current = redis.call('GET', KEYS[1])",
+    "if not current or current ~= ARGV[1] then return {-1, -1, -1, -1} end",
+    "if redis.call('PEXPIRE', KEYS[1], ARGV[2]) ~= 1 then return {-2, -2, -2, -2} end",
+    "return {redis.call('PTTL', KEYS[1]), redis.call('ZCARD', KEYS[2]), redis.call('ZCARD', KEYS[3]), redis.call('HLEN', KEYS[4])}",
+  ].join("; ");
+  const command = [
+    "set -eu",
+    `recovery_key='${relayWorkerRecoveryFenceKey}'`,
+    `scheduled_key='${relayWorkerScheduledKey}'`,
+    `inflight_key='${relayWorkerInflightKey}'`,
+    `lease_token_key='${relayWorkerLeaseTokenKey}'`,
+    `redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --raw EVAL ${JSON.stringify(lua)} 4 "$recovery_key" "$scheduled_key" "$inflight_key" "$lease_token_key" "$COST_ACCEPTANCE_DELAY_RECOVERY_FENCE_TOKEN" ${relayWorkerRecoveryFenceTTLMilliseconds}`,
+  ].join("\n");
+  const { stdout } = await runCommand(
+    "docker",
+    ["exec", container, "sh", "-ec", command],
+    { failure: "Relay worker recovery fence could not be verified" },
+  );
+  return relayWorkerRecoveryFenceMetrics(stdout);
+}
+
 async function postgresFingerprints(python, platformUrl, relayUrl) {
   const { stdout } = await runCommand(
     python,
@@ -932,6 +1045,105 @@ async function postgresFingerprints(python, platformUrl, relayUrl) {
     throw new Error("cost acceptance did not use two distinct PostgreSQL instances");
   }
   return value;
+}
+
+async function prepareRelayDevelopmentRoleStubs(python, relayDatabaseUrl) {
+  const script = String.raw`
+import os
+
+from sqlalchemy import create_engine, text
+
+
+engine = create_engine(os.environ["COST_ACCEPTANCE_RELAY_DATABASE_URL"], pool_pre_ping=True)
+with engine.begin() as connection:
+    connection.execute(text("""
+        CREATE ROLE relay_runtime
+        NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+    """))
+    connection.execute(text("""
+        CREATE ROLE relay_download_edge
+        NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+    """))
+    connection.execute(text("""
+        REVOKE CONNECT, CREATE, TEMPORARY
+        ON DATABASE relay_cost_acceptance
+        FROM PUBLIC, relay_runtime, relay_download_edge
+    """))
+    connection.execute(text("""
+        GRANT CONNECT ON DATABASE relay_cost_acceptance
+        TO relay_runtime, relay_download_edge
+    """))
+    connection.execute(text("""
+        REVOKE ALL ON SCHEMA public
+        FROM PUBLIC, relay_runtime, relay_download_edge
+    """))
+    connection.execute(text("""
+        GRANT USAGE ON SCHEMA public
+        TO relay_runtime, relay_download_edge
+    """))
+    connection.execute(text("ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"))
+    connection.execute(text("ALTER ROLE cost_acceptance SET log_parameter_max_length = 0"))
+    connection.execute(text("ALTER ROLE cost_acceptance SET log_parameter_max_length_on_error = 0"))
+    connection.execute(text("ALTER ROLE cost_acceptance SET auto_explain.log_parameter_max_length = 0"))
+    connection.execute(text("ALTER ROLE cost_acceptance SET pgaudit.log_parameter = 'off'"))
+    connection.execute(text("ALTER ROLE cost_acceptance SET search_path = public"))
+    connection.execute(text("ALTER ROLE cost_acceptance SET row_security = on"))
+
+    roles = connection.execute(text("""
+        SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb,
+               rolcanlogin, rolreplication, rolbypassrls,
+               has_database_privilege(rolname, current_database(), 'CONNECT') AS can_connect,
+               has_database_privilege(rolname, current_database(), 'CREATE') AS can_create_database,
+               has_database_privilege(rolname, current_database(), 'TEMP') AS can_create_temp,
+               has_schema_privilege(rolname, 'public', 'USAGE') AS can_use_public,
+               has_schema_privilege(rolname, 'public', 'CREATE') AS can_create_public,
+               EXISTS (
+                   SELECT 1 FROM pg_auth_members membership
+                    WHERE membership.member = role.oid OR membership.roleid = role.oid
+               ) AS has_membership
+          FROM pg_roles role
+         WHERE rolname IN ('relay_runtime', 'relay_download_edge')
+         ORDER BY rolname
+    """)).mappings().all()
+    if [row["rolname"] for row in roles] != ["relay_download_edge", "relay_runtime"]:
+        raise RuntimeError("Relay development role stubs are incomplete")
+    for row in roles:
+        if (
+            row["rolsuper"] or row["rolinherit"] or row["rolcreaterole"]
+            or row["rolcreatedb"] or row["rolcanlogin"] or row["rolreplication"]
+            or row["rolbypassrls"] or not row["can_connect"]
+            or row["can_create_database"] or row["can_create_temp"]
+            or not row["can_use_public"] or row["can_create_public"]
+            or row["has_membership"]
+        ):
+            raise RuntimeError("Relay development role stub isolation is invalid")
+
+    expected_logging_settings = sorted([
+        "auto_explain.log_parameter_max_length=0",
+        "log_parameter_max_length=0",
+        "log_parameter_max_length_on_error=0",
+        "pgaudit.log_parameter=off",
+        "row_security=on",
+        "search_path=public",
+    ])
+    logging_settings = connection.execute(text("""
+        SELECT setconfig
+          FROM pg_db_role_setting
+         WHERE setrole = (SELECT oid FROM pg_roles WHERE rolname = 'cost_acceptance')
+           AND setdatabase = 0
+    """)).scalar_one_or_none()
+    if logging_settings is None or sorted(logging_settings) != expected_logging_settings:
+        raise RuntimeError("Relay development database logging policy is invalid")
+engine.dispose()
+`;
+  await runCommand(python, ["-c", script], {
+    env: {
+      ...process.env,
+      COST_ACCEPTANCE_RELAY_DATABASE_URL: relayDatabaseUrl,
+    },
+    timeoutMs: 100_000,
+    failure: "Relay development role stubs could not be prepared",
+  });
 }
 
 async function seedRelayNativeChannel(
@@ -1298,6 +1510,7 @@ async function main() {
   const platformPassword = randomBytes(32).toString("base64url");
   const relayPassword = randomBytes(32).toString("base64url");
   const redisPassword = randomBytes(32).toString("base64url");
+  const relayWorkerRecoveryFenceToken = randomBytes(32).toString("base64url");
   const bootstrapValue = randomBytes(32).toString("base64url");
   const internalValue = randomBytes(32).toString("base64url");
   const signingValue = randomBytes(32).toString("base64url");
@@ -1328,6 +1541,7 @@ async function main() {
     platformPassword,
     relayPassword,
     redisPassword,
+    relayWorkerRecoveryFenceToken,
     bootstrapValue,
     internalValue,
     signingValue,
@@ -1401,7 +1615,10 @@ async function main() {
       POSTGRES_PASSWORD: relayPassword,
       POSTGRES_DB: "relay_cost_acceptance",
     }));
-    await writePrivateFile(redisEnv, envFileContents({ REDIS_PASSWORD: redisPassword }));
+    await writePrivateFile(redisEnv, envFileContents({
+      REDIS_PASSWORD: redisPassword,
+      COST_ACCEPTANCE_DELAY_RECOVERY_FENCE_TOKEN: relayWorkerRecoveryFenceToken,
+    }));
 
     for (const [name, alias, envPath, database, volume] of [
       [platformPostgres, "platform-postgres", platformPgEnv, "platform_cost_acceptance", volumes[0]],
@@ -1599,8 +1816,16 @@ async function main() {
     // before route synchronization. Run the candidate's dedicated one-shot
     // migrator, prove its exact terminal result and remove it, seed one
     // manually-disabled channel, then start the long-lived runtime.
+    await prepareRelayDevelopmentRoleStubs(pythonExecutable, relayDatabaseUrl);
     const relayMigrationEnv = {
       TZ: "UTC",
+      APP_ENV: "development",
+      DEPLOYMENT_ENV: "development",
+      RELAY_COMPAT_ENVIRONMENT: "development",
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "false",
+      RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "false",
+      RELAY_LOCAL_DATABASE_ROLE_REHEARSAL: "false",
+      RELAY_RUNTIME_DATABASE_ROLE: "relay_runtime",
       SQL_DSN: relayInternalDatabaseUrl,
       NODE_TYPE: "master",
       NODE_NAME: `${resourcePrefix}-migrate`,
@@ -1663,7 +1888,11 @@ async function main() {
       UPDATE_TASK: "false",
       RELAY_COMPAT_ENABLED: "true",
       RELAY_COMPAT_ENVIRONMENT: "development",
-      RELAY_COMPAT_WORKER_ENABLED: "false",
+      RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "false",
+      RELAY_RUNTIME_DATABASE_ROLE: "relay_runtime",
+      RELAY_COMPAT_WORKER_ENABLED: "true",
+      RELAY_COMPAT_DELAY_QUEUE_NAMESPACE: "new-api-relay",
+      RELAY_COMPAT_DELAY_QUEUE_RECOVERY_SECONDS: "60",
       RELAY_COMPAT_INTERNAL_ADMISSION_TOKEN: admissionValue,
       RELAY_COMPAT_CLIENT_CREDENTIALS_JSON: relayClientCredentials,
       RELAY_COMPAT_MODEL_ROUTES_JSON: relayModelRoutes,
@@ -1681,6 +1910,7 @@ async function main() {
       RELAY_CHANNEL_COST_CLAIM_LEASE_SECONDS: "60",
       RELAY_CHANNEL_COST_POLL_SECONDS: "0.1",
     }));
+    await installRelayWorkerRecoveryFence(redis);
     await runCommand("docker", [
       "run", "--detach", "--name", relay,
       ...acceptanceResourceLabels(runSuffix),
@@ -1699,9 +1929,10 @@ async function main() {
     ], { timeoutMs: 180_000, failure: "candidate Relay container could not be started" });
 
     const relayContainer = await inspectDocker("container", relay);
-    if (relayContainer.Image !== candidateImageId || relayContainer.State?.Running !== true) {
+    if (relayContainer.Image !== candidateImageId) {
       throw new Error("running Relay container does not use the inspected immutable candidate image");
     }
+    await assertRelayStillRunning(relay, forbiddenValues);
     if (
       relayContainer.Config?.User !== "10001:10001" ||
       relayContainer.HostConfig?.ReadonlyRootfs !== true ||
@@ -1724,6 +1955,7 @@ async function main() {
       relay,
       forbiddenValues,
     );
+    await waitForRelayGenerationWorkersRunning(relayUrl, relay, forbiddenValues);
     await assertRuntimeIdentityIsProtected(relayUrl, sourceBefore.relay);
     const runtimeSecond = await waitForRelayRuntimeBound(
       relayUrl,
@@ -1759,6 +1991,7 @@ async function main() {
       throw new Error("Relay PostgreSQL unexpectedly reported a Platform migration head");
     }
     const redisBefore = await redisFingerprint(redis);
+    await renewRelayWorkerRecoveryFence(redis);
 
     const pytestStarted = Date.now();
     const testResult = await runCommand(pythonExecutable, [

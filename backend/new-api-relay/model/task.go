@@ -2,10 +2,12 @@ package model
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -77,9 +79,45 @@ type Task struct {
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
 }
 
+func (t Task) MarshalJSON() ([]byte, error) {
+	type publicTask Task
+	safe := publicTask(t)
+	if t.IsPlatformExternalBilling() {
+		safe.FailReason = SanitizePlatformExternalFailReason(t.FailReason)
+		safe.Data = nil
+	}
+	return common.Marshal(safe)
+}
+
 func (t *Task) SetData(data any) {
 	b, _ := common.Marshal(data)
 	t.Data = json.RawMessage(b)
+}
+
+func (t *Task) IsPlatformExternalBilling() bool {
+	return t != nil && t.PrivateData.BillingSource == TaskBillingSourcePlatformExternal
+}
+
+// SetPlatformExternalResponseReceipt persists only secret-free provider
+// response evidence while the Platform transfer worker still needs the private
+// ResultURL. Raw provider response bodies never belong in the native operator
+// API or durable task history for Platform-owned generations.
+func (t *Task) SetPlatformExternalResponseReceipt(body []byte, status string) {
+	if t == nil {
+		return
+	}
+	digest := sha256.Sum256(body)
+	t.SetData(struct {
+		SchemaVersion int    `json:"schema_version"`
+		Status        string `json:"status"`
+		BodyBytes     int    `json:"body_bytes"`
+		BodySHA256    string `json:"body_sha256"`
+	}{
+		SchemaVersion: 1,
+		Status:        status,
+		BodyBytes:     len(body),
+		BodySHA256:    fmt.Sprintf("sha256:%x", digest),
+	})
 }
 
 func (t *Task) GetData(v any) error {
@@ -113,6 +151,9 @@ type TaskPrivateData struct {
 	PinnedKeyFingerprint            string `json:"pinned_key_fingerprint,omitempty"`
 	ProviderCredentialTenantID      string `json:"provider_credential_tenant_id,omitempty"`
 	ProviderCredentialVersion       string `json:"provider_credential_version,omitempty"`
+	ProviderTransportRevision       string `json:"provider_transport_revision,omitempty"`
+	ProviderTransportSHA256         string `json:"provider_transport_sha256,omitempty"`
+	ProviderResultURLScrubbed       bool   `json:"provider_result_url_scrubbed,omitempty"`
 	TransientProviderKey            string `json:"-"`
 	LegacyProviderCredentialPresent bool   `json:"-"`
 	UpstreamTaskID                  string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
@@ -151,6 +192,43 @@ func (t *Task) GetResultURL() string {
 		return t.PrivateData.ResultURL
 	}
 	return t.FailReason
+}
+
+// GetPublicResultURL prevents the new-api task and video compatibility APIs
+// from exposing a provider transfer credential owned by the customer Platform.
+// Internal transfer workers intentionally use GetResultURL instead.
+func (t *Task) GetPublicResultURL() string {
+	if t.IsPlatformExternalBilling() {
+		return ""
+	}
+	return t.GetResultURL()
+}
+
+func SanitizePlatformExternalFailReason(reason string) string {
+	if strings.TrimSpace(reason) == "" {
+		return ""
+	}
+	// Provider-controlled error prose is not a public contract and can carry
+	// opaque credentials in schemes or encodings a denylist cannot anticipate.
+	// Durable internal evidence uses explicit codes and digests instead.
+	return "provider task failed"
+}
+
+func (t *Task) GetPublicFailReason() string {
+	if t == nil {
+		return ""
+	}
+	if t.IsPlatformExternalBilling() {
+		return SanitizePlatformExternalFailReason(t.FailReason)
+	}
+	return t.FailReason
+}
+
+func (t *Task) GetPublicData() json.RawMessage {
+	if t == nil || t.IsPlatformExternalBilling() {
+		return nil
+	}
+	return t.Data
 }
 
 // GenerateTaskID 生成对外暴露的 task_xxxx 格式 ID
@@ -353,26 +431,87 @@ func TaskGetAllTasks(startIdx int, num int, queryParams SyncTaskQueryParams) []*
 }
 
 func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
-	var tasks []*Task
-	err := DB.Where("progress != ?", "100%").
-		Where("status NOT IN ?", []string{TaskStatusFailure, TaskStatusSuccess}).
-		Where("submit_time < ?", cutoffUnix).
-		Order("submit_time").
-		Limit(limit).
-		Find(&tasks).Error
-	if err != nil {
+	if limit <= 0 {
 		return nil
+	}
+	tasks := make([]*Task, 0, limit)
+	batchSize := limit
+	if batchSize < 100 {
+		batchSize = 100
+	}
+	var cursorSubmitTime int64
+	var cursorID int64
+	hasCursor := false
+	for len(tasks) < limit {
+		var batch []*Task
+		query := DB.Where("progress != ?", "100%").
+			Where("status NOT IN ?", []string{TaskStatusFailure, TaskStatusSuccess}).
+			Where("submit_time < ?", cutoffUnix)
+		if hasCursor {
+			query = query.Where(
+				"(submit_time > ?) OR (submit_time = ? AND id > ?)",
+				cursorSubmitTime,
+				cursorSubmitTime,
+				cursorID,
+			)
+		}
+		if err := query.Order("submit_time ASC, id ASC").Limit(batchSize).Find(&batch).Error; err != nil {
+			return nil
+		}
+		for _, task := range batch {
+			if PlatformGenerationProviderResultReconciliationRequired(task) {
+				continue
+			}
+			tasks = append(tasks, task)
+			if len(tasks) == limit {
+				break
+			}
+		}
+		if len(batch) < batchSize {
+			break
+		}
+		last := batch[len(batch)-1]
+		cursorSubmitTime = last.SubmitTime
+		cursorID = last.ID
+		hasCursor = true
 	}
 	return tasks
 }
 
 func GetAllUnFinishSyncTasks(limit int) []*Task {
-	var tasks []*Task
-	var err error
-	// get all tasks progress is not 100%
-	err = DB.Where("progress != ?", "100%").Where("status != ?", TaskStatusFailure).Where("status != ?", TaskStatusSuccess).Limit(limit).Order("id").Find(&tasks).Error
-	if err != nil {
+	if limit <= 0 {
 		return nil
+	}
+	tasks := make([]*Task, 0, limit)
+	batchSize := limit
+	if batchSize < 100 {
+		batchSize = 100
+	}
+	var cursorID int64
+	for len(tasks) < limit {
+		var batch []*Task
+		query := DB.Where("progress != ?", "100%").
+			Where("status != ?", TaskStatusFailure).
+			Where("status != ?", TaskStatusSuccess)
+		if cursorID > 0 {
+			query = query.Where("id > ?", cursorID)
+		}
+		if err := query.Limit(batchSize).Order("id ASC").Find(&batch).Error; err != nil {
+			return nil
+		}
+		for _, task := range batch {
+			if PlatformGenerationProviderResultReconciliationRequired(task) {
+				continue
+			}
+			tasks = append(tasks, task)
+			if len(tasks) == limit {
+				break
+			}
+		}
+		if len(batch) < batchSize {
+			break
+		}
+		cursorID = batch[len(batch)-1].ID
 	}
 	return tasks
 }
@@ -382,14 +521,7 @@ func GetAllUnFinishSyncTasks(limit int) []*Task {
 // whether the async_task_poll system task needs to run; when no task is pending
 // the scheduler skips creating a row entirely.
 func HasUnfinishedSyncTasks() bool {
-	var id int64
-	err := DB.Model(&Task{}).
-		Where("progress != ?", "100%").
-		Where("status != ?", TaskStatusFailure).
-		Where("status != ?", TaskStatusSuccess).
-		Limit(1).
-		Pluck("id", &id).Error
-	return err == nil && id != 0
+	return len(GetAllUnFinishSyncTasks(1)) == 1
 }
 
 func GetByTaskId(userId int, taskId string) (*Task, bool, error) {
@@ -594,6 +726,8 @@ func (t *Task) ToOpenAIVideo() *dto.OpenAIVideo {
 	openAIVideo.SetProgressStr(t.Progress)
 	openAIVideo.CreatedAt = t.CreatedAt
 	openAIVideo.CompletedAt = t.UpdatedAt
-	openAIVideo.SetMetadata("url", t.GetResultURL())
+	if resultURL := t.GetPublicResultURL(); resultURL != "" {
+		openAIVideo.SetMetadata("url", resultURL)
+	}
 	return openAIVideo
 }

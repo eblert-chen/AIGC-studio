@@ -29,7 +29,7 @@
 .showcase-operations {
   display: grid;
   min-width: 0;
-  gap: clamp(22px, 2vw, 32px);
+  gap: clamp(18px, 1.5vw, 24px);
 }
 
 .showcase-demo-notice {
@@ -38,7 +38,8 @@
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border-inline-start: 3px solid var(--ops-orange);
+  border-block: 1px solid color-mix(in srgb, var(--ops-orange) 36%, var(--ops-line));
+  border-inline-start: 1px solid var(--ops-orange);
   color: var(--ops-ink-soft);
   background: var(--ops-orange-soft);
   font-size: var(--text-body-sm, 13px);
@@ -53,16 +54,30 @@
 .showcase-release-bar {
   display: grid;
   grid-template-columns: minmax(170px, 0.65fr) minmax(170px, 0.65fr) minmax(340px, auto);
-  align-items: center;
-  gap: 24px;
-  padding: 16px 0;
-  border-block: 1px solid var(--ops-line-strong);
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--ops-structure-line, var(--ops-line-strong));
+  background: var(--ops-surface);
 }
 
 .showcase-release-bar > div:not(.showcase-release-actions) {
   display: grid;
   min-width: 0;
+  min-height: 96px;
+  align-content: center;
   gap: 2px;
+  padding: 14px 18px;
+  border-inline-end: 1px solid var(--ops-line);
+}
+
+.showcase-release-bar > div:first-child {
+  color: var(--ops-surface);
+  background: var(--ops-accent, var(--ops-blue));
+}
+
+.showcase-release-bar > div:first-child :is(span, strong, small) {
+  color: var(--ops-surface);
 }
 
 .showcase-release-bar span,
@@ -98,6 +113,7 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+  padding: 14px 16px;
 }
 
 .showcase-release-actions .showcase-danger-button {
@@ -135,7 +151,8 @@
   gap: 8px;
   margin: -14px 0 0;
   padding: 8px 10px;
-  border-inline-start: 3px solid var(--ops-red);
+  border-block: 1px solid color-mix(in srgb, var(--ops-red) 34%, var(--ops-line));
+  border-inline-start: 1px solid var(--ops-red);
   color: var(--ops-red);
   background: color-mix(in srgb, var(--ops-red) 7%, transparent);
   font-size: var(--text-body-sm, 13px);
@@ -157,15 +174,26 @@
   display: grid;
   min-width: 0;
   grid-template-columns: minmax(360px, 0.8fr) minmax(520px, 1.2fr);
-  gap: clamp(22px, 2vw, 32px);
   align-items: start;
+  gap: 0;
+  border: 1px solid var(--ops-structure-line, var(--ops-line-strong));
+  background: var(--ops-surface);
 }
 
 .showcase-draft-list,
 .showcase-preview-panel,
 .showcase-release-history {
   min-width: 0;
-  border-block-start: 1px solid var(--ops-line-strong);
+  border-block-start: 2px solid var(--ops-evidence-line, var(--ops-line-strong));
+}
+
+.showcase-draft-list {
+  border-block-start-color: var(--ops-accent, var(--ops-blue));
+  border-inline-end: 1px solid var(--ops-structure-line, var(--ops-line-strong));
+}
+
+.showcase-preview-panel {
+  border-block-start-color: var(--ops-orange, var(--ops-orange));
 }
 
 .showcase-draft-list > header,
@@ -176,7 +204,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding-block: 10px;
+  padding: 10px 14px;
+  border-block-end: 1px solid var(--ops-line);
 }
 
 .showcase-draft-list > header > div,
@@ -215,7 +244,8 @@
 }
 
 .showcase-draft-rows article.is-selected {
-  background: color-mix(in srgb, var(--ops-accent-soft) 52%, transparent);
+  box-shadow: inset 4px 0 0 var(--ops-orange, var(--ops-orange));
+  background: color-mix(in srgb, var(--ops-accent, var(--ops-blue)) 6%, transparent);
 }
 
 .showcase-row-main {
@@ -244,7 +274,7 @@
   height: 58px;
   overflow: hidden;
   border: 1px solid var(--ops-line);
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-xs, 4px);
   background: var(--ops-surface-soft);
 }
 
@@ -356,7 +386,7 @@
   gap: 3px;
   padding: 3px;
   border: 1px solid var(--ops-line);
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-control, 6px);
   background: var(--ops-surface-soft);
 }
 
@@ -372,9 +402,9 @@
 }
 
 .showcase-viewport-switch button.is-active {
-  color: var(--ops-ink);
-  background: var(--ops-surface);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--ops-ink) 8%, transparent);
+  color: var(--ops-surface);
+  background: var(--ops-accent, var(--ops-blue));
+  box-shadow: none;
 }
 
 .showcase-preview-stage {
@@ -384,8 +414,8 @@
   justify-content: center;
   overflow: auto;
   padding: clamp(18px, 2.4vw, 34px);
-  border: 1px solid var(--ops-line);
-  background: color-mix(in srgb, var(--ops-surface-soft) 72%, var(--ops-bg));
+  border: 0;
+  background: color-mix(in srgb, var(--ops-accent, var(--ops-blue)) 3%, var(--ops-bg));
 }
 
 .showcase-preview-stage.is-390 > article,
@@ -507,6 +537,8 @@
 
 .showcase-release-history {
   overflow: hidden;
+  border-inline: 1px solid var(--ops-structure-line, var(--ops-line-strong));
+  border-block-end: 1px solid var(--ops-structure-line, var(--ops-line-strong));
 }
 
 .showcase-history-table {
@@ -530,8 +562,8 @@
 .showcase-history-table .showcase-history-head {
   min-height: 38px;
   border-block-start: 0;
-  color: var(--ops-muted);
-  background: var(--ops-surface-soft);
+  color: var(--ops-ink);
+  background: color-mix(in srgb, var(--ops-accent, var(--ops-blue)) 7%, var(--ops-surface));
   font-size: var(--text-caption, 12px);
   font-weight: var(--weight-semibold, 600);
 }
@@ -572,14 +604,13 @@
 
 .showcase-loading span {
   height: 94px;
-  border-radius: var(--radius-md, 8px);
-  background: linear-gradient(90deg, var(--ops-surface-soft), var(--ops-surface), var(--ops-surface-soft));
-  background-size: 220% 100%;
-  animation: showcase-loading 1.25s ease-in-out infinite;
+  border-radius: 0;
+  background: var(--ops-surface-soft);
+  animation: showcase-loading 1.25s ease-in-out infinite alternate;
 }
 
 @keyframes showcase-loading {
-  to { background-position: -120% 0; }
+  to { opacity: 0.56; }
 }
 
 .showcase-dialog-backdrop {
@@ -597,7 +628,7 @@
   max-height: calc(100dvh - 40px);
   overflow: auto;
   border: 1px solid var(--ops-line-strong);
-  border-radius: var(--radius-lg, 12px);
+  border-radius: var(--radius-md, 10px);
   color: var(--ops-ink);
   background: var(--ops-surface);
   box-shadow: 0 24px 72px rgb(25 35 30 / 18%);
@@ -616,8 +647,9 @@
   justify-content: space-between;
   gap: 18px;
   padding: 18px 20px 14px;
-  border-block-end: 1px solid var(--ops-line);
-  background: var(--ops-surface);
+  border-block-end: 1px solid var(--ops-accent, var(--ops-blue));
+  color: var(--ops-surface);
+  background: var(--ops-accent, var(--ops-blue));
 }
 
 .showcase-dialog > header > div {
@@ -627,7 +659,7 @@
 
 .showcase-dialog h2 {
   margin: 0;
-  color: var(--ops-ink);
+  color: var(--ops-surface);
   font-size: var(--text-heading-sm, 18px);
   font-weight: var(--weight-semibold, 600);
 }
@@ -635,7 +667,7 @@
 .showcase-dialog > header p {
   max-width: 68ch;
   margin: 0;
-  color: var(--ops-muted);
+  color: color-mix(in srgb, var(--ops-surface) 82%, var(--ops-accent, var(--ops-blue)));
   font-size: var(--text-body-sm, 13px);
   line-height: 1.55;
 }
@@ -645,10 +677,10 @@
   min-width: var(--control-sm, 32px);
   height: var(--control-sm, 32px);
   padding: 0;
-  border: 1px solid var(--ops-line);
+  border: 1px solid color-mix(in srgb, var(--ops-surface) 42%, var(--ops-accent, var(--ops-blue)));
   border-radius: var(--radius-control, 6px);
-  color: var(--ops-muted);
-  background: var(--ops-surface);
+  color: var(--ops-surface);
+  background: color-mix(in srgb, var(--ops-surface) 10%, transparent);
 }
 
 .showcase-dialog form > fieldset,
@@ -901,7 +933,8 @@
 .showcase-form-error {
   margin: 0 20px 12px;
   padding: 9px 10px;
-  border-inline-start: 3px solid var(--ops-red);
+  border-block: 1px solid color-mix(in srgb, var(--ops-red) 34%, var(--ops-line));
+  border-inline-start: 1px solid var(--ops-red);
   color: var(--ops-red);
   background: color-mix(in srgb, var(--ops-red) 7%, transparent);
   font-size: var(--text-body-sm, 13px);
@@ -949,6 +982,11 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .showcase-draft-list {
+    border-inline-end: 0;
+    border-block-end: 1px solid var(--ops-structure-line, var(--ops-line-strong));
+  }
+
   .showcase-preview-stage {
     min-height: 420px;
   }
@@ -957,7 +995,13 @@
 @media (max-width: 820px) {
   .showcase-release-bar {
     grid-template-columns: minmax(0, 1fr);
-    gap: 14px;
+    gap: 0;
+  }
+
+  .showcase-release-bar > div:not(.showcase-release-actions) {
+    min-height: 82px;
+    border-inline-end: 0;
+    border-block-end: 1px solid var(--ops-line);
   }
 
   .showcase-release-actions {

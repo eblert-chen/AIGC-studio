@@ -26,6 +26,7 @@ test("personal and session endpoints never carry a company context header", asyn
   await client.getPersonalMe();
   await client.getPersonalWallet();
   await client.listPersonalModels();
+  await client.listPersonalModelCatalog();
   await client.listPersonalTasks({ page: 2, page_size: 24, status: "succeeded" });
   await client.getPersonalTask("task/a");
   await client.getPersonalArtifactPreview("task/a", "asset/b");
@@ -37,6 +38,7 @@ test("personal and session endpoints never carry a company context header", asyn
     "https://platform.example/api/v1/personal/me",
     "https://platform.example/api/v1/personal/wallet",
     "https://platform.example/api/v1/personal/models",
+    "https://platform.example/api/v1/personal/model-catalog",
     "https://platform.example/api/v1/personal/tasks?page=2&page_size=24&status=succeeded",
     "https://platform.example/api/v1/personal/tasks/task%2Fa",
     "https://platform.example/api/v1/personal/tasks/task%2Fa/artifacts/asset%2Fb/preview",

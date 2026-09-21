@@ -42,8 +42,16 @@ const (
 var platformRelayRotationPostgresClientIDs = []string{
 	"lifecycle-platform-api",
 	"lifecycle-platform-dispatcher",
+	"lifecycle-platform-relay-catalog-sync",
 	"lifecycle-platform-relay-sync",
 	"lifecycle-platform-timeout",
+}
+
+func TestPlatformRelayRotationPostgresClientIDsAreCanonical(t *testing.T) {
+	require.True(t, sort.StringsAreSorted(platformRelayRotationPostgresClientIDs))
+	for index := 1; index < len(platformRelayRotationPostgresClientIDs); index++ {
+		require.NotEqual(t, platformRelayRotationPostgresClientIDs[index-1], platformRelayRotationPostgresClientIDs[index])
+	}
 }
 
 type platformRelayRotationPostgresSynchronizedBuffer struct {

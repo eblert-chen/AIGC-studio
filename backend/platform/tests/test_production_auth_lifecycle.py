@@ -74,7 +74,14 @@ def _jwk(private_key: rsa.RSAPrivateKey, *, kid: str = "auth-key") -> dict:
     }
 
 
-def _auth_app(*, input_asset_filesystem_root: str = "./data/platform-input-assets"):
+def _auth_app(
+    *,
+    input_asset_filesystem_root: str = "./data/platform-input-assets",
+    oidc_enabled: bool = True,
+    provider_subject: str = "owner-subject",
+    provider_email: str = "owner@example.com",
+    provider_name: str = "Owner",
+):
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     issuer = "https://identity.example.test"
     frontend = "https://frontend.example.test"
@@ -83,25 +90,37 @@ def _auth_app(*, input_asset_filesystem_root: str = "./data/platform-input-asset
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    oidc_settings = (
+        {
+            "oidc_self_signup_enabled": True,
+            "oidc_issuer": issuer,
+            "oidc_authorization_endpoint": f"{issuer}/authorize",
+            "oidc_token_endpoint": f"{issuer}/token",
+            "oidc_jwks_uri": f"{issuer}/jwks",
+            "oidc_client_id": "browser-public-client",
+            "oidc_redirect_uri": "https://testserver/api/v1/auth/callback",
+            "platform_owner_user_ids": ["owner-subject"],
+        }
+        if oidc_enabled
+        else {}
+    )
     settings = Settings(
         database_url="sqlite+pysqlite://",
         auto_create_tables=True,
         jwt_signing_secret="auth-test-pepper-with-at-least-thirty-two-bytes",
-        oidc_enabled=True,
-        oidc_self_signup_enabled=True,
-        oidc_issuer=issuer,
-        oidc_authorization_endpoint=f"{issuer}/authorize",
-        oidc_token_endpoint=f"{issuer}/token",
-        oidc_jwks_uri=f"{issuer}/jwks",
-        oidc_client_id="browser-public-client",
-        oidc_redirect_uri="https://testserver/api/v1/auth/callback",
-        frontend_origin=frontend,
+        oidc_enabled=oidc_enabled,
+        frontend_origin=frontend if oidc_enabled else None,
         cors_origins=[frontend],
-        platform_owner_user_ids=["owner-subject"],
         input_asset_filesystem_root=input_asset_filesystem_root,
+        **oidc_settings,
     )
     app = create_app(settings=settings, engine=engine)
-    provider: dict[str, str | int] = {"token_calls": 0}
+    provider: dict[str, str | int] = {
+        "token_calls": 0,
+        "subject": provider_subject,
+        "email": provider_email,
+        "name": provider_name,
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/token":
@@ -113,14 +132,14 @@ def _auth_app(*, input_asset_filesystem_root: str = "./data/platform-input-asset
                 private_key,
                 {
                     "iss": issuer,
-                    "sub": "owner-subject",
+                    "sub": provider["subject"],
                     "aud": settings.oidc_client_id,
                     "exp": now + 300,
                     "iat": now,
                     "nonce": provider["nonce"],
-                    "email": "owner@example.com",
+                    "email": provider["email"],
                     "email_verified": True,
-                    "name": "Owner",
+                    "name": provider["name"],
                     "amr": ["webauthn"],
                     "auth_time": now,
                 },
@@ -147,10 +166,66 @@ def _login(client: TestClient, provider: dict[str, str | int]):
     query = parse_qs(urlsplit(started.headers["location"]).query)
     assert query["prompt"] == ["login"]
     assert query["max_age"] == ["0"]
+    assert query["ui_locales"] == ["zh-CN"]
     assert query["code_challenge_method"] == ["S256"]
     provider["nonce"] = query["nonce"][0]
     callback = f"/api/v1/auth/callback?state={query['state'][0]}&code=provider-code"
     return query, callback
+
+
+def test_oidc_login_locale_is_server_owned() -> None:
+    app, engine, _ = _auth_app()
+    try:
+        with TestClient(app, base_url="https://testserver") as browser:
+            started = browser.get(
+                "/api/v1/auth/login?ui_locales=en",
+                follow_redirects=False,
+            )
+            assert started.status_code == 302
+            query = parse_qs(urlsplit(started.headers["location"]).query)
+            assert query["ui_locales"] == ["zh-CN"]
+    finally:
+        app.state.oidc_http_client.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize("oidc_enabled", [True, False])
+def test_auth_session_reports_oidc_login_availability(
+    oidc_enabled: bool,
+) -> None:
+    app, engine, _ = _auth_app(oidc_enabled=oidc_enabled)
+    try:
+        with TestClient(app, base_url="https://testserver") as browser:
+            anonymous = browser.get(
+                "/api/v1/auth/session",
+                headers={"Origin": "https://frontend.example.test"},
+            )
+            assert anonymous.status_code == 200
+            assert anonymous.json()["authenticated"] is False
+            assert anonymous.json()["login_available"] is oidc_enabled
+            assert anonymous.headers["access-control-allow-origin"] == (
+                "https://frontend.example.test"
+            )
+            assert anonymous.headers["access-control-allow-credentials"] == "true"
+
+            invalid = browser.get(
+                "/api/v1/auth/session",
+                headers={"Authorization": "Bearer invalid"},
+            )
+            assert invalid.status_code == 200
+            assert invalid.json()["authenticated"] is False
+            assert invalid.json()["login_available"] is oidc_enabled
+
+            if not oidc_enabled:
+                login = browser.get(
+                    "/api/v1/auth/login",
+                    follow_redirects=False,
+                )
+                assert login.status_code == 503
+                assert login.json()["code"] == "oidc_unavailable"
+    finally:
+        app.state.oidc_http_client.close()
+        engine.dispose()
 
 
 def test_oidc_state_browser_binding_pkce_cookie_session_and_replay():
@@ -182,9 +257,22 @@ def test_oidc_state_browser_binding_pkce_cookie_session_and_replay():
 
             state = browser.get("/api/v1/auth/session").json()
             assert state["authenticated"] is True
+            assert state["login_available"] is True
             assert state["user"]["email"] == "owner@example.com"
+            assert state["account_type"] == "platform_admin"
+            assert state["personal"] is None
+            assert state["companies"] == []
             assert state["platform_admin"] is True
             assert state["csrf_token"]
+
+            app.state.settings.oidc_enabled = False
+            try:
+                unavailable_state = browser.get("/api/v1/auth/session").json()
+                assert unavailable_state["authenticated"] is True
+                assert unavailable_state["login_available"] is False
+            finally:
+                app.state.settings.oidc_enabled = True
+
             global_users = browser.get("/api/v1/platform-admin/users")
             assert global_users.status_code == 200
             assert global_users.headers["Cache-Control"] == "no-store"
@@ -193,6 +281,37 @@ def test_oidc_state_browser_binding_pkce_cookie_session_and_replay():
             replay = browser.get(callback, follow_redirects=False)
             assert replay.status_code == 400
             assert provider["token_calls"] == 1
+    finally:
+        app.state.oidc_http_client.close()
+        engine.dispose()
+
+
+def test_oidc_self_signup_provisions_only_a_personal_account():
+    app, engine, provider = _auth_app(
+        provider_subject="personal-consumer-subject",
+        provider_email="personal-consumer@example.com",
+        provider_name="Personal Consumer",
+    )
+    try:
+        with TestClient(app, base_url="https://testserver") as browser:
+            _, callback = _login(browser, provider)
+            assert browser.get(callback, follow_redirects=False).status_code == 303
+            state = browser.get("/api/v1/auth/session").json()
+            assert state["authenticated"] is True
+            assert state["account_type"] == "personal"
+            assert state["personal"]["workspace_id"]
+            assert state["companies"] == []
+            assert state["platform_admin"] is False
+            with app.state.session_factory() as database:
+                membership_count = int(
+                    database.scalar(
+                        select(func.count(CompanyMembership.id)).where(
+                            CompanyMembership.user_id == state["user"]["id"]
+                        )
+                    )
+                    or 0
+                )
+                assert membership_count == 0
     finally:
         app.state.oidc_http_client.close()
         engine.dispose()
@@ -547,6 +666,33 @@ def test_owner_onboarding_reissue_can_atomically_correct_owner_email(
                 database.add(replacement)
                 database.flush()
 
+                with pytest.raises(DomainError) as conflict:
+                    InvitationService.reissue_owner_onboarding(
+                        database,
+                        company_id=company.id,
+                        expected_owner_membership_id=membership.id,
+                        expected_owner_user_id=original_user.id,
+                        actor_user_id=actor.id,
+                        expires_in_seconds=3600,
+                        pepper=pepper,
+                        request_id="owner-bootstrap-correct-conflict",
+                        replacement_email="correct-owner@example.com",
+                        replacement_display_name="Correct Owner",
+                    )
+                assert conflict.value.code == "account_type_conflict"
+                assert membership.user_id == original_user.id
+                assert invitation.email == original_user.email
+                assert (
+                    InvitationService.by_token(
+                        database,
+                        token=old_token,
+                        pepper=pepper,
+                        for_update=False,
+                    ).id
+                    == invitation.id
+                )
+                return
+
             updated, new_token, rebound = (
                 InvitationService.reissue_owner_onboarding(
                     database,
@@ -634,8 +780,8 @@ def test_invitation_handoff_is_derived_revocable_and_logout_scoped():
                     database,
                     company_id=company.id,
                     actor_user_id=actor.id,
-                    email=state["user"]["email"],
-                    display_name=state["user"]["display_name"],
+                    email="company-invitee@example.com",
+                    display_name="Company Invitee",
                     primary_role="operator",
                     idempotency_key="handoff-match-001",
                     expires_in_seconds=3600,
@@ -709,9 +855,14 @@ def test_invitation_handoff_is_derived_revocable_and_logout_scoped():
                 "/api/v1/invitations/preview", json={}
             ).status_code == 200
 
+            provider["subject"] = "company-invitee-subject"
+            provider["email"] = "company-invitee@example.com"
+            provider["name"] = "Company Invitee"
             _, callback = _login(browser, provider)
             assert browser.get(callback, follow_redirects=False).status_code == 303
             state = browser.get("/api/v1/auth/session").json()
+            assert state["account_type"] == "company"
+            assert state["personal"] is None
             accepted = browser.post(
                 "/api/v1/invitations/accept",
                 json={},
@@ -738,7 +889,11 @@ def test_invitation_handoff_is_derived_revocable_and_logout_scoped():
 
 
 def test_first_oidc_link_canonicalizes_legacy_email_for_invites_and_owner_reissue():
-    app, engine, provider = _auth_app()
+    app, engine, provider = _auth_app(
+        provider_subject="company-member-subject",
+        provider_email="owner@example.com",
+        provider_name="Legacy Mixed Case Owner",
+    )
     pepper = app.state.settings.jwt_signing_secret
     try:
         with app.state.session_factory.begin() as database:
@@ -790,6 +945,19 @@ def test_first_oidc_link_canonicalizes_legacy_email_for_invites_and_owner_reissu
             assert owner_token is not None
             legacy_user.email = "Owner@Example.com"
             legacy_user_id = legacy_user.id
+            owner_invitation, reissued_token, _ = (
+                InvitationService.reissue_owner_onboarding(
+                    database,
+                    company_id=owner_company.id,
+                    expected_owner_membership_id=owner_membership.id,
+                    expected_owner_user_id=legacy_user_id,
+                    actor_user_id=actor.id,
+                    expires_in_seconds=3600,
+                    pepper=pepper,
+                    request_id="canonical-owner-reissue",
+                )
+            )
+            assert reissued_token != owner_token
 
         with TestClient(app, base_url="https://testserver") as browser:
             _, callback = _login(browser, provider)
@@ -797,25 +965,12 @@ def test_first_oidc_link_canonicalizes_legacy_email_for_invites_and_owner_reissu
             state = browser.get("/api/v1/auth/session").json()
             assert state["user"]["id"] == legacy_user_id
             assert state["user"]["email"] == "owner@example.com"
+            assert state["account_type"] == "company"
+            assert state["personal"] is None
             headers = {
                 "Origin": "https://frontend.example.test",
                 CSRF_HEADER_NAME: state["csrf_token"],
             }
-
-            reissued = browser.post(
-                f"/api/v1/platform-admin/companies/{owner_company.id}"
-                "/owner-invitation/reissue",
-                json={
-                    "expected_owner_membership_id": owner_membership.id,
-                    "expected_owner_user_id": legacy_user_id,
-                },
-                headers=headers,
-            )
-            assert reissued.status_code == 200, reissued.text
-            reissued_token = parse_qs(
-                urlsplit(reissued.json()["invitation_url"]).fragment
-            )["token"][0]
-            assert reissued_token != owner_token
 
             for token, expected_company_id in (
                 (normal_token, normal_company.id),
@@ -867,7 +1022,7 @@ def test_first_oidc_link_canonicalizes_legacy_email_for_invites_and_owner_reissu
         engine.dispose()
 
 
-def test_cookie_csrf_is_shared_by_personal_tenant_and_platform_admin_writes():
+def test_cookie_csrf_is_checked_before_account_partition_and_platform_writes():
     app, engine, provider = _auth_app()
     try:
         with TestClient(app, base_url="https://testserver") as browser:
@@ -897,36 +1052,17 @@ def test_cookie_csrf_is_shared_by_personal_tenant_and_platform_admin_writes():
             accepted_boundary = browser.post(
                 "/api/v1/personal/tasks", json=personal_body, headers=origin_headers
             )
-            assert accepted_boundary.status_code == 404
+            assert accepted_boundary.status_code == 403
+            assert accepted_boundary.json()["code"] == "account_type_mismatch"
 
-            with app.state.session_factory() as database:
-                company, _, owner_membership = CompanyService.bootstrap_company(
+            with app.state.session_factory.begin() as database:
+                company, _, _ = CompanyService.bootstrap_company(
                     database,
                     company_name="CSRF Company",
-                    owner_email="owner@example.com",
-                    owner_display_name="Owner",
+                    owner_email="csrf-company-owner@example.com",
+                    owner_display_name="CSRF Company Owner",
                 )
                 company_id = company.id
-                owner_membership_id = owner_membership.id
-                target_user, target_membership, _ = CompanyService.add_member(
-                    database,
-                    company_id=company_id,
-                    email="next-owner@example.com",
-                    display_name="Next Owner",
-                )
-                operator = AccessLifecycleService.system_role(
-                    database, company_id=company_id, system_key="operator"
-                )
-                AccessLifecycleService.assign_role(
-                    database,
-                    company_id=company_id,
-                    membership_id=target_membership.id,
-                    role_id=operator.id,
-                    actor_membership_id=owner_membership.id,
-                )
-                target_membership_id = target_membership.id
-                target_user_id = target_user.id
-                database.commit()
             invitation_body = {
                 "email": "new-member@example.com",
                 "display_name": "New Member",
@@ -945,33 +1081,8 @@ def test_cookie_csrf_is_shared_by_personal_tenant_and_platform_admin_writes():
                 json=invitation_body,
                 headers=tenant_headers,
             )
-            assert tenant_ok.status_code == 201, tenant_ok.text
-            assert "#token=" in tenant_ok.json()["invitation_url"]
-            assert "acceptance_token" not in tenant_ok.json()
-
-            transfer = browser.post(
-                f"/api/v1/companies/{company_id}/owner-transfer",
-                json={
-                    "target_membership_id": target_membership_id,
-                    "expected_current_owner_membership_id": owner_membership_id,
-                    "expected_current_owner_user_id": session_state["user"]["id"],
-                    "former_owner_primary_role": "team_lead",
-                },
-                headers=tenant_headers,
-            )
-            assert transfer.status_code == 200, transfer.text
-            assert transfer.json()["owner_user_id"] == target_user_id
-            stale_transfer = browser.post(
-                f"/api/v1/companies/{company_id}/owner-transfer",
-                json={
-                    "target_membership_id": target_membership_id,
-                    "expected_current_owner_membership_id": owner_membership_id,
-                    "expected_current_owner_user_id": session_state["user"]["id"],
-                    "former_owner_primary_role": "operator",
-                },
-                headers=tenant_headers,
-            )
-            assert stale_transfer.status_code in {403, 409}
+            assert tenant_ok.status_code == 403
+            assert tenant_ok.json()["detail"] == "当前账号不是企业账号"
 
             admin_missing = browser.patch(
                 "/api/v1/platform-admin/users/missing-user/status",

@@ -2,10 +2,13 @@ package relay
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -27,6 +30,11 @@ type TaskSubmitResult struct {
 	TaskData       []byte
 	Platform       constant.TaskPlatform
 	Quota          int
+	// ImmediateTerminal is present only when the provider returned a complete,
+	// validated artifact in the submission response. The controller persists it
+	// onto the staged native task before Insert; ordinary asynchronous adapters
+	// leave this nil and keep their existing polling behavior.
+	ImmediateTerminal *relaycommon.TaskInfo
 	// TaskTemplate is created and recovery-staged before the first provider
 	// byte. Persisting this exact instance keeps submit_time and every sticky
 	// polling field identical to the v3 recovery evidence even when the provider
@@ -237,6 +245,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// byte is sent. The provider key remains in RelayInfo only for this outbound
 	// call and is never copied into Task.PrivateData or recovery JSON.
 	credentialTask := model.InitTask(platform, info)
+	if pinnedPlatformRoute {
+		credentialTask.PrivateData.ProviderTransportRevision = common.GetContextKeyString(c, constant.ContextKeyPlatformGenerationTransportRevision)
+		credentialTask.PrivateData.ProviderTransportSHA256 = common.GetContextKeyString(c, constant.ContextKeyPlatformGenerationTransportSHA256)
+	}
 	if credentialTask.PrivateData.TransientProviderKey != "" ||
 		credentialTask.PrivateData.ProviderCredentialVersion != "" || pinnedPlatformRoute {
 		if action := c.GetString("action"); action != "" {
@@ -267,10 +279,47 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
+		if pinnedPlatformRoute {
+			return nil, protectedProviderTaskError("do_request_failed", http.StatusBadGateway, []byte(err.Error()))
+		}
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
-	if resp != nil && resp.StatusCode != http.StatusOK {
-		responseBody, _ := io.ReadAll(resp.Body)
+	if resp == nil {
+		if pinnedPlatformRoute {
+			return nil, protectedProviderTaskError("provider_response_missing", http.StatusBadGateway, nil)
+		}
+		return nil, service.TaskErrorWrapperLocal(
+			errors.New("provider returned no response"),
+			"provider_response_missing",
+			http.StatusBadGateway,
+		)
+	}
+	if resp.Body == nil {
+		if pinnedPlatformRoute {
+			return nil, protectedProviderTaskError("provider_response_missing", http.StatusBadGateway, nil)
+		}
+		return nil, service.TaskErrorWrapperLocal(
+			errors.New("provider returned no response body"),
+			"provider_response_missing",
+			http.StatusBadGateway,
+		)
+	}
+	defer resp.Body.Close()
+	responseBody, readErr := bufferProviderTaskResponse(resp)
+	if readErr != nil {
+		code := "provider_response_read_failed"
+		if errors.Is(readErr, relaycommon.ErrProviderTaskResponseBodyTooLarge) {
+			code = "provider_response_too_large"
+		}
+		if pinnedPlatformRoute {
+			return nil, protectedProviderTaskError(code, http.StatusBadGateway, nil)
+		}
+		return nil, service.TaskErrorWrapperLocal(errors.New(code), code, http.StatusBadGateway)
+	}
+	if resp.StatusCode != http.StatusOK {
+		if pinnedPlatformRoute {
+			return nil, protectedProviderTaskError("provider_response_status", resp.StatusCode, responseBody)
+		}
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
 
@@ -285,7 +334,26 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// 11. 解析响应
 	upstreamTaskID, taskData, taskErr := adaptor.DoResponse(c, resp, info)
 	if taskErr != nil {
+		if pinnedPlatformRoute {
+			statusCode := taskErr.StatusCode
+			if statusCode < 400 || statusCode > 599 {
+				statusCode = http.StatusBadGateway
+			}
+			evidence := []byte(taskErr.Message)
+			if taskErr.Error != nil {
+				evidence = append(evidence, []byte(taskErr.Error.Error())...)
+			}
+			return nil, protectedProviderTaskError("provider_response_invalid", statusCode, evidence)
+		}
 		return nil, taskErr
+	}
+	var immediateTerminal *relaycommon.TaskInfo
+	if immediateAdaptor, ok := adaptor.(channel.ImmediateTerminalTaskAdaptor); ok {
+		immediateTerminal = immediateAdaptor.ImmediateTerminalTaskResult()
+		immediateTerminal, err = validateImmediateTerminalTaskResult(upstreamTaskID, immediateTerminal)
+		if err != nil {
+			return nil, service.TaskErrorWrapper(err, "invalid_immediate_terminal_result", http.StatusInternalServerError)
+		}
 	}
 
 	// 11. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
@@ -300,12 +368,62 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	return &TaskSubmitResult{
-		UpstreamTaskID: upstreamTaskID,
-		TaskData:       taskData,
-		Platform:       platform,
-		Quota:          finalQuota,
-		TaskTemplate:   credentialTask,
+		UpstreamTaskID:    upstreamTaskID,
+		TaskData:          taskData,
+		Platform:          platform,
+		Quota:             finalQuota,
+		ImmediateTerminal: immediateTerminal,
+		TaskTemplate:      credentialTask,
 	}, nil
+}
+
+func bufferProviderTaskResponse(resp *http.Response) ([]byte, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, relaycommon.ErrProviderTaskResponseBodyMissing
+	}
+	responseBody, err := relaycommon.ReadProviderTaskResponseBody(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(responseBody))
+	return responseBody, nil
+}
+
+func protectedProviderTaskError(code string, statusCode int, evidence []byte) *dto.TaskError {
+	digest := sha256.Sum256(evidence)
+	return service.TaskErrorWrapper(
+		fmt.Errorf(
+			"protected provider operation failed (evidence_bytes=%d evidence_sha256=%x)",
+			len(evidence),
+			digest,
+		),
+		code,
+		statusCode,
+	)
+}
+
+var immediateTerminalTaskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,190}$`)
+
+func validateImmediateTerminalTaskResult(upstreamTaskID string, result *relaycommon.TaskInfo) (*relaycommon.TaskInfo, error) {
+	if result == nil {
+		return nil, nil
+	}
+	if result.Status != string(model.TaskStatusSuccess) || result.Progress != "100%" {
+		return nil, errors.New("immediate terminal task result must be a successful terminal state")
+	}
+	if !immediateTerminalTaskIDPattern.MatchString(upstreamTaskID) ||
+		!immediateTerminalTaskIDPattern.MatchString(result.TaskID) ||
+		result.TaskID != upstreamTaskID {
+		return nil, errors.New("immediate terminal task result does not match the validated upstream identity")
+	}
+	normalizedURL := strings.TrimSpace(result.Url)
+	parsed, err := url.Parse(normalizedURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return nil, errors.New("immediate terminal task result has an invalid artifact URL")
+	}
+	normalized := *result
+	normalized.Url = normalizedURL
+	return &normalized, nil
 }
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
@@ -437,13 +555,22 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 	isOpenAIVideoAPI := strings.HasPrefix(c.Request.RequestURI, "/v1/videos/")
 
 	// Gemini/Vertex 支持实时查询：用户 fetch 时直接从上游拉取最新状态
-	if realtimeResp := tryRealtimeFetch(originTask, isOpenAIVideoAPI); len(realtimeResp) > 0 {
-		respBody = realtimeResp
-		return
+	if !originTask.IsPlatformExternalBilling() {
+		if realtimeResp := tryRealtimeFetch(originTask, isOpenAIVideoAPI); len(realtimeResp) > 0 {
+			respBody = realtimeResp
+			return
+		}
 	}
 
 	// OpenAI Video API 格式: 走各 adaptor 的 ConvertToOpenAIVideo
 	if isOpenAIVideoAPI {
+		if originTask.IsPlatformExternalBilling() {
+			respBody, err = common.Marshal(originTask.ToOpenAIVideo())
+			if err != nil {
+				taskResp = service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+			}
+			return
+		}
 		adaptor := GetTaskAdaptor(originTask.Platform)
 		if adaptor == nil {
 			taskResp = service.TaskErrorWrapperLocal(fmt.Errorf("invalid channel id: %d", originTask.ChannelId), "invalid_channel_id", http.StatusBadRequest)
@@ -516,7 +643,10 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		return nil
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.Body == nil {
+		return nil
+	}
+	body, err := relaycommon.ReadProviderTaskResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -561,7 +691,7 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		"metadata": nil,
 		"status":   mapTaskStatusToSimple(task.Status),
 		"task_id":  task.TaskID,
-		"url":      task.GetResultURL(),
+		"url":      task.GetPublicResultURL(),
 	}
 	respBody, _ := common.Marshal(dto.TaskResponse[any]{
 		Code: "success",
@@ -622,14 +752,14 @@ func TaskModel2Dto(task *model.Task) *dto.TaskDto {
 		Quota:      task.Quota,
 		Action:     task.Action,
 		Status:     string(task.Status),
-		FailReason: task.FailReason,
-		ResultURL:  task.GetResultURL(),
+		FailReason: task.GetPublicFailReason(),
+		ResultURL:  task.GetPublicResultURL(),
 		SubmitTime: task.SubmitTime,
 		StartTime:  task.StartTime,
 		FinishTime: task.FinishTime,
 		Progress:   task.Progress,
 		Properties: task.Properties,
 		Username:   task.Username,
-		Data:       task.Data,
+		Data:       task.GetPublicData(),
 	}
 }

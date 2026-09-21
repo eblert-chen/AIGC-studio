@@ -65,15 +65,23 @@ type operationResponse struct {
 
 type TaskAdaptor struct {
 	taskcommon.BaseBilling
-	ChannelType int
-	apiKey      string
-	baseURL     string
+	ChannelType        int
+	apiKey             string
+	baseURL            string
+	acquireAccessToken func(vertexcore.Credentials, string) (string, error)
 }
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 	a.ChannelType = info.ChannelType
 	a.baseURL = info.ChannelBaseUrl
 	a.apiKey = info.ApiKey
+}
+
+func (a *TaskAdaptor) accessToken(credentials vertexcore.Credentials, proxy string) (string, error) {
+	if a.acquireAccessToken != nil {
+		return a.acquireAccessToken(credentials, proxy)
+	}
+	return vertexcore.AcquireAccessToken(credentials, proxy)
 }
 
 // ValidateRequestAndSetAction parses body, validates fields and sets default action.
@@ -114,7 +122,7 @@ func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info
 	if info != nil {
 		proxy = info.ChannelSetting.Proxy
 	}
-	token, err := vertexcore.AcquireAccessToken(*adc, proxy)
+	token, err := a.accessToken(*adc, proxy)
 	if err != nil {
 		return fmt.Errorf("failed to acquire access token: %w", err)
 	}
@@ -189,7 +197,9 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 
 // DoRequest delegates to common helper.
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
-	return channel.DoTaskApiRequest(a, c, info, requestBody)
+	// Vertex predictLongRunning is paid and non-idempotent. OAuth bearer
+	// credentials and the POST body must never be replayed across a redirect.
+	return channel.DoTaskApiRequestNoRedirect(a, c, info, requestBody)
 }
 
 // DoResponse handles upstream response, returns taskID etc.
@@ -270,7 +280,7 @@ func (a *TaskAdaptor) FetchTaskWithContext(ctx context.Context, baseUrl, key str
 	if err := common.Unmarshal([]byte(key), adc); err != nil {
 		return nil, fmt.Errorf("failed to decode credentials: %w", err)
 	}
-	token, err := vertexcore.AcquireAccessToken(*adc, proxy)
+	token, err := a.accessToken(*adc, proxy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire access token: %w", err)
 	}
@@ -286,7 +296,11 @@ func (a *TaskAdaptor) FetchTaskWithContext(ctx context.Context, baseUrl, key str
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
 	}
-	return client.Do(req)
+	isolated := *client
+	isolated.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return isolated.Do(req)
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {

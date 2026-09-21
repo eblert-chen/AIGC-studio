@@ -1,0 +1,299 @@
+name: Relay live staging acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-live-staging-acceptance
+  cancel-in-progress: false
+
+jobs:
+  live-staging-acceptance:
+    name: Protected live staging acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: relay-staging-acceptance
+    env:
+      ACCEPTANCE_ROOT: /tmp/relay-live-staging-${{ github.run_id }}-${{ github.run_attempt }}
+      ACCEPTANCE_CONFIG_PATH: /tmp/relay-live-staging-${{ github.run_id }}-${{ github.run_attempt }}/config.json
+      ACCEPTANCE_REPORT_PATH: /tmp/relay-live-staging-${{ github.run_id }}-${{ github.run_attempt }}/report.json
+    steps:
+      - name: Require the protected default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/${DEFAULT_BRANCH}" ]]; then
+            echo "::error title=Unsafe staging acceptance ref::Run this workflow from the protected default branch."
+            exit 1
+          fi
+
+      - name: Fail closed when protected staging inputs are absent
+        env:
+          ACCEPTANCE_CONFIG_B64: ${{ vars.RELAY_STAGING_ACCEPTANCE_CONFIG_B64 }}
+          ACCEPTANCE_EVIDENCE_BUNDLE_B64: ${{ vars.RELAY_STAGING_ACCEPTANCE_EVIDENCE_BUNDLE_B64 }}
+          TENANT_A_API_KEY: ${{ secrets.RELAY_ACCEPTANCE_TENANT_A_API_KEY }}
+          TENANT_B_API_KEY: ${{ secrets.RELAY_ACCEPTANCE_TENANT_B_API_KEY }}
+          FAULT_CONTROL_TOKEN: ${{ secrets.RELAY_ACCEPTANCE_FAULT_CONTROL_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for variable in \
+            ACCEPTANCE_CONFIG_B64 \
+            ACCEPTANCE_EVIDENCE_BUNDLE_B64 \
+            TENANT_A_API_KEY \
+            TENANT_B_API_KEY \
+            FAULT_CONTROL_TOKEN
+          do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "::error title=Missing protected staging input::${variable} is not configured."
+              missing=1
+            fi
+          done
+          if [[ "${missing}" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Checkout the accepted source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify the candidate source and harness baseline
+        run: npm run relay:candidate:check
+
+      - name: Materialize the protected acceptance inputs
+        env:
+          ACCEPTANCE_CONFIG_B64: ${{ vars.RELAY_STAGING_ACCEPTANCE_CONFIG_B64 }}
+          ACCEPTANCE_EVIDENCE_BUNDLE_B64: ${{ vars.RELAY_STAGING_ACCEPTANCE_EVIDENCE_BUNDLE_B64 }}
+          EXPECTED_SOURCE_GIT_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 "${ACCEPTANCE_ROOT}"
+          node --input-type=module <<'NODE'
+          import { mkdirSync, writeFileSync } from "node:fs";
+          import { dirname, relative, resolve, sep } from "node:path";
+
+          const root = resolve(process.env.ACCEPTANCE_ROOT);
+          const decodeCanonicalBase64 = (value, label) => {
+            if (typeof value !== "string" || value.length === 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+              throw new Error(`${label} is not canonical base64`);
+            }
+            const bytes = Buffer.from(value, "base64");
+            if (bytes.length === 0 || bytes.toString("base64") !== value) {
+              throw new Error(`${label} is not canonical base64`);
+            }
+            return bytes;
+          };
+          const parseObject = (bytes, label) => {
+            const value = JSON.parse(bytes.toString("utf8"));
+            if (!value || typeof value !== "object" || Array.isArray(value)) {
+              throw new Error(`${label} must be a JSON object`);
+            }
+            return value;
+          };
+          const safeEvidencePath = (value) => {
+            if (
+              typeof value !== "string" ||
+              !/^evidence\/[A-Za-z0-9._/-]+$/.test(value) ||
+              value.split("/").some((part) => part === "" || part === "." || part === "..")
+            ) {
+              throw new Error("evidence bundle contains an unsafe path");
+            }
+            const target = resolve(root, value);
+            const fromRoot = relative(root, target);
+            if (!fromRoot || fromRoot.startsWith(`..${sep}`) || fromRoot === "..") {
+              throw new Error("evidence bundle escapes its staging directory");
+            }
+            return target;
+          };
+
+          const configBytes = decodeCanonicalBase64(
+            process.env.ACCEPTANCE_CONFIG_B64,
+            "acceptance config",
+          );
+          const config = parseObject(configBytes, "acceptance config");
+          if (config.environmentClass !== "staging") {
+            throw new Error("acceptance config must target staging");
+          }
+          const expectedSourceGitRevision = process.env.EXPECTED_SOURCE_GIT_REVISION ?? "";
+          if (!/^[0-9a-f]{40}$/.test(expectedSourceGitRevision)) {
+            throw new Error("workflow source revision must be a lowercase 40-character Git SHA");
+          }
+          if (config.candidate?.gitRevision !== expectedSourceGitRevision) {
+            throw new Error("acceptance candidate source revision must equal the workflow commit SHA");
+          }
+          const tenantCredentialNames = Array.isArray(config.tenants)
+            ? config.tenants.map((tenant) => tenant?.apiKeyEnv).sort()
+            : [];
+          const expectedTenantCredentialNames = [
+            "RELAY_ACCEPTANCE_TENANT_A_API_KEY",
+            "RELAY_ACCEPTANCE_TENANT_B_API_KEY",
+          ];
+          if (JSON.stringify(tenantCredentialNames) !== JSON.stringify(expectedTenantCredentialNames)) {
+            throw new Error("acceptance config must use the fixed tenant credential names");
+          }
+          if (config.faultInjection?.tokenEnv !== "RELAY_ACCEPTANCE_FAULT_CONTROL_TOKEN") {
+            throw new Error("acceptance config must use the fixed fault-control credential name");
+          }
+
+          const bundle = parseObject(
+            decodeCanonicalBase64(
+              process.env.ACCEPTANCE_EVIDENCE_BUNDLE_B64,
+              "acceptance evidence bundle",
+            ),
+            "acceptance evidence bundle",
+          );
+          if (
+            bundle.schema_version !== 1 ||
+            !bundle.files ||
+            typeof bundle.files !== "object" ||
+            Array.isArray(bundle.files) ||
+            Object.keys(bundle.files).length < 1 ||
+            Object.keys(bundle.files).length > 16
+          ) {
+            throw new Error("acceptance evidence bundle schema is invalid");
+          }
+          let totalEvidenceBytes = 0;
+          for (const [path, encoded] of Object.entries(bundle.files)) {
+            const bytes = decodeCanonicalBase64(encoded, "acceptance evidence file");
+            totalEvidenceBytes += bytes.length;
+            if (totalEvidenceBytes > 20 * 1024) {
+              throw new Error("acceptance evidence bundle must contain only small metadata evidence");
+            }
+            const target = safeEvidencePath(path);
+            mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+            writeFileSync(target, bytes, { mode: 0o600, flag: "wx" });
+          }
+          for (const record of config.realChannelAcceptance ?? []) {
+            for (const evidence of record.evidenceFiles ?? []) {
+              const target = safeEvidencePath(evidence?.path);
+              if (!Object.hasOwn(bundle.files, evidence.path) || target.length === 0) {
+                throw new Error("acceptance config references missing evidence");
+              }
+            }
+          }
+          writeFileSync(resolve(root, "config.json"), configBytes, { mode: 0o600, flag: "wx" });
+          NODE
+
+      - name: Execute the live candidate and fault acceptance gates
+        env:
+          RELAY_ACCEPTANCE_TENANT_A_API_KEY: ${{ secrets.RELAY_ACCEPTANCE_TENANT_A_API_KEY }}
+          RELAY_ACCEPTANCE_TENANT_B_API_KEY: ${{ secrets.RELAY_ACCEPTANCE_TENANT_B_API_KEY }}
+          RELAY_ACCEPTANCE_FAULT_CONTROL_TOKEN: ${{ secrets.RELAY_ACCEPTANCE_FAULT_CONTROL_TOKEN }}
+        run: |
+          set -euo pipefail
+          node scripts/relay-migration-acceptance.mjs \
+            --config "${ACCEPTANCE_CONFIG_PATH}" \
+            --out "${ACCEPTANCE_REPORT_PATH}" \
+            --execute-all
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const reportBytes = readFileSync(process.env.ACCEPTANCE_REPORT_PATH);
+          for (const [label, value] of [
+            ["tenant A service credential", process.env.RELAY_ACCEPTANCE_TENANT_A_API_KEY],
+            ["tenant B service credential", process.env.RELAY_ACCEPTANCE_TENANT_B_API_KEY],
+            ["fault-control token", process.env.RELAY_ACCEPTANCE_FAULT_CONTROL_TOKEN],
+          ]) {
+            const credentialBytes = Buffer.from(value ?? "", "utf8");
+            if (credentialBytes.length < 8) {
+              throw new Error(`${label} must be at least 8 UTF-8 bytes`);
+            }
+            if (reportBytes.includes(credentialBytes)) {
+              throw new Error(`${label} was found in the acceptance report`);
+            }
+          }
+          const report = JSON.parse(reportBytes.toString("utf8"));
+          if (
+            report.overall?.status !== "PASS" ||
+            report.overall?.technical_acceptance_passed !== true ||
+            report.overall?.decision !== "OFFLINE_PARITY_PASSED_REQUIRES_EXTERNAL_RELEASE_GATES" ||
+            report.overall?.python_relay_production_admission_allowed !== false ||
+            report.gates?.["contract.candidate_readiness"]?.status !== "PASS" ||
+            report.gates?.["contract.candidate_readiness_final"]?.status !== "PASS"
+          ) {
+            throw new Error("live staging acceptance did not produce the required fail-closed result");
+          }
+          const finalReadiness = report.gates["contract.candidate_readiness_final"].evidence?.find(
+            (entry) => entry?.kind === "candidate_runtime_provenance" && entry?.phase === "final",
+          );
+          const workflowSourceRevision = process.env.GITHUB_SHA ?? "";
+          if (
+            finalReadiness?.state !== "healthy" ||
+            finalReadiness?.provider_runtime_state !== "healthy" ||
+            finalReadiness?.production_cutover_ready !== true ||
+            finalReadiness?.enabled !== true ||
+            finalReadiness?.monitor_fresh !== true ||
+            finalReadiness?.monitor_last_error_code !== "" ||
+            [
+              "active_alerts",
+              "unavailable_routes",
+              "alert_backlog",
+              "alert_dead_letter",
+              "task_stage_backlog",
+              "task_stage_dead_letter",
+              "operations_snapshot_backlog",
+              "operations_snapshot_dead_letter",
+              "provider_result_reconciliation_backlog",
+              "cost_incomplete",
+              "cost_backlog",
+              "cost_dead_letter",
+              "native_billing_reconciliation_jobs",
+            ].some((field) => finalReadiness?.[field] !== 0) ||
+            !Number.isInteger(finalReadiness?.cost_successful_relay_jobs) ||
+            finalReadiness.cost_successful_relay_jobs <= 0 ||
+            finalReadiness?.cost_reconciliation_complete !== true
+          ) {
+            throw new Error("final candidate readiness evidence is not production-cutover clean");
+          }
+          if (
+            !/^[0-9a-f]{40}$/.test(workflowSourceRevision) ||
+            report.candidate?.git_revision !== workflowSourceRevision ||
+            finalReadiness?.source_git_revision !== workflowSourceRevision ||
+            finalReadiness?.upstream_git_revision !== report.candidate?.upstream_git_revision ||
+            finalReadiness?.image_digest !== report.candidate?.image_digest
+          ) {
+            throw new Error("final candidate readiness provenance does not match the workflow release identity");
+          }
+          NODE
+          sha256sum "${ACCEPTANCE_REPORT_PATH}" > "${ACCEPTANCE_REPORT_PATH}.sha256"
+
+      - name: Upload the secret-free acceptance report
+        if: ${{ success() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: relay-live-staging-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.ACCEPTANCE_REPORT_PATH }}
+            ${{ env.ACCEPTANCE_REPORT_PATH }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove protected acceptance inputs and report
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          expected_root="/tmp/relay-live-staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ "${ACCEPTANCE_ROOT}" != "${expected_root}" ]] || \
+             [[ ! "${ACCEPTANCE_ROOT}" =~ ^/tmp/relay-live-staging-[0-9]+-[0-9]+$ ]]; then
+            echo "::error title=Unsafe staging cleanup path::Refusing to remove an unexpected path."
+            exit 1
+          fi
+          if [[ -L "${ACCEPTANCE_ROOT}" ]]; then
+            echo "::error title=Unsafe staging cleanup target::Refusing to traverse a symbolic link."
+            exit 1
+          fi
+          if [[ -d "${ACCEPTANCE_ROOT}" ]]; then
+            rm -rf -- "${ACCEPTANCE_ROOT}"
+          fi

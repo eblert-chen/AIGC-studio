@@ -3,8 +3,12 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,12 +16,14 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	taskdto "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/generationprofile"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 type taskPollingFetchAdaptor struct {
@@ -32,6 +38,49 @@ type taskPollingFetchAdaptor struct {
 
 type sunoFailurePollingAdaptor struct {
 	failReason string
+}
+
+type protectedTaskPollingAdaptor struct {
+	body            []byte
+	statusCode      int
+	missingResponse bool
+	missingBody     bool
+	result          *relaycommon.TaskInfo
+	parseError      error
+}
+
+func (a *protectedTaskPollingAdaptor) Init(_ *relaycommon.RelayInfo) {}
+
+func (a *protectedTaskPollingAdaptor) FetchTask(_ string, _ string, body map[string]any, _ string) (*http.Response, error) {
+	return a.FetchTaskWithContext(context.Background(), "", "", body, "")
+}
+
+func (a *protectedTaskPollingAdaptor) FetchTaskWithContext(_ context.Context, _ string, _ string, _ map[string]any, _ string) (*http.Response, error) {
+	if a.missingResponse {
+		return nil, nil
+	}
+	statusCode := a.statusCode
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
+	if a.missingBody {
+		return &http.Response{StatusCode: statusCode}, nil
+	}
+	return &http.Response{
+		StatusCode: statusCode,
+		Body:       io.NopCloser(bytes.NewReader(a.body)),
+	}, nil
+}
+
+func (a *protectedTaskPollingAdaptor) ParseTaskResult([]byte) (*relaycommon.TaskInfo, error) {
+	if a.parseError != nil {
+		return nil, a.parseError
+	}
+	return a.result, nil
+}
+
+func (a *protectedTaskPollingAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int {
+	return 0
 }
 
 func (a *sunoFailurePollingAdaptor) Init(_ *relaycommon.RelayInfo) {}
@@ -175,6 +224,405 @@ func seedPollingTask(t *testing.T, channelID int, publicID string, upstreamID st
 	}
 	require.NoError(t, model.DB.Create(task).Error)
 	return task
+}
+
+func seedProtectedSeedancePollingBinding(t *testing.T) protectedNativeBindingFixture {
+	t.Helper()
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("DEPLOYMENT_ENV", "test")
+	t.Setenv("RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED", "false")
+	t.Setenv("RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE", "")
+	t.Setenv("RELAY_PROVIDER_CREDENTIAL_KEYRING_JSON", `{"schema_version":1,"active_key_id":"poll-proof-v1","keys":{"poll-proof-v1":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}}`)
+	fixture := seedProtectedExternalNativeBinding(
+		t,
+		model.PlatformGenerationStatusProcessing,
+		model.TaskStatusInProgress,
+		true,
+	)
+	profile, ok := generationprofile.Get(generationprofile.VolcengineArkVideoGenerationV1)
+	require.True(t, ok)
+	providerKey := "provider-key"
+	providerKeyDigest := sha256.Sum256([]byte(providerKey))
+	providerKeyFingerprint := fmt.Sprintf("%x", providerKeyDigest)
+	require.NoError(t, model.DB.Delete(fixture.Credential).Error)
+	fixture.Route.KeyFingerprint = providerKeyFingerprint
+	fixture.Task.PrivateData.PinnedKeyFingerprint = providerKeyFingerprint
+	fixture.Task.PrivateData.ProviderCredentialTenantID = ""
+	fixture.Task.PrivateData.ProviderCredentialVersion = ""
+	fixture.Task.PrivateData.TransientProviderKey = providerKey
+	require.NoError(t, model.BindTaskProviderCredentialVersion(fixture.Task, fixture.Job.TenantID))
+	require.NoError(t, model.DB.Model(fixture.Task).Update("private_data", fixture.Task.PrivateData).Error)
+	fixture.Credential = &model.ProviderCredentialVersion{}
+	require.NoError(t, model.DB.Where(
+		"credential_version = ?",
+		fixture.Task.PrivateData.ProviderCredentialVersion,
+	).First(fixture.Credential).Error)
+	request := taskdto.NewPlatformGenerationRequest()
+	request.Model = fixture.Route.Model
+	request.Mode = fixture.Route.Mode
+	request.ExpectedCapabilityRevision = "sha256:" + strings.Repeat("c", 64)
+	request.Inputs.Prompt = "A safe proof fixture"
+	request.Output.DurationSeconds = 5
+	request.Output.AspectRatio = "16:9"
+	request.Output.Resolution = "720p"
+	request.Output.Count = 1
+	request.Metadata = generationprofile.SnapshotMetadata(request.Metadata, profile)
+	require.NoError(t, profile.ValidateRequest(request))
+	rawRequest, err := common.Marshal(request)
+	require.NoError(t, err)
+	requestDigest := sha256.Sum256(rawRequest)
+
+	var recovery map[string]any
+	require.NoError(t, common.Unmarshal([]byte(fixture.Job.NativeTaskRecoveryJSON), &recovery))
+	recovery["schema_version"] = 4
+	recovery["request_json_sha256"] = fmt.Sprintf("sha256:%x", requestDigest)
+	recovery["pinned_key_fingerprint"] = providerKeyFingerprint
+	recovery["provider_credential_version"] = fixture.Task.PrivateData.ProviderCredentialVersion
+	rawRecovery, err := common.Marshal(recovery)
+	require.NoError(t, err)
+	profileSnapshot, _ := request.Metadata[generationprofile.MetadataProfileSnapshot].(string)
+	require.NoError(t, model.DB.Model(fixture.Route).Updates(map[string]any{
+		"key_fingerprint":                   providerKeyFingerprint,
+		"accepted_channel_type":             profile.NativeChannelType,
+		"capability_profile_id":             profile.ID,
+		"capability_profile_revision":       profile.Revision,
+		"capability_profile_snapshot":       profileSnapshot,
+		"model_release_id":                  "test-seedance-release-v1",
+		"model_release_revision":            "sha256:" + strings.Repeat("d", 64),
+		"model_release_capability_revision": request.ExpectedCapabilityRevision,
+	}).Error)
+	require.NoError(t, model.DB.Model(fixture.Job).Updates(map[string]any{
+		"request_json":                 string(rawRequest),
+		"native_task_recovery_json":    string(rawRecovery),
+		"expected_capability_revision": request.ExpectedCapabilityRevision,
+		"capability_revision":          request.ExpectedCapabilityRevision,
+	}).Error)
+	require.NoError(t, model.DB.First(fixture.Route, fixture.Route.ID).Error)
+	require.NoError(t, model.DB.First(fixture.Job, "id = ?", fixture.Job.ID).Error)
+	require.NoError(t, model.DB.First(fixture.Task, fixture.Task.ID).Error)
+	return fixture
+}
+
+func seedanceTerminalProof(taskID string, modelID string, status string) *relaycommon.ProviderTaskResultProof {
+	proof := &relaycommon.ProviderTaskResultProof{
+		SchemaVersion:  1,
+		Protocol:       generationprofile.VolcengineArkVideoProtocolV1,
+		TaskID:         taskID,
+		Model:          modelID,
+		ProviderStatus: status,
+	}
+	if status == "succeeded" {
+		proof.Resolution = "720p"
+		proof.DurationSeconds = 5
+		proof.AspectRatio = "16:9"
+		proof.OutputCount = 1
+		proof.MediaType = "video"
+	} else {
+		proof.FailureOwner = model.PlatformProviderFailureOwnerRelay
+		proof.FailureCode = "unclassified_provider_terminal"
+	}
+	return proof
+}
+
+func TestRedactVideoResponseBodyProtectsPlatformWithoutChangingOrdinaryMetadata(t *testing.T) {
+	providerURL := "https://provider.example/result.mp4?X-Signature=secret"
+	documentationURL := "https://docs.example/provider-contract"
+	body := []byte(`{"id":"provider-task","status":"succeeded","content":{"video_url":"` + providerURL + `"},"metadata":{"documentation_url":"` + documentationURL + `"}}`)
+
+	protected := redactVideoResponseBody(body, true)
+	require.NotContains(t, string(protected), providerURL)
+	require.NotContains(t, string(protected), "X-Signature")
+	require.NotContains(t, string(protected), documentationURL)
+	require.Contains(t, string(protected), "[redacted-provider-url]")
+
+	ordinary := redactVideoResponseBody(body, false)
+	require.Contains(t, string(ordinary), providerURL)
+	require.Contains(t, string(ordinary), documentationURL)
+	require.Nil(t, redactVideoResponseBody([]byte(`{"broken"`), true),
+		"an unparsable provider body must fail closed instead of being persisted raw")
+}
+
+func TestPlatformExternalPollPersistsOnlySecretFreeReceipt(t *testing.T) {
+	truncate(t)
+	fixture := seedProtectedSeedancePollingBinding(t)
+	task := fixture.Task
+	upstreamTaskID := task.PrivateData.UpstreamTaskID
+	providerURL := "https://provider.example/result.mp4?X-Signature=poll-secret"
+	body := []byte(`{"id":"` + upstreamTaskID + `","model":"` + fixture.Route.UpstreamModel + `","status":"succeeded","resolution":"720p","duration":"5","ratio":"16:9","content":{"video_url":"` + providerURL + `"},"usage":{"total_tokens":42}}`)
+	adaptor := &protectedTaskPollingAdaptor{
+		body: body,
+		result: &relaycommon.TaskInfo{
+			TaskID: upstreamTaskID, Status: string(model.TaskStatusSuccess), Progress: "100%", Url: providerURL,
+			ProviderResultProof: seedanceTerminalProof(upstreamTaskID, fixture.Route.UpstreamModel, "succeeded"),
+		},
+	}
+	channel := &model.Channel{Id: task.ChannelId, Key: "provider-key"}
+
+	require.NoError(t, updateVideoSingleTask(
+		context.Background(),
+		adaptor,
+		channel,
+		upstreamTaskID,
+		map[string]*model.Task{upstreamTaskID: task},
+	))
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+	require.Equal(t, model.TaskStatus(model.TaskStatusSuccess), persisted.Status)
+	require.Equal(t, providerURL, persisted.PrivateData.ResultURL,
+		"the internal transfer worker still needs the short-lived provider URL")
+	receipt, err := model.DecodePlatformGenerationProviderResultReceipt(persisted.Data)
+	require.NoError(t, err)
+	require.Equal(t, model.PlatformGenerationProviderResultProofContractRevision, receipt.ProofContractRevision)
+	require.Contains(t, receipt.ResponseBodySHA256, "sha256:")
+	require.Contains(t, receipt.ArtifactURLSHA256, "sha256:")
+	require.NotContains(t, string(persisted.Data), providerURL)
+	require.NotContains(t, string(persisted.Data), "X-Signature")
+	require.Empty(t, persisted.GetPublicResultURL())
+	serialized, err := common.Marshal(persisted)
+	require.NoError(t, err)
+	require.NotContains(t, string(serialized), providerURL)
+	require.NotContains(t, string(serialized), "X-Signature")
+}
+
+func TestPlatformGoogleStickyPollRejectsTransportDriftBeforeProviderRequest(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		update map[string]any
+	}{
+		{name: "base URL", update: map[string]any{"base_url": "https://credential-sink.example"}},
+		{name: "proxy", update: map[string]any{"setting": `{"proxy":"http://proxy.example:3128"}`}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			truncate(t)
+			t.Setenv("RELAY_COMPAT_ENVIRONMENT", "development")
+			t.Setenv("RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED", "false")
+			baseURL := "https://generativelanguage.googleapis.com"
+			setting := `{}`
+			channel := &model.Channel{
+				Id: 724, Type: constant.ChannelTypeGemini, Name: "sticky-google-poll",
+				Key: "google-secret", Status: common.ChannelStatusEnabled,
+				BaseURL: &baseURL, Setting: &setting,
+			}
+			require.NoError(t, model.DB.Create(channel).Error)
+			require.NoError(t, model.DB.First(channel, channel.Id).Error)
+			revision, digest, err := resolvePlatformRouteTransportBinding(channel)
+			require.NoError(t, err)
+			task := &model.Task{
+				TaskID: "task_google_sticky_transport", ChannelId: channel.Id,
+				Status: model.TaskStatusInProgress, Progress: "30%",
+				PrivateData: model.TaskPrivateData{
+					BillingSource:             model.TaskBillingSourcePlatformExternal,
+					UpstreamTaskID:            "google-operation-sticky",
+					ProviderTransportRevision: revision,
+					ProviderTransportSHA256:   digest,
+				},
+			}
+			require.NoError(t, model.DB.Session(&gorm.Session{SkipHooks: true}).Model(&model.Channel{}).
+				Where("id = ?", channel.Id).Updates(test.update).Error)
+			adaptor := &taskPollingFetchAdaptor{}
+			err = updateVideoSingleTask(context.Background(), adaptor, channel,
+				task.PrivateData.UpstreamTaskID,
+				map[string]*model.Task{task.PrivateData.UpstreamTaskID: task},
+			)
+			require.ErrorContains(t, err, "transport binding changed")
+			require.Zero(t, adaptor.fetchCount(), "transport drift must fail before any provider poll")
+		})
+	}
+}
+
+func TestPlatformExternalPollParseAndFailureEvidenceAreSecretFree(t *testing.T) {
+	providerURL := "https://provider.example/result.mp4?X-Signature=parse-secret"
+	body := []byte(`{"status":"failed","error":"inspect ` + providerURL + `"}`)
+	t.Run("parse error", func(t *testing.T) {
+		truncate(t)
+		fixture := seedProtectedSeedancePollingBinding(t)
+		task := fixture.Task
+		adaptor := &protectedTaskPollingAdaptor{
+			body: body, parseError: errors.New("provider payload contained " + providerURL),
+		}
+		err := updateVideoSingleTask(
+			context.Background(), adaptor, &model.Channel{Id: task.ChannelId, Key: "provider-key"},
+			task.PrivateData.UpstreamTaskID, map[string]*model.Task{task.PrivateData.UpstreamTaskID: task},
+		)
+		require.NoError(t, err)
+		var persisted model.Task
+		require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+		require.Equal(t, model.TaskStatus(model.TaskStatusUnknown), persisted.Status)
+		require.True(t, model.PlatformGenerationProviderProofConflictRequired(persisted.Data))
+		require.NotContains(t, string(persisted.Data), providerURL)
+	})
+
+	t.Run("failure reason", func(t *testing.T) {
+		truncate(t)
+		fixture := seedProtectedSeedancePollingBinding(t)
+		task := fixture.Task
+		upstreamTaskID := task.PrivateData.UpstreamTaskID
+		adaptor := &protectedTaskPollingAdaptor{
+			body: body,
+			result: &relaycommon.TaskInfo{
+				TaskID: upstreamTaskID, Status: string(model.TaskStatusFailure), Progress: "100%",
+				Reason:              "provider rejected artifact at " + providerURL,
+				ProviderResultProof: seedanceTerminalProof(upstreamTaskID, fixture.Route.UpstreamModel, "failed"),
+			},
+		}
+		require.NoError(t, updateVideoSingleTask(
+			context.Background(), adaptor, &model.Channel{Id: task.ChannelId, Key: "provider-key"},
+			upstreamTaskID, map[string]*model.Task{upstreamTaskID: task},
+		))
+		var persisted model.Task
+		require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+		require.Equal(t, "provider task failed", persisted.FailReason)
+		require.NotContains(t, string(persisted.Data), providerURL)
+		require.NotContains(t, string(persisted.Data), "X-Signature")
+	})
+}
+
+func TestPlatformExternalPollRejectsUntrustedHTTPAndInlineTerminalResults(t *testing.T) {
+	providerURL := "https://provider.example/result.mp4?X-Signature=false-success"
+	falseSuccessBody := []byte(`{"id":"provider-task","status":"succeeded","content":{"video_url":"` + providerURL + `"}}`)
+	for _, test := range []struct {
+		name           string
+		adaptor        *protectedTaskPollingAdaptor
+		wantPersisted  model.TaskStatus
+		wantFailReason string
+	}{
+		{
+			name: "500 body shaped like success",
+			adaptor: &protectedTaskPollingAdaptor{
+				body: falseSuccessBody, statusCode: http.StatusInternalServerError,
+				result: &relaycommon.TaskInfo{TaskID: "provider-task", Status: string(model.TaskStatusSuccess), Progress: "100%", Url: providerURL},
+			},
+			wantPersisted: model.TaskStatusInProgress,
+		},
+		{
+			name:          "nil response",
+			adaptor:       &protectedTaskPollingAdaptor{missingResponse: true},
+			wantPersisted: model.TaskStatusInProgress,
+		},
+		{
+			name:          "nil response body",
+			adaptor:       &protectedTaskPollingAdaptor{missingBody: true},
+			wantPersisted: model.TaskStatusInProgress,
+		},
+		{
+			name: "inline data artifact",
+			adaptor: &protectedTaskPollingAdaptor{
+				body: []byte(`{"id":"provider-task","status":"succeeded","content":{"video_url":"data:video/mp4;base64,c2VjcmV0"}}`),
+				result: &relaycommon.TaskInfo{
+					TaskID: "provider-task", Status: string(model.TaskStatusSuccess), Progress: "100%", Url: "data:video/mp4;base64,c2VjcmV0",
+				},
+			},
+			wantPersisted: model.TaskStatusUnknown,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			truncate(t)
+			task := &model.Task{
+				CreatedAt: time.Now().UTC().Unix(), UpdatedAt: time.Now().UTC().Unix(),
+				TaskID: "public-protected-boundary", ChannelId: 704, Status: model.TaskStatusInProgress,
+				Progress: "30%", PrivateData: model.TaskPrivateData{
+					BillingSource: model.TaskBillingSourcePlatformExternal, UpstreamTaskID: "provider-task",
+				},
+			}
+			require.NoError(t, model.DB.Create(task).Error)
+			err := updateVideoSingleTask(
+				context.Background(), test.adaptor, &model.Channel{Id: task.ChannelId, Key: "provider-key"},
+				"provider-task", map[string]*model.Task{"provider-task": task},
+			)
+			if test.wantPersisted == model.TaskStatusInProgress {
+				require.Error(t, err)
+				require.NotContains(t, err.Error(), providerURL)
+				require.NotContains(t, err.Error(), "X-Signature")
+			} else {
+				require.NoError(t, err)
+			}
+			var persisted model.Task
+			require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+			require.Equal(t, test.wantPersisted, persisted.Status)
+			require.Equal(t, test.wantFailReason, persisted.FailReason)
+			require.NotContains(t, string(persisted.Data), providerURL)
+			require.NotContains(t, string(persisted.Data), "X-Signature")
+			require.NotContains(t, persisted.PrivateData.ResultURL, "data:")
+		})
+	}
+}
+
+func TestPlatformExternalPollRejectsCrossTaskAndInconsistentTerminalEnvelope(t *testing.T) {
+	providerURL := "https://cdn.example/B.mp4?sig=secret"
+	for _, test := range []struct {
+		name string
+		body []byte
+	}{
+		{
+			name: "cross-task success",
+			body: []byte(`{"code":"success","data":{"task_id":"provider-B","status":"SUCCESS","progress":"100%","fail_reason":"` + providerURL + `"}}`),
+		},
+		{
+			name: "terminal success with nonterminal progress",
+			body: []byte(`{"code":"success","data":{"task_id":"provider-A","status":"SUCCESS","progress":"50%","fail_reason":"` + providerURL + `"}}`),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			truncate(t)
+			task := &model.Task{
+				CreatedAt: time.Now().UTC().Unix(), UpdatedAt: time.Now().UTC().Unix(),
+				TaskID: "public-platform-envelope", ChannelId: 705,
+				Status: model.TaskStatusInProgress, Progress: "30%",
+				PrivateData: model.TaskPrivateData{
+					BillingSource:  model.TaskBillingSourcePlatformExternal,
+					UpstreamTaskID: "provider-A",
+				},
+			}
+			require.NoError(t, model.DB.Create(task).Error)
+			adaptor := &protectedTaskPollingAdaptor{body: test.body}
+			err := updateVideoSingleTask(
+				context.Background(),
+				adaptor,
+				&model.Channel{Id: task.ChannelId, Key: "provider-key"},
+				"provider-A",
+				map[string]*model.Task{"provider-A": task},
+			)
+			require.NoError(t, err)
+			var persisted model.Task
+			require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+			require.Equal(t, model.TaskStatus(model.TaskStatusUnknown), persisted.Status)
+			require.Equal(t, "0%", persisted.Progress)
+			require.Empty(t, persisted.PrivateData.ResultURL)
+			require.True(t, model.PlatformGenerationProviderProofConflictRequired(persisted.Data))
+			require.NotContains(t, string(persisted.Data), providerURL)
+		})
+	}
+}
+
+func TestPlatformExternalPollRejectsOversizedProviderResponse(t *testing.T) {
+	truncate(t)
+	task := &model.Task{
+		CreatedAt: time.Now().UTC().Unix(), UpdatedAt: time.Now().UTC().Unix(),
+		TaskID: "public-platform-oversized", ChannelId: 706,
+		Status: model.TaskStatusInProgress, Progress: "30%",
+		PrivateData: model.TaskPrivateData{
+			BillingSource:  model.TaskBillingSourcePlatformExternal,
+			UpstreamTaskID: "provider-oversized",
+		},
+	}
+	require.NoError(t, model.DB.Create(task).Error)
+	adaptor := &protectedTaskPollingAdaptor{
+		body: bytes.Repeat([]byte{'x'}, relaycommon.ProviderTaskResponseBodyLimit+1),
+	}
+	err := updateVideoSingleTask(
+		context.Background(),
+		adaptor,
+		&model.Channel{Id: task.ChannelId, Key: "provider-key"},
+		"provider-oversized",
+		map[string]*model.Task{"provider-oversized": task},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeded the limit")
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+	require.Equal(t, model.TaskStatus(model.TaskStatusInProgress), persisted.Status)
+	require.Empty(t, persisted.PrivateData.ResultURL)
+	require.Empty(t, persisted.Data)
 }
 
 func TestUpdateVideoTasksDefaultSleepWaitsBetweenTasks(t *testing.T) {
@@ -510,4 +958,129 @@ func TestSweepTimedOutTasksHonorsRefundRolloutBoundary(t *testing.T) {
 	assert.Contains(t, reloadedModern.FailReason, "任务超时")
 	assert.Equal(t, initialQuota+modernTaskQuota, getUserQuota(t, userID))
 	assert.Equal(t, int64(1), countLogs(t))
+}
+
+func TestPlatformProviderProofConflictsCannotStarveOrdinaryPollingOrTimeoutSelection(t *testing.T) {
+	truncate(t)
+	cutoff := time.Now().Add(-time.Hour).Unix()
+	conflicts := make([]model.Task, 0, 105)
+	for index := 0; index < 105; index++ {
+		task := model.Task{
+			TaskID:     fmt.Sprintf("proof-conflict-%03d", index),
+			Status:     model.TaskStatusUnknown,
+			Progress:   "0%",
+			SubmitTime: cutoff - int64(200-index),
+			CreatedAt:  cutoff - int64(200-index),
+			UpdatedAt:  cutoff - int64(200-index),
+			PrivateData: model.TaskPrivateData{
+				BillingSource: model.TaskBillingSourcePlatformExternal,
+			},
+		}
+		task.SetData(model.NewPlatformGenerationProviderProofConflictReceipt([]byte(task.TaskID)))
+		conflicts = append(conflicts, task)
+	}
+	require.NoError(t, model.DB.Create(&conflicts).Error)
+	ordinary := model.Task{
+		TaskID:     "ordinary-eligible-after-conflicts",
+		Status:     model.TaskStatusInProgress,
+		Progress:   "50%",
+		SubmitTime: cutoff - 1,
+		CreatedAt:  cutoff - 1,
+		UpdatedAt:  cutoff - 1,
+	}
+	require.NoError(t, model.DB.Create(&ordinary).Error)
+
+	unfinished := model.GetAllUnFinishSyncTasks(1)
+	require.Len(t, unfinished, 1)
+	require.Equal(t, ordinary.ID, unfinished[0].ID)
+	timedOut := model.GetTimedOutUnfinishedTasks(cutoff+1, 1)
+	require.Len(t, timedOut, 1)
+	require.Equal(t, ordinary.ID, timedOut[0].ID)
+	require.True(t, model.HasUnfinishedSyncTasks())
+
+	require.NoError(t, model.DB.Delete(&ordinary).Error)
+	require.False(t, model.HasUnfinishedSyncTasks(), "proof-conflict rows must not keep the poll scheduler hot")
+}
+
+func TestRunTaskPollingOncePreservesAttestedProviderProofConflictBeforeTimeoutSweep(t *testing.T) {
+	truncate(t)
+	enableProtectedNativeBillingTest(t)
+	fixture := seedProtectedExternalNativeBinding(
+		t,
+		model.PlatformGenerationStatusProcessing,
+		model.TaskStatusUnknown,
+		true,
+	)
+	conflict := model.NewPlatformGenerationProviderProofConflictReceipt([]byte(`{"id":"wrong-task","status":"succeeded"}`))
+	fixture.Task.SetData(conflict)
+	fixture.Task.SubmitTime = time.Now().UTC().Add(-2 * time.Hour).Unix()
+	var recovery map[string]any
+	require.NoError(t, common.Unmarshal([]byte(fixture.Job.NativeTaskRecoveryJSON), &recovery))
+	recovery["submit_time"] = fixture.Task.SubmitTime
+	recoveryJSON, err := common.Marshal(recovery)
+	require.NoError(t, err)
+	require.NoError(t, model.DB.Model(&model.Task{}).Where("id = ?", fixture.Task.ID).Updates(map[string]any{
+		"data":        fixture.Task.Data,
+		"submit_time": fixture.Task.SubmitTime,
+	}).Error)
+	require.NoError(t, model.DB.Model(&model.PlatformGenerationJob{}).Where("id = ?", fixture.Job.ID).
+		Update("native_task_recovery_json", string(recoveryJSON)).Error)
+	previousTimeout := constant.TaskTimeoutMinutes
+	constant.TaskTimeoutMinutes = 1
+	t.Cleanup(func() { constant.TaskTimeoutMinutes = previousTimeout })
+	adaptor := &taskPollingFetchAdaptor{}
+	previousFactory := GetTaskAdaptorFunc
+	GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return adaptor }
+	t.Cleanup(func() { GetTaskAdaptorFunc = previousFactory })
+
+	summary := RunTaskPollingOnce(context.Background(), nil)
+	assert.Zero(t, summary.UnfinishedTasks)
+	assert.Zero(t, adaptor.fetchCount(), "proof conflict must be excluded before any provider poll")
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, fixture.Task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusUnknown, persisted.Status)
+	assert.Equal(t, "50%", persisted.Progress)
+	assert.Equal(t, string(fixture.Task.Data), string(persisted.Data))
+	assert.Empty(t, persisted.FailReason)
+	require.NoError(t, ValidateProtectedPlatformNativeBillingState(),
+		"manual reconciliation evidence remains an exact protected native binding")
+}
+
+func TestRunTaskPollingOnceCannotRecoverCorruptUnknownPlatformReceiptOutsideAttestedMode(t *testing.T) {
+	truncate(t)
+	t.Setenv("RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED", "false")
+	corruptReceipt := []byte(`{"schema_version":1,"state":`)
+	task := model.Task{
+		TaskID:     "corrupt-platform-proof-conflict",
+		Platform:   constant.TaskPlatform("kling"),
+		ChannelId:  7788,
+		Status:     model.TaskStatusUnknown,
+		Progress:   "0%",
+		SubmitTime: time.Now().UTC().Add(-2 * time.Hour).Unix(),
+		CreatedAt:  time.Now().UTC().Add(-2 * time.Hour).Unix(),
+		UpdatedAt:  time.Now().UTC().Add(-2 * time.Hour).Unix(),
+		Data:       corruptReceipt,
+		PrivateData: model.TaskPrivateData{
+			BillingSource:  model.TaskBillingSourcePlatformExternal,
+			UpstreamTaskID: "provider-task-that-must-not-be-polled",
+		},
+	}
+	require.NoError(t, model.DB.Create(&task).Error)
+	previousTimeout := constant.TaskTimeoutMinutes
+	constant.TaskTimeoutMinutes = 1
+	t.Cleanup(func() { constant.TaskTimeoutMinutes = previousTimeout })
+	adaptor := &taskPollingFetchAdaptor{}
+	previousFactory := GetTaskAdaptorFunc
+	GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return adaptor }
+	t.Cleanup(func() { GetTaskAdaptorFunc = previousFactory })
+
+	summary := RunTaskPollingOnce(context.Background(), nil)
+	assert.Zero(t, summary.UnfinishedTasks)
+	assert.Zero(t, adaptor.fetchCount(), "a later valid poll must not overwrite malformed manual evidence")
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusUnknown, persisted.Status)
+	assert.Equal(t, "0%", persisted.Progress)
+	assert.Equal(t, string(corruptReceipt), string(persisted.Data))
+	assert.Empty(t, persisted.FailReason)
 }

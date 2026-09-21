@@ -52,8 +52,23 @@ test("authoritative release docs freeze new-api as the only production Relay", (
   assert.match(migration, /不允许 Python\/new-api[^\n]*并行准入/);
   assert.match(production, /only active Relay/i);
   assert.match(readme, /Python Relay[\s\S]{0,100}离线 oracle artifact/);
-  assert.match(readme, /0040_showcase_management/);
-  assert.match(readme, /0039_new_api_relay_defaults/);
+  assert.match(readme, /当前源码 head 是\s*`0050_model_commercial_release`/);
+  assert.match(readme, /直接前序为 `0049_payment_finance_closure`/);
+  assert.match(readme, /new-api 当前原生数据库合同为 `target=7,min=1,max=7`/);
+  assert.match(readme, /fresh v7 只记录 ledger `\[7\]`/);
+  assert.match(readme, /v5 仅是历史迁移边界/);
+  assert.doesNotMatch(readme, /new-api (?:当前)?原生数据库合同为 `target=5,min=1,max=5`/);
+  assert.match(readme, /0045_system_audit_actor/);
+  assert.match(readme, /0044_account_product_partition/);
+  assert.match(readme, /0041_model_capability_releases/);
+});
+
+test("Platform model catalog reconciliation stays periodic, read-only on page load, and manual for release", () => {
+  assert.match(architecture, /relay-catalog-sync[\s\S]*ETag[\s\S]*GET \/v1\/models/);
+  assert.match(architecture, /页面[\s\S]{0,20}只读取 Platform[\s\S]{0,80}不因页面加载[\s\S]{0,80}写入/);
+  assert.match(architecture, /actor_kind=system[\s\S]*actor_key=relay-catalog-sync/);
+  assert.match(architecture, /未发布[\s\S]{0,40}草稿/);
+  assert.match(architecture, /批准[\s\S]{0,80}发布[\s\S]{0,80}价格[\s\S]{0,80}分发[\s\S]{0,80}人工/);
 });
 
 test("drain, affinity, rollback, and operations contracts cannot reactivate Python", () => {
@@ -171,7 +186,21 @@ test("offline oracle acceptance fails closed outside its isolated test role", ()
     },
     { mode: "isolated_offline_oracle", productionAdmissionAllowed: false },
   );
-  assert.equal(template.schema_version, 2);
+  assert.equal(template.schema_version, 3);
+  assert.equal(template.execution.mutation_tracking.request_attempted, false);
+  assert.equal(template.execution.python_relay_source_or_deployment_changed, false);
+  assert.deepEqual(
+    template.execution.python_oracle_runtime_mutation,
+    template.execution.mutation_tracking.by_target.python_oracle,
+  );
+  assert.equal(
+    template.gates["contract.candidate_readiness"].evidence[0].phase,
+    "preflight",
+  );
+  assert.equal(
+    template.gates["contract.candidate_readiness_final"].evidence[0].phase,
+    "final",
+  );
   assert.equal(template.overall.active_production_relay, "new-api-v1");
   assert.equal(template.overall.python_relay_production_admission_allowed, false);
 });
@@ -182,4 +211,24 @@ test("software cutover PASS does not fabricate external production evidence", ()
   }
   assert.match(migration, /BLOCKED\/NO-GO/);
   assert.match(releaseReadiness, /公网商用[^\n]*禁止放行/);
+});
+
+test("current payment software and historical hashes cannot authorize the unqualified Platform release", () => {
+  for (const [label, source] of [
+    ["README", readme],
+    ["deployment", deployment],
+    ["release readiness", releaseReadiness],
+  ]) {
+    assert.match(source, /当前源码 head (?:是|为)\s*`0050_model_commercial_release`/, label);
+    assert.match(source, /直接前序为\s*`0049_payment_finance_closure`/, label);
+    assert.match(source, /v15[\s\S]{0,48}UNQUALIFIED/, label);
+    assert.match(source, /不能证明当前链或授权生产/, label);
+    assert.match(source, /真实 PSP、可信账单\s*来源、生产常驻 billing worker 和通知仍未接入/, label);
+    assert.match(source, /payment-finance-closure\.md/, label);
+    assert.doesNotMatch(source, /平台充值当前是管理员人工调账，不是支付订单/, label);
+  }
+  for (const source of [deployment, production, releaseReadiness]) {
+    assert.match(source, /SOURCE_AUTHENTICITY_UNVERIFIED/);
+    assert.match(source, /platform_api\.billing_worker/);
+  }
 });

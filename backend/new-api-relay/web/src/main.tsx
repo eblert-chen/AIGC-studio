@@ -31,6 +31,7 @@ import { toast } from 'sonner'
 import { getStatus } from '@/lib/api'
 import { installBuildMetadata } from '@/lib/build-metadata'
 import { applyFaviconToDom } from '@/lib/dom-utils'
+import { resolveSystemBrand } from '@/lib/system-brand'
 import '@/lib/dayjs'
 import { initializeFrontendCache } from '@/lib/frontend-cache'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -117,36 +118,41 @@ if (!rootElement) {
 ;(function initSystemBranding() {
   try {
     if (typeof window === 'undefined' || typeof document === 'undefined') return
-    const apply = (name: string) => {
-      document.title = name
+    const apply = (status?: Record<string, unknown>) => {
+      const brand = resolveSystemBrand({
+        systemName:
+          typeof status?.system_name === 'string'
+            ? status.system_name
+            : undefined,
+        logo: typeof status?.logo === 'string' ? status.logo : undefined,
+      })
+      document.title = brand.systemName
       const metaTitle = document.querySelector(
         'meta[name="title"]'
       ) as HTMLMetaElement | null
-      if (metaTitle) metaTitle.setAttribute('content', name)
+      if (metaTitle) metaTitle.setAttribute('content', brand.systemName)
+      applyFaviconToDom(brand.logo)
     }
     // Cache-first
+    let cachedStatus: Record<string, unknown> | undefined
     try {
       const saved = localStorage.getItem('status')
       if (saved) {
-        const s = JSON.parse(saved)
-        if (s?.system_name) apply(s.system_name)
-        if (s?.logo) applyFaviconToDom(s.logo)
+        cachedStatus = JSON.parse(saved)
       }
     } catch {
       /* empty */
     }
+    apply(cachedStatus)
     // Background refresh
     getStatus()
       .then((s) => {
-        if (s?.system_name) {
-          apply(s.system_name as string)
-          try {
-            localStorage.setItem('status', JSON.stringify(s))
-          } catch {
-            /* empty */
-          }
+        apply(s)
+        try {
+          localStorage.setItem('status', JSON.stringify(s))
+        } catch {
+          /* empty */
         }
-        if (s?.logo) applyFaviconToDom(s.logo as string)
       })
       .catch(() => {
         /* empty */

@@ -23,6 +23,11 @@ test("Operations mobile chrome is a sticky two-row command surface", () => {
     mobileOperations,
     /\.ops-console \.ops-topbar nav button\s*\{[^}]*min-height:\s*51px;[^}]*scroll-snap-align:\s*center;/s,
   );
+  assert.match(
+    mobileOperations,
+    /\.ops-console \.ops-help-button\s*\{[^}]*width:\s*44px;[^}]*min-width:\s*44px;/s,
+  );
+  assert.doesNotMatch(mobileOperations, /\.ops-help-button[^\{]*\{[^}]*display:\s*none/s);
 });
 
 test("task operations put urgent work first and keep the full lifecycle readable", () => {
@@ -92,6 +97,22 @@ test("phone controls and evidence retain touch, type, and overflow contracts", (
     /\.ops-console \.ops-table\s*\{[^}]*font-size:\s*var\(--text-body-sm, 13px\)/s,
   );
   assert.doesNotMatch(mobileOperations, /font-size:\s*(?:9|10|11)px/);
+  assert.match(
+    mobileOperations,
+    /@media \(max-width: 420px\)[\s\S]*?\.ops-admin-tools\s*\{[^}]*overflow-x:\s*auto[^}]*scrollbar-width:\s*none/s,
+  );
+  assert.match(
+    mobileOperations,
+    /@media \(max-width: 420px\)[\s\S]*?\.demo-account-switcher\s*\{[^}]*order:\s*-1;[^}]*width:\s*168px;[^}]*min-width:\s*168px/s,
+  );
+  assert.match(
+    mobileOperations,
+    /\.demo-account-switcher \.demo-account-origin\s*\{[^}]*display:\s*none/s,
+  );
+  assert.match(
+    mobileOperations,
+    /@media \(max-width: 360px\)[\s\S]*?\.ops-range-controls\.has-time-range\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 44px/s,
+  );
 });
 
 test("mobile-only presentation keeps guarded Operations semantics intact", () => {

@@ -119,6 +119,9 @@ func TestMain(m *testing.M) {
 	if err := model.MigratePlatformChannelControlStorage(); err != nil {
 		integrationFatal("migrate channel control receipt storage", err)
 	}
+	if err := model.MigratePlatformChannelControlStorageV6WithDB(integrationDB); err != nil {
+		integrationFatal("migrate channel control v6 lifecycle storage", err)
+	}
 
 	exitCode := m.Run()
 	deleteRedisNamespace(context.Background(), redisClient, integrationRedisNamespace)

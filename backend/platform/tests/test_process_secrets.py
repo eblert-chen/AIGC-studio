@@ -112,7 +112,11 @@ def _relay(role: str) -> dict[str, object]:
 def _document(role: str) -> dict[str, object]:
     if role == "migration":
         secrets: dict[str, object] = {"database_url": _database_url(role)}
-    elif role in {"relay-sync", "timeout-worker"}:
+    elif role in {
+        "relay-sync",
+        "relay-catalog-sync",
+        "timeout-worker",
+    }:
         secrets = _relay(role)
     elif role == "dispatcher":
         secrets = {
@@ -195,7 +199,12 @@ def _raw(role: str) -> bytes:
 
 def _protected_nonsecret_settings(role: str) -> dict[str, object]:
     values: dict[str, object] = {"environment": "production"}
-    if role in {"dispatcher", "relay-sync", "timeout-worker"}:
+    if role in {
+        "dispatcher",
+        "relay-sync",
+        "relay-catalog-sync",
+        "timeout-worker",
+    }:
         values.update(
             relay_default_backend_id="new-api-v1",
             relay_default_contract_revision="generations.v1",
@@ -911,6 +920,7 @@ def test_protected_migration_keeps_release_gateway_origin_out_of_role_settings(
         "migration",
         "dispatcher",
         "relay-sync",
+        "relay-catalog-sync",
         "timeout-worker",
         "publishing-worker",
         "download-gateway-registration-worker",
@@ -932,6 +942,7 @@ _NON_API_PROCESS_ROLES = (
     "migration",
     "dispatcher",
     "relay-sync",
+    "relay-catalog-sync",
     "timeout-worker",
     "publishing-worker",
     "download-gateway-registration-worker",

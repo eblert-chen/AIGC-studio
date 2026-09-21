@@ -512,7 +512,30 @@ func (client *platformHuaweiOBSSDKClient) SignedGetURL(
 	if output == nil || output.SignedUrl == "" {
 		return "", fmt.Errorf("Huawei OBS returned an empty signed URL")
 	}
-	return output.SignedUrl, ctx.Err()
+	normalized, err := normalizePlatformHuaweiOBSSDKSignedURL(output.SignedUrl)
+	if err != nil {
+		return "", err
+	}
+	return normalized, ctx.Err()
+}
+
+// The SDK emits an explicit default HTTPS port. Remove only that redundant
+// port before the existing strict host/path validator and URL digest run.
+// Its v2 signature binds method/headers/resource, not a textual default port;
+// Python's HttpUrl also removes :443, so hashing the SDK spelling would fail
+// the immutable storage-binding check in Platform. Never normalize fake store
+// responses or relax the downstream validator's no-explicit-port contract.
+func normalizePlatformHuaweiOBSSDKSignedURL(raw string) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil || raw != strings.TrimSpace(raw) || parsed.Scheme != "https" || parsed.Hostname() == "" ||
+		parsed.User != nil || parsed.Fragment != "" || parsed.RawQuery == "" || (parsed.Port() != "" && parsed.Port() != "443") {
+		return "", fmt.Errorf("%w: Huawei OBS returned an invalid SDK signed URL", ErrPlatformArtifactStore)
+	}
+	if parsed.Port() == "443" {
+		parsed.Host = strings.TrimSuffix(parsed.Host, ":443")
+		return parsed.String(), nil
+	}
+	return raw, nil
 }
 
 func (client *platformHuaweiOBSSDKClient) Healthcheck(ctx context.Context, bucket string) error {

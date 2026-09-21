@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
 	"errors"
@@ -148,6 +149,11 @@ type relaySchemaV3Step struct {
 	Up func(*gorm.DB) error
 }
 
+type relaySchemaV4Step struct {
+	ID string
+	Up func(*gorm.DB) error
+}
+
 func relaySchemaMigrations() []relaySchemaMigrationDefinition {
 	return []relaySchemaMigrationDefinition{
 		{
@@ -173,6 +179,46 @@ func relaySchemaMigrations() []relaySchemaMigrationDefinition {
 			Checksum:  RelaySchemaV3Checksum(),
 			Up:        migrateRelaySchemaV3ProviderChannelCredentialOrdering,
 			Bootstrap: migrateRelaySchemaV3Bootstrap,
+		},
+		{
+			Version:   relaySchemaV4FrozenVersion,
+			Name:      relaySchemaV4FrozenName,
+			Phase:     relaySchemaV4FrozenPhase,
+			Checksum:  RelaySchemaV4Checksum(),
+			Up:        migrateRelaySchemaV4GenerationRouteReleaseBinding,
+			Bootstrap: migrateRelaySchemaV4Bootstrap,
+		},
+		{
+			Version:   relaySchemaV5FrozenVersion,
+			Name:      relaySchemaV5FrozenName,
+			Phase:     relaySchemaV5FrozenPhase,
+			Checksum:  RelaySchemaV5Checksum(),
+			Up:        migrateRelaySchemaV5ChannelTestDiagnosticTaxonomy,
+			Bootstrap: migrateRelaySchemaV5Bootstrap,
+		},
+		{
+			Version:   relaySchemaV6FrozenVersion,
+			Name:      relaySchemaV6FrozenName,
+			Phase:     relaySchemaV6FrozenPhase,
+			Checksum:  RelaySchemaV6Checksum(),
+			Up:        migrateRelaySchemaV6ChannelTestLifecycle,
+			Bootstrap: migrateRelaySchemaV6Bootstrap,
+		},
+		{
+			Version:   relaySchemaV7FrozenVersion,
+			Name:      relaySchemaV7FrozenName,
+			Phase:     relaySchemaV7FrozenPhase,
+			Checksum:  RelaySchemaV7Checksum(),
+			Up:        migrateRelaySchemaV7ChannelTestArtifactContentTypes,
+			Bootstrap: migrateRelaySchemaV7Bootstrap,
+		},
+		{
+			Version:   relaySchemaV8FrozenVersion,
+			Name:      relaySchemaV8FrozenName,
+			Phase:     relaySchemaV8FrozenPhase,
+			Checksum:  RelaySchemaV8Checksum(),
+			Up:        migrateRelaySchemaV8ProviderCostAllocationEvidence,
+			Bootstrap: migrateRelaySchemaV8Bootstrap,
 		},
 	}
 }
@@ -459,6 +505,622 @@ func migrateRelaySchemaV3ProviderChannelCredentialOrdering(db *gorm.DB) error {
 		return errors.New("Relay schema v3 credential correction is not a no-catalog-delta release")
 	}
 	return migrateProviderChannelCredentialVaultStorageV3WithDB(db)
+}
+
+// relaySchemaV4BootstrapSteps is a complete fresh-v4 snapshot. It repeats the
+// v3 safety transforms but materializes the current route model, including the
+// immutable adapter-profile and model-release binding captured for each route.
+func relaySchemaV4BootstrapSteps() []relaySchemaV4Step {
+	return []relaySchemaV4Step{
+		{ID: "subscription-plan-price-decimal-v4", Up: migrateSubscriptionPlanPriceAmountWithDB},
+		{ID: "token-model-limits-text-v4", Up: migrateTokenModelLimitsToTextWithDB},
+		{ID: "channel-cost-digest-varchar-v4", Up: migratePlatformChannelCostDocumentDigestStorageWithDB},
+		{ID: "gorm-model-bootstrap-v4", Up: migrateRelaySchemaV4Models},
+		{ID: "terminal-platform-native-result-url-scrub-v4", Up: scrubPlatformGenerationTerminalNativeResultURLsV4},
+		{ID: "previous-candidate-catalog-normalization-v4", Up: migrateRelaySchemaV4PreviousCandidateCatalog},
+		{ID: "provider-task-credential-vault-v4", Up: MigrateProviderCredentialVaultStorageWithDB},
+		{ID: "provider-channel-credential-vault-v4", Up: migrateProviderChannelCredentialVaultStorageV3WithDB},
+		{ID: "artifact-intent-v4", Up: MigratePlatformArtifactUploadIntentStorageWithDB},
+		{ID: "shared-account-state-v4", Up: MigratePlatformGenerationProviderAccountStateWithDB},
+		{ID: "reconciliation-append-only-v4", Up: MigratePlatformGenerationReconciliationStorageWithDB},
+		{ID: "callback-redrive-append-only-v4", Up: MigratePlatformGenerationCallbackOperationsStorageWithDB},
+		{ID: "channel-control-guards-v4", Up: MigratePlatformChannelControlStorageWithDB},
+		{ID: "provider-cost-monitor-guards-v4", Up: MigratePlatformProviderMonitorAndCostStorageWithDB},
+		{ID: "auth-version-backfill-v4", Up: InitializeUserAuthVersionsWithDB},
+		{ID: "external-identity-backfill-v4", Up: InitializeExternalIdentityClaimsWithDB},
+		{ID: "subscription-plan-v4", Up: migrateRelaySchemaV4SubscriptionPlan},
+		{ID: "retired-option-migration-v4", Up: migrateRetiredFrontendOptionsStrictWithDB},
+		{ID: "generation-route-release-binding-guards-v4", Up: installPlatformGenerationRouteBindingGuardsV4},
+		{ID: "runtime-dml-privilege-manifest-v4", Up: ApplyRelayDatabasePrivilegeManifestWithDB},
+		{ID: "download-edge-rls-v4", Up: MigratePlatformDownloadEdgeIsolationWithDB},
+		{ID: "download-edge-dml-privilege-manifest-v4", Up: ApplyRelayDownloadEdgeDatabasePrivilegeManifestWithDB},
+	}
+}
+
+func migrateRelaySchemaV4Bootstrap(db *gorm.DB) error {
+	for _, step := range relaySchemaV4BootstrapSteps() {
+		if err := step.Up(db); err != nil {
+			return fmt.Errorf("Relay schema v4 bootstrap step %s failed: %w", step.ID, err)
+		}
+	}
+	return nil
+}
+
+func migrateRelaySchemaV4Models(db *gorm.DB) error {
+	return db.AutoMigrate(relaySchemaV4Models()...)
+}
+
+func migrateRelaySchemaV4PreviousCandidateCatalog(db *gorm.DB) error {
+	if db == nil || db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	for _, statement := range []string{
+		`ALTER TABLE public.prefill_groups DROP CONSTRAINT IF EXISTS idx_prefill_groups_name`,
+		`DROP INDEX IF EXISTS public.idx_prefill_groups_name`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			return errors.New("previous Relay candidate catalog could not be normalized")
+		}
+	}
+	return nil
+}
+
+func migrateRelaySchemaV4SubscriptionPlan(db *gorm.DB) error {
+	if db.Dialector.Name() == "sqlite" {
+		return ensureSubscriptionPlanTableSQLiteWithDB(db)
+	}
+	return db.AutoMigrate(&SubscriptionPlan{})
+}
+
+// migrateRelaySchemaV4GenerationRouteReleaseBinding accepts only the exact
+// applying v3 state, then adds the six append-only route binding columns. The
+// default empty values keep historical routes inert until route sync supplies
+// a validated binding; production admission remains fail closed for them.
+func migrateRelaySchemaV4GenerationRouteReleaseBinding(db *gorm.DB) error {
+	if db == nil {
+		return errors.New("Relay schema v4 route binding database is unavailable")
+	}
+	var state RelaySchemaState
+	if err := db.Where("id = ?", relaySchemaStateSingletonID).First(&state).Error; err != nil {
+		return errors.New("Relay schema v4 route binding state is unavailable")
+	}
+	v3Catalog := relaySchemaExpectedCatalogForRuntime(db.Dialector.Name(), relaySchemaV3FrozenVersion)
+	v4Catalog := relaySchemaExpectedCatalogForRuntime(db.Dialector.Name(), relaySchemaV4FrozenVersion)
+	if state.CurrentVersion != relaySchemaV3FrozenVersion || state.TargetVersion != relaySchemaV4FrozenVersion ||
+		state.State != RelaySchemaStateApplying || !state.Dirty || state.AttemptID == "" ||
+		state.CurrentChecksum != relaySchemaV3FrozenChecksumSHA256 || state.TargetChecksum != relaySchemaV4FrozenChecksumSHA256 ||
+		(v3Catalog != "" && state.CurrentCatalogSHA256 != v3Catalog) || state.TargetCatalogSHA256 != v4Catalog {
+		return errors.New("Relay schema v4 route binding requires the exact v3 state")
+	}
+	if v3Catalog != "" {
+		actualCatalog, err := relaySchemaCatalogFingerprintForRuntime(db, relaySchemaV3FrozenVersion)
+		if err != nil || actualCatalog != v3Catalog {
+			return errors.New("Relay schema v4 route binding requires the exact v3 catalog")
+		}
+	}
+	for _, field := range []string{
+		"CapabilityProfileID",
+		"CapabilityProfileRevision",
+		"ModelReleaseID",
+		"ModelReleaseRevision",
+		"ModelReleaseCapabilityRevision",
+	} {
+		if db.Migrator().HasColumn(&PlatformGenerationProviderRoute{}, field) {
+			continue
+		}
+		if err := db.Migrator().AddColumn(&PlatformGenerationProviderRoute{}, field); err != nil {
+			return fmt.Errorf("Relay schema v4 route binding column %s could not be added", field)
+		}
+	}
+	if err := migratePlatformGenerationRouteCapabilitySnapshotV4(db); err != nil {
+		return err
+	}
+	if err := scrubPlatformGenerationTerminalNativeResultURLsV4(db); err != nil {
+		return err
+	}
+	return installPlatformGenerationRouteBindingGuardsV4(db)
+}
+
+// scrubPlatformGenerationTerminalNativeResultURLsV4 removes provider download
+// credentials retained by pre-v4 Platform transfers. Job-owned temporary
+// results are cleared after the terminal job's immutable route binding is
+// proven, independent of optional historical task health. Native task fields
+// are changed only for one globally unique deterministic task owned by
+// Platform billing and matching the persisted route/account binding. Ordinary
+// new-api tasks and live/retryable Platform work keep their data untouched.
+func scrubPlatformGenerationTerminalNativeResultURLsV4(db *gorm.DB) error {
+	if db == nil {
+		return errors.New("Relay schema v4 native result URL scrub database is unavailable")
+	}
+	if err := validatePlatformGenerationTerminalProviderMaterialScrubbableV4(db); err != nil {
+		return err
+	}
+	const batchSize = 200
+	cursor := ""
+	for {
+		var jobs []PlatformGenerationJob
+		query := db.Where("status IN ?", []string{
+			PlatformGenerationStatusSucceeded,
+			PlatformGenerationStatusFailed,
+			PlatformGenerationStatusCancelled,
+		}).Order("id ASC").Limit(batchSize)
+		if cursor != "" {
+			query = query.Where("id > ?", cursor)
+		}
+		if err := query.Find(&jobs).Error; err != nil {
+			return errors.New("Relay schema v4 terminal Platform jobs could not be inspected")
+		}
+		for _, job := range jobs {
+			if job.ProviderRouteID <= 0 || job.ProviderChannelID <= 0 {
+				continue
+			}
+			var route PlatformGenerationProviderRoute
+			routeQuery := db.Where("id = ?", job.ProviderRouteID).First(&route)
+			if errors.Is(routeQuery.Error, gorm.ErrRecordNotFound) {
+				continue
+			}
+			if routeQuery.Error != nil {
+				return errors.New("Relay schema v4 provider route binding could not be inspected")
+			}
+			if route.ChannelID != job.ProviderChannelID || route.Model != job.Model || route.Mode != job.Mode {
+				continue
+			}
+			nativeTaskID := strings.TrimSpace(job.NativeTaskID)
+			if nativeTaskID == "" {
+				if err := scrubPlatformGenerationJobProviderMaterialV4(db, job); err != nil {
+					return err
+				}
+				continue
+			}
+			expectedTaskID, err := PlatformGenerationNativeTaskID(job.ID)
+			if err != nil || expectedTaskID != nativeTaskID || nativeTaskID != job.NativeTaskID {
+				continue
+			}
+			var tasks []Task
+			if err := db.Where("task_id = ?", nativeTaskID).
+				Order("id ASC").Limit(2).Find(&tasks).Error; err != nil {
+				return errors.New("Relay schema v4 native task binding could not be inspected")
+			}
+			if len(tasks) == 0 {
+				if err := scrubPlatformGenerationJobProviderMaterialV4(db, job); err != nil {
+					return err
+				}
+				continue
+			}
+			if len(tasks) != 1 {
+				// Preflight has already proven that no ambiguous task row owns
+				// Platform provider material. The temporary fields on the job are
+				// independently bound by tenant/route/model/mode and can be erased
+				// without mutating any ordinary new-api task.
+				if err := scrubPlatformGenerationJobProviderMaterialV4(db, job); err != nil {
+					return err
+				}
+				continue
+			}
+			task := tasks[0]
+			taskContainsProviderMaterial := task.PrivateData.BillingSource == TaskBillingSourcePlatformExternal &&
+				platformGenerationNativeTaskContainsProviderMaterial(task)
+			if !taskContainsProviderMaterial {
+				if err := scrubPlatformGenerationJobProviderMaterialV4(db, job); err != nil {
+					return err
+				}
+				continue
+			}
+			if !platformGenerationNativeTaskIsTerminalPair(task) ||
+				!platformGenerationNativeTaskMatchesRouteBinding(job, task, route) {
+				// validatePlatformGenerationTerminalProviderMaterialScrubbableV4
+				// rejects this before any mutation. Keep the defensive branch so a
+				// future caller cannot broaden the scrub independently.
+				continue
+			}
+			var credential ProviderCredentialVersion
+			if err := db.Where(
+				"credential_version = ?",
+				task.PrivateData.ProviderCredentialVersion,
+			).First(&credential).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					continue
+				}
+				return errors.New("Relay schema v4 provider credential binding could not be inspected")
+			}
+			if !platformGenerationProviderCredentialMatchesRouteBinding(job, task, route, credential) {
+				continue
+			}
+			if err := scrubPlatformGenerationJobProviderMaterialV4(db, job); err != nil {
+				return err
+			}
+			clearPrivateResultURL := task.PrivateData.ResultURL != ""
+			clearLegacyResultURL := platformGenerationShouldClearLegacyResultURL(
+				task.PrivateData.ResultURL,
+				task.FailReason,
+				task.PrivateData.ProviderResultURLScrubbed,
+			)
+			clearProviderData := len(task.Data) > 0
+			if clearPrivateResultURL || clearLegacyResultURL || clearProviderData {
+				updates := map[string]any{}
+				if clearPrivateResultURL || clearLegacyResultURL {
+					task.PrivateData.ResultURL = ""
+					task.PrivateData.ProviderResultURLScrubbed = true
+					updates["private_data"] = task.PrivateData
+				}
+				if clearLegacyResultURL {
+					updates["fail_reason"] = ""
+				}
+				if clearProviderData {
+					updates["data"] = nil
+				}
+				result := db.Model(&Task{}).Where(
+					"id = ? AND task_id = ? AND channel_id = ?",
+					task.ID,
+					job.NativeTaskID,
+					job.ProviderChannelID,
+				).Updates(updates)
+				if result.Error != nil {
+					return errors.New("Relay schema v4 native result URL could not be scrubbed")
+				}
+				if result.RowsAffected != 1 {
+					return errors.New("Relay schema v4 native result URL scrub lost its binding")
+				}
+			}
+		}
+		if len(jobs) < batchSize {
+			return nil
+		}
+		cursor = jobs[len(jobs)-1].ID
+	}
+}
+
+func scrubPlatformGenerationJobProviderMaterialV4(db *gorm.DB, job PlatformGenerationJob) error {
+	if job.UpstreamResultURL == "" && job.TemporaryResultJSON == "" {
+		return nil
+	}
+	result := db.Model(&PlatformGenerationJob{}).Where(
+		"id = ? AND status = ? AND native_task_id = ? AND provider_route_id = ? AND provider_channel_id = ? AND tenant_id = ? AND model = ? AND mode = ?",
+		job.ID,
+		job.Status,
+		job.NativeTaskID,
+		job.ProviderRouteID,
+		job.ProviderChannelID,
+		job.TenantID,
+		job.Model,
+		job.Mode,
+	).Updates(map[string]any{
+		"temporary_result_json": "",
+		"upstream_result_url":   "",
+	})
+	if result.Error != nil {
+		return errors.New("Relay schema v4 Platform temporary result could not be scrubbed")
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("Relay schema v4 Platform temporary result scrub lost its binding")
+	}
+	return nil
+}
+
+func validatePlatformGenerationTerminalProviderMaterialScrubbableV4(db *gorm.DB) error {
+	const batchSize = 200
+	var unresolvedJobIDs []string
+	cursor := ""
+	for {
+		var jobs []PlatformGenerationJob
+		query := db.Where("status IN ?", []string{
+			PlatformGenerationStatusSucceeded,
+			PlatformGenerationStatusFailed,
+			PlatformGenerationStatusCancelled,
+		}).Order("id ASC").Limit(batchSize)
+		if cursor != "" {
+			query = query.Where("id > ?", cursor)
+		}
+		if err := query.Find(&jobs).Error; err != nil {
+			return errors.New("Relay schema v4 terminal Platform provider material could not be inspected")
+		}
+		for _, job := range jobs {
+			jobContainsProviderMaterial := job.UpstreamResultURL != "" || job.TemporaryResultJSON != ""
+			var route PlatformGenerationProviderRoute
+			routeValid := job.ProviderRouteID > 0 && job.ProviderChannelID > 0
+			if routeValid {
+				routeQuery := db.Where("id = ?", job.ProviderRouteID).First(&route)
+				if routeQuery.Error != nil && !errors.Is(routeQuery.Error, gorm.ErrRecordNotFound) {
+					return errors.New("Relay schema v4 terminal Platform provider route could not be inspected")
+				}
+				routeValid = routeQuery.Error == nil && route.ChannelID == job.ProviderChannelID &&
+					route.Model == job.Model && route.Mode == job.Mode
+			}
+			if jobContainsProviderMaterial && !routeValid {
+				unresolvedJobIDs = append(unresolvedJobIDs, job.ID)
+				continue
+			}
+			nativeTaskID := strings.TrimSpace(job.NativeTaskID)
+			if nativeTaskID == "" {
+				continue
+			}
+			expectedTaskID, expectedTaskIDErr := PlatformGenerationNativeTaskID(job.ID)
+			if expectedTaskIDErr != nil || expectedTaskID != nativeTaskID || nativeTaskID != job.NativeTaskID {
+				if jobContainsProviderMaterial {
+					unresolvedJobIDs = append(unresolvedJobIDs, job.ID)
+				}
+				continue
+			}
+			var tasks []Task
+			if err := db.Where("task_id = ?", nativeTaskID).
+				Order("id ASC").Limit(2).Find(&tasks).Error; err != nil {
+				return errors.New("Relay schema v4 terminal Platform native tasks could not be inspected")
+			}
+			if len(tasks) == 0 {
+				continue
+			}
+			hasSensitivePlatformTask := false
+			hasContradictoryActivePlatformTask := false
+			for _, task := range tasks {
+				if task.PrivateData.BillingSource != TaskBillingSourcePlatformExternal {
+					continue
+				}
+				if platformGenerationNativeTaskContainsProviderMaterial(task) {
+					hasSensitivePlatformTask = true
+				}
+				if jobContainsProviderMaterial && !platformGenerationNativeTaskIsTerminalPair(task) {
+					hasContradictoryActivePlatformTask = true
+				}
+			}
+			if !hasSensitivePlatformTask && !hasContradictoryActivePlatformTask {
+				// Job-owned provider material is independently fenced by the
+				// already validated job/route identity. A terminal ordinary task,
+				// or a Platform task with no provider material, must not make those
+				// job fields permanent or cause its own fields to be altered.
+				continue
+			}
+			credentialValid := false
+			if routeValid && len(tasks) == 1 && platformGenerationNativeTaskIsTerminalPair(tasks[0]) &&
+				platformGenerationNativeTaskMatchesRouteBinding(job, tasks[0], route) {
+				var credential ProviderCredentialVersion
+				credentialQuery := db.Where(
+					"credential_version = ?",
+					tasks[0].PrivateData.ProviderCredentialVersion,
+				).First(&credential)
+				if credentialQuery.Error != nil && !errors.Is(credentialQuery.Error, gorm.ErrRecordNotFound) {
+					return errors.New("Relay schema v4 provider credential binding could not be inspected")
+				}
+				credentialValid = credentialQuery.Error == nil &&
+					platformGenerationProviderCredentialMatchesRouteBinding(job, tasks[0], route, credential)
+			}
+			if hasContradictoryActivePlatformTask ||
+				(hasSensitivePlatformTask && !credentialValid) {
+				unresolvedJobIDs = append(unresolvedJobIDs, job.ID)
+			}
+		}
+		if len(jobs) < batchSize {
+			break
+		}
+		cursor = jobs[len(jobs)-1].ID
+	}
+	if len(unresolvedJobIDs) == 0 {
+		return nil
+	}
+	digest := sha256.Sum256([]byte(strings.Join(unresolvedJobIDs, "\n")))
+	return fmt.Errorf(
+		"Relay schema v4 terminal provider material requires manual reconciliation (count=%d job_ids_sha256=%x)",
+		len(unresolvedJobIDs),
+		digest,
+	)
+}
+
+func platformGenerationNativeTaskContainsProviderMaterial(task Task) bool {
+	if strings.TrimSpace(task.PrivateData.ResultURL) != "" || platformGenerationLegacyResultURL(task.FailReason) {
+		return true
+	}
+	// Terminal Platform-owned task Data is never a durable artifact contract.
+	// Even a nominally secret-free receipt must be removed, while malformed or
+	// escaped legacy JSON cannot be proven not to contain a provider URL by
+	// scanning its encoded bytes. Require the same strict binding for every
+	// nonempty value and let the scrub erase it wholesale.
+	if len(task.Data) > 0 {
+		return true
+	}
+	lowerFailure := strings.ToLower(task.FailReason)
+	if strings.Contains(lowerFailure, "http://") || strings.Contains(lowerFailure, "https://") ||
+		strings.Contains(lowerFailure, "signature=") || strings.Contains(lowerFailure, "token=") {
+		return true
+	}
+	return false
+}
+
+// migratePlatformGenerationRouteCapabilitySnapshotV4 uses an explicit
+// nullable-add -> backfill -> NOT NULL sequence. MySQL 5.7 rejects DEFAULT on
+// TEXT, while PostgreSQL and SQLite cannot add a NOT NULL column to populated
+// historical tables without first supplying values. Re-running any interrupted
+// phase converges safely before the all-or-none binding trigger is installed.
+func migratePlatformGenerationRouteCapabilitySnapshotV4(db *gorm.DB) error {
+	if !db.Migrator().HasColumn(&PlatformGenerationProviderRoute{}, "CapabilityProfileSnapshot") {
+		var statement string
+		switch db.Dialector.Name() {
+		case "postgres":
+			statement = `ALTER TABLE public.platform_generation_provider_routes ADD COLUMN capability_profile_snapshot text NULL`
+		case "sqlite":
+			statement = `ALTER TABLE platform_generation_provider_routes ADD COLUMN "capability_profile_snapshot" text NULL`
+		case "mysql":
+			statement = `ALTER TABLE platform_generation_provider_routes ADD COLUMN capability_profile_snapshot LONGTEXT NULL`
+		default:
+			return fmt.Errorf("Relay schema v4 route snapshot does not support database dialect %q", db.Dialector.Name())
+		}
+		if err := db.Exec(statement).Error; err != nil {
+			return errors.New("Relay schema v4 route capability snapshot column could not be added")
+		}
+	}
+	if err := db.Exec(`UPDATE platform_generation_provider_routes SET capability_profile_snapshot = '' WHERE capability_profile_snapshot IS NULL`).Error; err != nil {
+		return errors.New("Relay schema v4 route capability snapshot could not be backfilled")
+	}
+
+	columnTypes, err := db.Migrator().ColumnTypes(&PlatformGenerationProviderRoute{})
+	if err != nil {
+		return errors.New("Relay schema v4 route capability snapshot column could not be inspected")
+	}
+	snapshotNullable := true
+	snapshotFound := false
+	for _, columnType := range columnTypes {
+		if !strings.EqualFold(columnType.Name(), "capability_profile_snapshot") {
+			continue
+		}
+		snapshotFound = true
+		if nullable, ok := columnType.Nullable(); ok {
+			snapshotNullable = nullable
+		}
+		break
+	}
+	if !snapshotFound {
+		return errors.New("Relay schema v4 route capability snapshot column is unavailable")
+	}
+	if !snapshotNullable {
+		return nil
+	}
+
+	switch db.Dialector.Name() {
+	case "postgres":
+		err = db.Exec(`ALTER TABLE public.platform_generation_provider_routes ALTER COLUMN capability_profile_snapshot SET NOT NULL`).Error
+	case "sqlite":
+		err = db.Migrator().AlterColumn(&PlatformGenerationProviderRoute{}, "CapabilityProfileSnapshot")
+	case "mysql":
+		err = db.Exec(`ALTER TABLE platform_generation_provider_routes MODIFY COLUMN capability_profile_snapshot LONGTEXT NOT NULL`).Error
+	}
+	if err != nil {
+		return fmt.Errorf("Relay schema v4 route capability snapshot NOT NULL constraint could not be installed: %w", err)
+	}
+	return nil
+}
+
+func installPlatformGenerationRouteBindingGuardsV4(db *gorm.DB) error {
+	if db == nil {
+		return errors.New("Relay schema v4 route binding guard database is unavailable")
+	}
+	const table = "platform_generation_provider_routes"
+	switch db.Dialector.Name() {
+	case "postgres":
+		statements := []string{
+			`CREATE OR REPLACE FUNCTION enforce_platform_generation_route_binding_v4()
+RETURNS trigger AS $$
+DECLARE
+    profile_fields integer;
+    release_fields integer;
+BEGIN
+    profile_fields :=
+        (CASE WHEN NEW.capability_profile_id <> '' THEN 1 ELSE 0 END) +
+        (CASE WHEN NEW.capability_profile_revision <> '' THEN 1 ELSE 0 END) +
+        (CASE WHEN NEW.capability_profile_snapshot <> '' THEN 1 ELSE 0 END);
+    release_fields :=
+        (CASE WHEN NEW.model_release_id <> '' THEN 1 ELSE 0 END) +
+        (CASE WHEN NEW.model_release_revision <> '' THEN 1 ELSE 0 END) +
+        (CASE WHEN NEW.model_release_capability_revision <> '' THEN 1 ELSE 0 END);
+    IF profile_fields NOT IN (0, 3) OR release_fields NOT IN (0, 3) THEN
+        RAISE EXCEPTION 'generation route release binding must be all-or-none';
+    END IF;
+    IF TG_OP = 'UPDATE' AND OLD.capability_profile_id <> '' AND
+       (NEW.capability_profile_id IS DISTINCT FROM OLD.capability_profile_id OR
+        NEW.capability_profile_revision IS DISTINCT FROM OLD.capability_profile_revision OR
+        NEW.capability_profile_snapshot IS DISTINCT FROM OLD.capability_profile_snapshot) THEN
+        RAISE EXCEPTION 'generation route capability profile binding is immutable';
+    END IF;
+    IF TG_OP = 'UPDATE' AND OLD.model_release_id <> '' AND
+       (NEW.model_release_id IS DISTINCT FROM OLD.model_release_id OR
+        NEW.model_release_revision IS DISTINCT FROM OLD.model_release_revision OR
+        NEW.model_release_capability_revision IS DISTINCT FROM OLD.model_release_capability_revision) THEN
+        RAISE EXCEPTION 'generation route model release binding is immutable';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql`,
+			`DROP TRIGGER IF EXISTS trg_platform_generation_route_binding_v4 ON public.platform_generation_provider_routes`,
+			`CREATE TRIGGER trg_platform_generation_route_binding_v4
+BEFORE INSERT OR UPDATE ON public.platform_generation_provider_routes
+FOR EACH ROW EXECUTE FUNCTION enforce_platform_generation_route_binding_v4()`,
+		}
+		for _, statement := range statements {
+			if err := db.Exec(statement).Error; err != nil {
+				return errors.New("Relay schema v4 PostgreSQL route binding guard could not be installed")
+			}
+		}
+	case "sqlite":
+		for _, statement := range []string{
+			`DROP TRIGGER IF EXISTS trg_platform_generation_route_binding_v4_insert`,
+			`DROP TRIGGER IF EXISTS trg_platform_generation_route_binding_v4_update`,
+			fmt.Sprintf(`CREATE TRIGGER trg_platform_generation_route_binding_v4_insert
+BEFORE INSERT ON %s
+WHEN (
+    (CASE WHEN NEW.capability_profile_id <> '' THEN 1 ELSE 0 END) +
+    (CASE WHEN NEW.capability_profile_revision <> '' THEN 1 ELSE 0 END) +
+    (CASE WHEN NEW.capability_profile_snapshot <> '' THEN 1 ELSE 0 END)
+) NOT IN (0, 3) OR (
+    (CASE WHEN NEW.model_release_id <> '' THEN 1 ELSE 0 END) +
+    (CASE WHEN NEW.model_release_revision <> '' THEN 1 ELSE 0 END) +
+    (CASE WHEN NEW.model_release_capability_revision <> '' THEN 1 ELSE 0 END)
+) NOT IN (0, 3)
+BEGIN
+    SELECT RAISE(ABORT, 'generation route release binding must be all-or-none');
+END`, table),
+			fmt.Sprintf(`CREATE TRIGGER trg_platform_generation_route_binding_v4_update
+BEFORE UPDATE ON %s
+WHEN (
+    (CASE WHEN NEW.capability_profile_id <> '' THEN 1 ELSE 0 END) +
+    (CASE WHEN NEW.capability_profile_revision <> '' THEN 1 ELSE 0 END) +
+    (CASE WHEN NEW.capability_profile_snapshot <> '' THEN 1 ELSE 0 END)
+) NOT IN (0, 3) OR (
+    (CASE WHEN NEW.model_release_id <> '' THEN 1 ELSE 0 END) +
+    (CASE WHEN NEW.model_release_revision <> '' THEN 1 ELSE 0 END) +
+    (CASE WHEN NEW.model_release_capability_revision <> '' THEN 1 ELSE 0 END)
+) NOT IN (0, 3) OR (
+    OLD.capability_profile_id <> '' AND
+    (NEW.capability_profile_id <> OLD.capability_profile_id OR
+     NEW.capability_profile_revision <> OLD.capability_profile_revision OR
+     NEW.capability_profile_snapshot <> OLD.capability_profile_snapshot)
+) OR (
+    OLD.model_release_id <> '' AND
+    (NEW.model_release_id <> OLD.model_release_id OR
+     NEW.model_release_revision <> OLD.model_release_revision OR
+     NEW.model_release_capability_revision <> OLD.model_release_capability_revision)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'generation route release binding is immutable or incomplete');
+END`, table),
+		} {
+			if err := db.Exec(statement).Error; err != nil {
+				return errors.New("Relay schema v4 SQLite route binding guard could not be installed")
+			}
+		}
+	case "mysql":
+		for _, statement := range []string{
+			`DROP TRIGGER IF EXISTS trg_platform_generation_route_binding_v4_insert`,
+			`DROP TRIGGER IF EXISTS trg_platform_generation_route_binding_v4_update`,
+			fmt.Sprintf(`CREATE TRIGGER trg_platform_generation_route_binding_v4_insert
+BEFORE INSERT ON %s FOR EACH ROW
+BEGIN
+    IF ((NEW.capability_profile_id <> '') + (NEW.capability_profile_revision <> '') + (NEW.capability_profile_snapshot <> '')) NOT IN (0, 3)
+       OR ((NEW.model_release_id <> '') + (NEW.model_release_revision <> '') + (NEW.model_release_capability_revision <> '')) NOT IN (0, 3) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'generation route release binding must be all-or-none';
+    END IF;
+END`, table),
+			fmt.Sprintf(`CREATE TRIGGER trg_platform_generation_route_binding_v4_update
+BEFORE UPDATE ON %s FOR EACH ROW
+BEGIN
+    IF ((NEW.capability_profile_id <> '') + (NEW.capability_profile_revision <> '') + (NEW.capability_profile_snapshot <> '')) NOT IN (0, 3)
+       OR ((NEW.model_release_id <> '') + (NEW.model_release_revision <> '') + (NEW.model_release_capability_revision <> '')) NOT IN (0, 3)
+       OR (OLD.capability_profile_id <> '' AND
+           (NOT (NEW.capability_profile_id <=> OLD.capability_profile_id) OR
+            NOT (NEW.capability_profile_revision <=> OLD.capability_profile_revision) OR
+            NOT (NEW.capability_profile_snapshot <=> OLD.capability_profile_snapshot)))
+       OR (OLD.model_release_id <> '' AND
+           (NOT (NEW.model_release_id <=> OLD.model_release_id) OR
+            NOT (NEW.model_release_revision <=> OLD.model_release_revision) OR
+            NOT (NEW.model_release_capability_revision <=> OLD.model_release_capability_revision))) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'generation route release binding is immutable or incomplete';
+    END IF;
+END`, table),
+		} {
+			if err := db.Exec(statement).Error; err != nil {
+				return errors.New("Relay schema v4 MySQL route binding guard could not be installed")
+			}
+		}
+	default:
+		return fmt.Errorf("Relay schema v4 route binding guard does not support database dialect %q", db.Dialector.Name())
+	}
+	return nil
 }
 
 // RelayLifecycleLock is a PostgreSQL session advisory lock shared by schema
@@ -942,8 +1604,24 @@ func GetRelaySchemaStatus(db *gorm.DB) (RelaySchemaStatus, error) {
 	if db == nil {
 		return status, errors.New("Relay schema database is unavailable")
 	}
-	hasState := db.Migrator().HasTable(&RelaySchemaState{})
-	hasLedger := db.Migrator().HasTable(&RelaySchemaMigration{})
+	if db.Error != nil {
+		return status, db.Error
+	}
+	// Migrator.HasTable only returns a bool, so connection/session failures can
+	// otherwise be indistinguishable from a genuinely empty schema. Start from a
+	// fresh statement while retaining the caller's ConnPool (including a pinned
+	// transaction or connection), and use an error-preserving probe before either
+	// bool-only catalog lookup.
+	db = db.Session(&gorm.Session{NewDB: true})
+	var connectionProbe int
+	if err := db.Raw(`SELECT 1`).Scan(&connectionProbe).Error; err != nil {
+		return status, err
+	}
+	if connectionProbe != 1 {
+		return status, errors.New("Relay schema database probe is invalid")
+	}
+	hasState := db.Session(&gorm.Session{NewDB: true}).Migrator().HasTable(&RelaySchemaState{})
+	hasLedger := db.Session(&gorm.Session{NewDB: true}).Migrator().HasTable(&RelaySchemaMigration{})
 	if !hasState && !hasLedger {
 		status.Classification = RelaySchemaStatusUninitialized
 		status.State = RelaySchemaStateClean
@@ -1247,6 +1925,46 @@ func validateRelaySchemaRegistry(
 			v3.Phase != relaySchemaV3FrozenPhase || v3.Checksum != relaySchemaV3FrozenChecksumSHA256 ||
 			RelaySchemaV3Checksum() != relaySchemaV3FrozenChecksumSHA256 || v3.Up == nil || v3.Bootstrap == nil {
 			return errors.New("Relay schema v3 definition is not frozen")
+		}
+	}
+	if contract.TargetVersion >= relaySchemaV4FrozenVersion {
+		v4 := byVersion[relaySchemaV4FrozenVersion]
+		if v4.Version != relaySchemaV4FrozenVersion || v4.Name != relaySchemaV4FrozenName ||
+			v4.Phase != relaySchemaV4FrozenPhase || v4.Checksum != relaySchemaV4FrozenChecksumSHA256 ||
+			RelaySchemaV4Checksum() != relaySchemaV4FrozenChecksumSHA256 || v4.Up == nil || v4.Bootstrap == nil {
+			return errors.New("Relay schema v4 definition is not frozen")
+		}
+	}
+	if contract.TargetVersion >= relaySchemaV5FrozenVersion {
+		v5 := byVersion[relaySchemaV5FrozenVersion]
+		if v5.Version != relaySchemaV5FrozenVersion || v5.Name != relaySchemaV5FrozenName ||
+			v5.Phase != relaySchemaV5FrozenPhase || v5.Checksum != relaySchemaV5FrozenChecksumSHA256 ||
+			RelaySchemaV5Checksum() != relaySchemaV5FrozenChecksumSHA256 || v5.Up == nil || v5.Bootstrap == nil {
+			return errors.New("Relay schema v5 definition is not frozen")
+		}
+	}
+	if contract.TargetVersion >= relaySchemaV6FrozenVersion {
+		v6 := byVersion[relaySchemaV6FrozenVersion]
+		if v6.Version != relaySchemaV6FrozenVersion || v6.Name != relaySchemaV6FrozenName ||
+			v6.Phase != relaySchemaV6FrozenPhase || v6.Checksum != relaySchemaV6FrozenChecksumSHA256 ||
+			RelaySchemaV6Checksum() != relaySchemaV6FrozenChecksumSHA256 || v6.Up == nil || v6.Bootstrap == nil {
+			return errors.New("Relay schema v6 definition is not frozen")
+		}
+	}
+	if contract.TargetVersion >= relaySchemaV7FrozenVersion {
+		v7 := byVersion[relaySchemaV7FrozenVersion]
+		if v7.Version != relaySchemaV7FrozenVersion || v7.Name != relaySchemaV7FrozenName ||
+			v7.Phase != relaySchemaV7FrozenPhase || v7.Checksum != relaySchemaV7FrozenChecksumSHA256 ||
+			RelaySchemaV7Checksum() != relaySchemaV7FrozenChecksumSHA256 || v7.Up == nil || v7.Bootstrap == nil {
+			return errors.New("Relay schema v7 definition is not frozen")
+		}
+	}
+	if contract.TargetVersion >= relaySchemaV8FrozenVersion {
+		v8 := byVersion[relaySchemaV8FrozenVersion]
+		if v8.Version != relaySchemaV8FrozenVersion || v8.Name != relaySchemaV8FrozenName ||
+			v8.Phase != relaySchemaV8FrozenPhase || v8.Checksum != relaySchemaV8FrozenChecksumSHA256 ||
+			RelaySchemaV8Checksum() != relaySchemaV8FrozenChecksumSHA256 || v8.Up == nil || v8.Bootstrap == nil {
+			return errors.New("Relay schema v8 definition is not frozen")
 		}
 	}
 	return nil

@@ -61,20 +61,36 @@ type PlatformGenerationProviderRoute struct {
 	// locked Channel row every time; it is not inferred from mutable runtime
 	// configuration. Zero is retained only as a legacy-migration sentinel and
 	// is never eligible for new work.
-	AcceptedChannelType int        `json:"accepted_channel_type" gorm:"not null;default:0"`
-	KeyIndex            int        `json:"key_index" gorm:"not null;uniqueIndex:uniq_platform_generation_route,priority:4"`
-	KeyFingerprint      string     `json:"key_fingerprint" gorm:"type:char(64);not null;uniqueIndex:uniq_platform_generation_route,priority:5"`
-	AccountStateID      int64      `json:"account_state_id" gorm:"not null;default:0;index;index:idx_platform_generation_route_lookup,priority:4"`
-	ChannelClass        string     `json:"channel_class" gorm:"type:varchar(32);not null"`
-	UpstreamModel       string     `json:"upstream_model" gorm:"type:varchar(128);not null"`
-	StagingReady        bool       `json:"staging_ready" gorm:"not null;default:false"`
-	ProductionReady     bool       `json:"production_ready" gorm:"not null"`
-	Enabled             bool       `json:"enabled" gorm:"not null;index:idx_platform_generation_route_lookup,priority:3"`
-	CoolingUntil        *time.Time `json:"cooling_until,omitempty" gorm:"index"`
-	ConsecutiveFailures int        `json:"consecutive_failures" gorm:"not null"`
-	LastFailureAt       *time.Time `json:"last_failure_at,omitempty"`
-	LastSuccessAt       *time.Time `json:"last_success_at,omitempty"`
-	LastErrorCode       string     `json:"last_error_code" gorm:"type:varchar(64);not null"`
+	AcceptedChannelType int    `json:"accepted_channel_type" gorm:"not null;default:0"`
+	KeyIndex            int    `json:"key_index" gorm:"not null;uniqueIndex:uniq_platform_generation_route,priority:4"`
+	KeyFingerprint      string `json:"key_fingerprint" gorm:"type:char(64);not null;uniqueIndex:uniq_platform_generation_route,priority:5"`
+	AccountStateID      int64  `json:"account_state_id" gorm:"not null;default:0;index;index:idx_platform_generation_route_lookup,priority:4"`
+	ChannelClass        string `json:"channel_class" gorm:"type:varchar(32);not null"`
+	UpstreamModel       string `json:"upstream_model" gorm:"type:varchar(128);not null"`
+	// CapabilityProfile* is the immutable executable adapter contract captured
+	// when this durable route row is materialized. It is deliberately separate
+	// from Model/UpstreamModel and from the channel/key identity: rotating an
+	// equivalent credential changes the routing release, not the public
+	// capability revision. The complete snapshot lets an admitted task finish
+	// safely during a rolling code/profile deployment.
+	CapabilityProfileID       string `json:"capability_profile_id,omitempty" gorm:"type:varchar(128);not null;default:''"`
+	CapabilityProfileRevision string `json:"capability_profile_revision,omitempty" gorm:"type:varchar(71);not null;default:''"`
+	CapabilityProfileSnapshot string `json:"-" gorm:"type:text;not null"`
+	// ModelRelease* binds the provider identity to the reusable profile and its
+	// narrowed capability. Historical Seedream rows may leave these empty while
+	// they are migrated; reusable profiles fail closed before route sync unless
+	// a validated release supplied them.
+	ModelReleaseID                 string     `json:"model_release_id,omitempty" gorm:"type:varchar(128);not null;default:''"`
+	ModelReleaseRevision           string     `json:"model_release_revision,omitempty" gorm:"type:varchar(71);not null;default:''"`
+	ModelReleaseCapabilityRevision string     `json:"model_release_capability_revision,omitempty" gorm:"type:varchar(71);not null;default:''"`
+	StagingReady                   bool       `json:"staging_ready" gorm:"not null;default:false"`
+	ProductionReady                bool       `json:"production_ready" gorm:"not null"`
+	Enabled                        bool       `json:"enabled" gorm:"not null;index:idx_platform_generation_route_lookup,priority:3"`
+	CoolingUntil                   *time.Time `json:"cooling_until,omitempty" gorm:"index"`
+	ConsecutiveFailures            int        `json:"consecutive_failures" gorm:"not null"`
+	LastFailureAt                  *time.Time `json:"last_failure_at,omitempty"`
+	LastSuccessAt                  *time.Time `json:"last_success_at,omitempty"`
+	LastErrorCode                  string     `json:"last_error_code" gorm:"type:varchar(64);not null"`
 
 	RPMWindowSeconds   int        `json:"rpm_window_seconds" gorm:"not null"`
 	RPMLimit           int        `json:"rpm_limit" gorm:"not null"`
@@ -182,6 +198,40 @@ func (route *PlatformGenerationProviderRoute) Validate() error {
 	default:
 		return errors.New("generation provider route channel_class is invalid")
 	}
+	profileFields := []string{route.CapabilityProfileID, route.CapabilityProfileRevision, route.CapabilityProfileSnapshot}
+	profileFieldCount := 0
+	for _, value := range profileFields {
+		if value != "" {
+			profileFieldCount++
+		}
+	}
+	if profileFieldCount != 0 && profileFieldCount != len(profileFields) {
+		return errors.New("generation provider route capability profile snapshot is incomplete")
+	}
+	if route.CapabilityProfileID != "" {
+		if strings.TrimSpace(route.CapabilityProfileID) != route.CapabilityProfileID || len(route.CapabilityProfileID) > 128 ||
+			!platformGenerationSHA256Revision(route.CapabilityProfileRevision) ||
+			len(route.CapabilityProfileSnapshot) > 1<<20 {
+			return errors.New("generation provider route capability profile snapshot is invalid")
+		}
+	}
+	releaseFields := []string{route.ModelReleaseID, route.ModelReleaseRevision, route.ModelReleaseCapabilityRevision}
+	releaseFieldCount := 0
+	for _, value := range releaseFields {
+		if value != "" {
+			releaseFieldCount++
+		}
+	}
+	if releaseFieldCount != 0 && releaseFieldCount != len(releaseFields) {
+		return errors.New("generation provider route model release is incomplete")
+	}
+	if route.ModelReleaseID != "" {
+		if strings.TrimSpace(route.ModelReleaseID) != route.ModelReleaseID || len(route.ModelReleaseID) > 128 ||
+			!platformGenerationSHA256Revision(route.ModelReleaseRevision) ||
+			!platformGenerationSHA256Revision(route.ModelReleaseCapabilityRevision) {
+			return errors.New("generation provider route model release is invalid")
+		}
+	}
 	if route.RPMWindowSeconds <= 0 {
 		return errors.New("generation provider route rpm_window_seconds must be positive")
 	}
@@ -195,6 +245,14 @@ func (route *PlatformGenerationProviderRoute) Validate() error {
 		return errors.New("generation provider route counters must not be negative")
 	}
 	return nil
+}
+
+func platformGenerationSHA256Revision(value string) bool {
+	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	digest, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil && len(digest) == 32 && strings.ToLower(value) == value
 }
 
 func (state *PlatformGenerationProviderAccountState) Validate() error {
@@ -1106,172 +1164,201 @@ func platformGenerationAccountStateHasRuntimeData(state PlatformGenerationProvid
 // credential fingerprint or channel/key tuple in place fails closed.
 func SyncPlatformGenerationProviderRoutes(desired []PlatformGenerationProviderRoute) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
-		now, err := GetDBTimeTx(tx)
-		if err != nil {
+		return SyncPlatformGenerationProviderRoutesWithDB(tx, desired)
+	})
+}
+
+// SyncPlatformGenerationProviderRoutesWithDB materializes the same complete
+// route set inside a transaction already owned by a higher-level lifecycle
+// operation.  This is required when route publication and a credential/control
+// CAS must commit or roll back together.  The caller owns begin/commit.
+func SyncPlatformGenerationProviderRoutesWithDB(tx *gorm.DB, desired []PlatformGenerationProviderRoute) error {
+	if tx == nil {
+		return errors.New("generation provider route transaction is required")
+	}
+	now, err := GetDBTimeTx(tx)
+	if err != nil {
+		return err
+	}
+	wanted := make(map[string]struct{}, len(desired))
+	accountRoutes := make(map[string]PlatformGenerationProviderRoute)
+	for index := range desired {
+		route := desired[index]
+		if err := route.Validate(); err != nil {
 			return err
 		}
-		wanted := make(map[string]struct{}, len(desired))
-		accountRoutes := make(map[string]PlatformGenerationProviderRoute)
-		for index := range desired {
-			route := desired[index]
-			if err := route.Validate(); err != nil {
-				return err
-			}
-			identity := route.RouteKey + "\x00" + route.Mode
-			if _, duplicate := wanted[identity]; duplicate {
-				return fmt.Errorf("generation provider route %q mode %q is duplicated", route.RouteKey, route.Mode)
-			}
-			wanted[identity] = struct{}{}
-			accountIdentity := platformGenerationAccountIdentity(route)
-			if existing, ok := accountRoutes[accountIdentity]; ok {
-				if existing.RPMWindowSeconds != route.RPMWindowSeconds || existing.RPMLimit != route.RPMLimit || existing.ActiveLimit != route.ActiveLimit {
-					return fmt.Errorf("generation provider account %s has conflicting RPM or active limits", accountIdentity)
-				}
-			} else {
-				accountRoutes[accountIdentity] = route
-			}
+		identity := route.RouteKey + "\x00" + route.Mode
+		if _, duplicate := wanted[identity]; duplicate {
+			return fmt.Errorf("generation provider route %q mode %q is duplicated", route.RouteKey, route.Mode)
 		}
+		wanted[identity] = struct{}{}
+		accountIdentity := platformGenerationAccountIdentity(route)
+		if existing, ok := accountRoutes[accountIdentity]; ok {
+			if existing.RPMWindowSeconds != route.RPMWindowSeconds || existing.RPMLimit != route.RPMLimit || existing.ActiveLimit != route.ActiveLimit {
+				return fmt.Errorf("generation provider account %s has conflicting RPM or active limits", accountIdentity)
+			}
+		} else {
+			accountRoutes[accountIdentity] = route
+		}
+	}
 
-		accountIdentities := make([]string, 0, len(accountRoutes))
-		for identity := range accountRoutes {
-			accountIdentities = append(accountIdentities, identity)
-		}
-		sort.Strings(accountIdentities)
-		accountStates := make(map[string]PlatformGenerationProviderAccountState, len(accountRoutes))
-		for _, identity := range accountIdentities {
-			route := accountRoutes[identity]
-			var state PlatformGenerationProviderAccountState
-			lookup := lockForUpdate(tx.Where(
-				"channel_id = ? AND key_index = ? AND key_fingerprint = ?",
-				route.ChannelID,
-				route.KeyIndex,
-				route.KeyFingerprint,
-			)).First(&state)
-			if errors.Is(lookup.Error, gorm.ErrRecordNotFound) {
-				state = PlatformGenerationProviderAccountState{
-					ChannelID:        route.ChannelID,
-					KeyIndex:         route.KeyIndex,
-					KeyFingerprint:   route.KeyFingerprint,
-					RPMWindowSeconds: route.RPMWindowSeconds,
-					RPMLimit:         route.RPMLimit,
-					ActiveLimit:      route.ActiveLimit,
-					LastErrorCode:    "",
-					CreatedAt:        now,
-					UpdatedAt:        now,
-				}
-				create := tx.Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: "channel_id"}, {Name: "key_index"}, {Name: "key_fingerprint"}},
-					DoNothing: true,
-				}).Create(&state)
-				if create.Error != nil {
-					return create.Error
-				}
-				if create.RowsAffected == 0 {
-					if err := lockForUpdate(tx.Where(
-						"channel_id = ? AND key_index = ? AND key_fingerprint = ?",
-						route.ChannelID,
-						route.KeyIndex,
-						route.KeyFingerprint,
-					)).First(&state).Error; err != nil {
-						return err
-					}
-				}
-			} else if lookup.Error != nil {
-				return lookup.Error
+	accountIdentities := make([]string, 0, len(accountRoutes))
+	for identity := range accountRoutes {
+		accountIdentities = append(accountIdentities, identity)
+	}
+	sort.Strings(accountIdentities)
+	accountStates := make(map[string]PlatformGenerationProviderAccountState, len(accountRoutes))
+	for _, identity := range accountIdentities {
+		route := accountRoutes[identity]
+		var state PlatformGenerationProviderAccountState
+		lookup := lockForUpdate(tx.Where(
+			"channel_id = ? AND key_index = ? AND key_fingerprint = ?",
+			route.ChannelID,
+			route.KeyIndex,
+			route.KeyFingerprint,
+		)).First(&state)
+		if errors.Is(lookup.Error, gorm.ErrRecordNotFound) {
+			state = PlatformGenerationProviderAccountState{
+				ChannelID:        route.ChannelID,
+				KeyIndex:         route.KeyIndex,
+				KeyFingerprint:   route.KeyFingerprint,
+				RPMWindowSeconds: route.RPMWindowSeconds,
+				RPMLimit:         route.RPMLimit,
+				ActiveLimit:      route.ActiveLimit,
+				LastErrorCode:    "",
+				CreatedAt:        now,
+				UpdatedAt:        now,
 			}
-			if state.ChannelID != route.ChannelID || state.KeyIndex != route.KeyIndex || state.KeyFingerprint != route.KeyFingerprint {
-				return fmt.Errorf("generation provider account %s identity is inconsistent", identity)
+			create := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "channel_id"}, {Name: "key_index"}, {Name: "key_fingerprint"}},
+				DoNothing: true,
+			}).Create(&state)
+			if create.Error != nil {
+				return create.Error
 			}
-			if err := tx.Model(&state).Updates(map[string]any{
-				"rpm_window_seconds": route.RPMWindowSeconds,
-				"rpm_limit":          route.RPMLimit,
-				"active_limit":       route.ActiveLimit,
-				"updated_at":         now,
-			}).Error; err != nil {
-				return err
-			}
-			state.RPMWindowSeconds = route.RPMWindowSeconds
-			state.RPMLimit = route.RPMLimit
-			state.ActiveLimit = route.ActiveLimit
-			state.UpdatedAt = now
-			if err := state.Validate(); err != nil {
-				return err
-			}
-			accountStates[identity] = state
-		}
-
-		for index := range desired {
-			route := desired[index]
-			state := accountStates[platformGenerationAccountIdentity(route)]
-			route.AccountStateID = state.ID
-			applyPlatformGenerationAccountStateToRoute(&route, state)
-			var existing PlatformGenerationProviderRoute
-			lookup := lockForUpdate(tx.Where("route_key = ? AND mode = ?", route.RouteKey, route.Mode)).First(&existing)
-			if errors.Is(lookup.Error, gorm.ErrRecordNotFound) {
-				route.ID = 0
-				route.CreatedAt = now
-				route.UpdatedAt = now
-				create := tx.Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: "route_key"}, {Name: "mode"}},
-					DoNothing: true,
-				}).Create(&route)
-				if create.Error != nil {
-					return create.Error
-				}
-				if create.RowsAffected == 1 {
-					continue
-				}
-				if err := lockForUpdate(tx.Where("route_key = ? AND mode = ?", route.RouteKey, route.Mode)).First(&existing).Error; err != nil {
+			if create.RowsAffected == 0 {
+				if err := lockForUpdate(tx.Where(
+					"channel_id = ? AND key_index = ? AND key_fingerprint = ?",
+					route.ChannelID,
+					route.KeyIndex,
+					route.KeyFingerprint,
+				)).First(&state).Error; err != nil {
 					return err
 				}
-			} else if lookup.Error != nil {
-				return lookup.Error
 			}
-			if existing.Model != route.Model || existing.ChannelID != route.ChannelID || existing.KeyIndex != route.KeyIndex ||
-				existing.KeyFingerprint != route.KeyFingerprint || existing.ChannelClass != route.ChannelClass ||
-				existing.ProviderName != route.ProviderName || existing.AccountID != route.AccountID || existing.UpstreamModel != route.UpstreamModel ||
-				(existing.AcceptedChannelType != constant.ChannelTypeUnknown && existing.AcceptedChannelType != route.AcceptedChannelType) {
-				return fmt.Errorf("generation provider route %q mode %q changed immutable identity; declare a new route id", route.RouteKey, route.Mode)
-			}
-			if existing.AccountStateID != 0 && existing.AccountStateID != state.ID {
-				return fmt.Errorf("generation provider route %q mode %q changed physical account mapping", route.RouteKey, route.Mode)
-			}
-			if err := tx.Model(&existing).Updates(map[string]any{
-				"account_state_id":      state.ID,
-				"accepted_channel_type": route.AcceptedChannelType,
-				"enabled":               route.Enabled,
-				"staging_ready":         route.StagingReady,
-				"production_ready":      route.ProductionReady,
-				"rpm_window_seconds":    route.RPMWindowSeconds,
-				"rpm_limit":             route.RPMLimit,
-				"active_limit":          route.ActiveLimit,
-				"updated_at":            now,
-			}).Error; err != nil {
-				return err
-			}
+		} else if lookup.Error != nil {
+			return lookup.Error
 		}
-
-		var existingRoutes []PlatformGenerationProviderRoute
-		if err := lockForUpdate(tx).Find(&existingRoutes).Error; err != nil {
+		if state.ChannelID != route.ChannelID || state.KeyIndex != route.KeyIndex || state.KeyFingerprint != route.KeyFingerprint {
+			return fmt.Errorf("generation provider account %s identity is inconsistent", identity)
+		}
+		if err := tx.Model(&state).Updates(map[string]any{
+			"rpm_window_seconds": route.RPMWindowSeconds,
+			"rpm_limit":          route.RPMLimit,
+			"active_limit":       route.ActiveLimit,
+			"updated_at":         now,
+		}).Error; err != nil {
 			return err
 		}
-		for index := range existingRoutes {
-			existing := existingRoutes[index]
-			identity := existing.RouteKey + "\x00" + existing.Mode
-			if _, ok := wanted[identity]; ok || !existing.Enabled {
+		state.RPMWindowSeconds = route.RPMWindowSeconds
+		state.RPMLimit = route.RPMLimit
+		state.ActiveLimit = route.ActiveLimit
+		state.UpdatedAt = now
+		if err := state.Validate(); err != nil {
+			return err
+		}
+		accountStates[identity] = state
+	}
+
+	for index := range desired {
+		route := desired[index]
+		state := accountStates[platformGenerationAccountIdentity(route)]
+		route.AccountStateID = state.ID
+		applyPlatformGenerationAccountStateToRoute(&route, state)
+		var existing PlatformGenerationProviderRoute
+		lookup := lockForUpdate(tx.Where("route_key = ? AND mode = ?", route.RouteKey, route.Mode)).First(&existing)
+		if errors.Is(lookup.Error, gorm.ErrRecordNotFound) {
+			route.ID = 0
+			route.CreatedAt = now
+			route.UpdatedAt = now
+			create := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "route_key"}, {Name: "mode"}},
+				DoNothing: true,
+			}).Create(&route)
+			if create.Error != nil {
+				return create.Error
+			}
+			if create.RowsAffected == 1 {
 				continue
 			}
-			if err := tx.Model(&existing).Updates(map[string]any{"enabled": false, "updated_at": now}).Error; err != nil {
+			if err := lockForUpdate(tx.Where("route_key = ? AND mode = ?", route.RouteKey, route.Mode)).First(&existing).Error; err != nil {
 				return err
 			}
+		} else if lookup.Error != nil {
+			return lookup.Error
 		}
-		for _, identity := range accountIdentities {
-			if err := syncPlatformGenerationAccountRouteMirrorsTx(tx, accountStates[identity], now); err != nil {
-				return err
-			}
+		if existing.Model != route.Model || existing.ChannelID != route.ChannelID || existing.KeyIndex != route.KeyIndex ||
+			existing.KeyFingerprint != route.KeyFingerprint || existing.ChannelClass != route.ChannelClass ||
+			existing.ProviderName != route.ProviderName || existing.AccountID != route.AccountID || existing.UpstreamModel != route.UpstreamModel ||
+			(existing.AcceptedChannelType != constant.ChannelTypeUnknown && existing.AcceptedChannelType != route.AcceptedChannelType) {
+			return fmt.Errorf("generation provider route %q mode %q changed immutable identity; declare a new route id", route.RouteKey, route.Mode)
 		}
-		return nil
-	})
+		if existing.CapabilityProfileID != "" &&
+			(existing.CapabilityProfileID != route.CapabilityProfileID ||
+				existing.CapabilityProfileRevision != route.CapabilityProfileRevision ||
+				existing.CapabilityProfileSnapshot != route.CapabilityProfileSnapshot) {
+			return fmt.Errorf("generation provider route %q mode %q changed immutable capability profile; declare a new route id", route.RouteKey, route.Mode)
+		}
+		if existing.ModelReleaseID != "" &&
+			(existing.ModelReleaseID != route.ModelReleaseID ||
+				existing.ModelReleaseRevision != route.ModelReleaseRevision ||
+				existing.ModelReleaseCapabilityRevision != route.ModelReleaseCapabilityRevision) {
+			return fmt.Errorf("generation provider route %q mode %q changed immutable model release; declare a new route id", route.RouteKey, route.Mode)
+		}
+		if existing.AccountStateID != 0 && existing.AccountStateID != state.ID {
+			return fmt.Errorf("generation provider route %q mode %q changed physical account mapping", route.RouteKey, route.Mode)
+		}
+		if err := tx.Model(&existing).Updates(map[string]any{
+			"account_state_id":                  state.ID,
+			"accepted_channel_type":             route.AcceptedChannelType,
+			"capability_profile_id":             route.CapabilityProfileID,
+			"capability_profile_revision":       route.CapabilityProfileRevision,
+			"capability_profile_snapshot":       route.CapabilityProfileSnapshot,
+			"model_release_id":                  route.ModelReleaseID,
+			"model_release_revision":            route.ModelReleaseRevision,
+			"model_release_capability_revision": route.ModelReleaseCapabilityRevision,
+			"enabled":                           route.Enabled,
+			"staging_ready":                     route.StagingReady,
+			"production_ready":                  route.ProductionReady,
+			"rpm_window_seconds":                route.RPMWindowSeconds,
+			"rpm_limit":                         route.RPMLimit,
+			"active_limit":                      route.ActiveLimit,
+			"updated_at":                        now,
+		}).Error; err != nil {
+			return err
+		}
+	}
+
+	var existingRoutes []PlatformGenerationProviderRoute
+	if err := lockForUpdate(tx).Find(&existingRoutes).Error; err != nil {
+		return err
+	}
+	for index := range existingRoutes {
+		existing := existingRoutes[index]
+		identity := existing.RouteKey + "\x00" + existing.Mode
+		if _, ok := wanted[identity]; ok || !existing.Enabled {
+			continue
+		}
+		if err := tx.Model(&existing).Updates(map[string]any{"enabled": false, "updated_at": now}).Error; err != nil {
+			return err
+		}
+	}
+	for _, identity := range accountIdentities {
+		if err := syncPlatformGenerationAccountRouteMirrorsTx(tx, accountStates[identity], now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CompletePlatformGenerationTerminal closes the provider slot and advances a
@@ -1317,6 +1404,54 @@ func CompletePlatformGenerationTerminalWithOutcomePolicy(
 	outcome *PlatformProviderTerminalOutcome,
 	failureThreshold int,
 	cooldown time.Duration,
+) (bool, error) {
+	return completePlatformGenerationTerminalWithOutcomePolicy(
+		jobID,
+		leaseToken,
+		fromStatus,
+		updates,
+		outcome,
+		failureThreshold,
+		cooldown,
+		nil,
+	)
+}
+
+// CompletePlatformGenerationTerminalWithProviderResultProofPolicy is the only
+// terminal path for asynchronously polled Platform-owned native tasks. The
+// receipt and private result URL are reloaded and verified under the same
+// transaction that closes the provider slot and records the terminal outcome.
+func CompletePlatformGenerationTerminalWithProviderResultProofPolicy(
+	jobID string,
+	leaseToken string,
+	fromStatus string,
+	updates map[string]any,
+	outcome *PlatformProviderTerminalOutcome,
+	failureThreshold int,
+	cooldown time.Duration,
+	proof PlatformGenerationProviderResultTransition,
+) (bool, error) {
+	return completePlatformGenerationTerminalWithOutcomePolicy(
+		jobID,
+		leaseToken,
+		fromStatus,
+		updates,
+		outcome,
+		failureThreshold,
+		cooldown,
+		&proof,
+	)
+}
+
+func completePlatformGenerationTerminalWithOutcomePolicy(
+	jobID string,
+	leaseToken string,
+	fromStatus string,
+	updates map[string]any,
+	outcome *PlatformProviderTerminalOutcome,
+	failureThreshold int,
+	cooldown time.Duration,
+	proof *PlatformGenerationProviderResultTransition,
 ) (bool, error) {
 	if failureThreshold < 1 || failureThreshold > 100 {
 		return false, errors.New("generation provider failure threshold is invalid")
@@ -1367,6 +1502,18 @@ func CompletePlatformGenerationTerminalWithOutcomePolicy(
 		}
 		if !platformGenerationAccountStateMatchesRoute(state, route) {
 			return fmt.Errorf("generation provider route %d physical account mapping is inconsistent", route.ID)
+		}
+		if proof != nil {
+			if err := validatePlatformGenerationProviderResultTransitionTx(
+				tx,
+				now,
+				job,
+				admission,
+				route,
+				*proof,
+			); err != nil {
+				return err
+			}
 		}
 		if outcome != nil && (outcome.RelayJobID != jobID || outcome.RouteID != route.ID) {
 			return errors.New("provider terminal outcome does not match the fenced generation route")

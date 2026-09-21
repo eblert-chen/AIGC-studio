@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/generationprofile"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/google/uuid"
 )
@@ -48,18 +49,15 @@ func SubmitPlatformGeneration(
 		}
 	}
 
-	requestForHash, err := common.Marshal(request)
+	// Idempotency describes the client-visible request, not Relay-owned
+	// execution metadata. Hash after removing reserved keys but before adding a
+	// request ID or the current profile snapshot, so a retry remains a replay
+	// across request IDs and rolling profile releases.
+	request, requestHash, err := platformGenerationRequestForIdempotency(request)
 	if err != nil {
 		return dto.PlatformGenerationAccepted{}, err
 	}
-	digest := sha256.Sum256(requestForHash)
-	metadata := make(map[string]any, len(request.Metadata)+1)
-	for key, value := range request.Metadata {
-		if key == "relay_request_id" || key == "relay_capability_revision" {
-			continue
-		}
-		metadata[key] = value
-	}
+	metadata := request.Metadata
 	if requestID != "" {
 		metadata["relay_request_id"] = requestID
 	}
@@ -79,7 +77,7 @@ func SubmitPlatformGeneration(
 		SourceClientID:             principal.ClientID,
 		RequestID:                  requestID,
 		IdempotencyKey:             idempotencyKey,
-		RequestHash:                fmt.Sprintf("%x", digest),
+		RequestHash:                requestHash,
 		RequestJSON:                string(serialized),
 		ClientReferenceID:          request.ClientReferenceID,
 		Model:                      request.Model,
@@ -103,6 +101,25 @@ func SubmitPlatformGeneration(
 		return dto.PlatformGenerationAccepted{}, PlatformGenerationConflictError{}
 	}
 	return platformGenerationAccepted(*persisted, replayed), nil
+}
+
+func platformGenerationRequestForIdempotency(request dto.PlatformGenerationRequest) (dto.PlatformGenerationRequest, string, error) {
+	metadata := make(map[string]any, len(request.Metadata))
+	for key, value := range request.Metadata {
+		if key == "relay_request_id" || key == "relay_capability_revision" ||
+			key == generationprofile.MetadataProfileID || key == generationprofile.MetadataProfileRevision ||
+			key == generationprofile.MetadataProfileSnapshot {
+			continue
+		}
+		metadata[key] = value
+	}
+	request.Metadata = metadata
+	serialized, err := common.Marshal(request)
+	if err != nil {
+		return dto.PlatformGenerationRequest{}, "", err
+	}
+	digest := sha256.Sum256(serialized)
+	return request, fmt.Sprintf("%x", digest), nil
 }
 
 func GetPlatformGeneration(principal PlatformRelayPrincipal, jobID string) (dto.PlatformGenerationSnapshot, error) {
@@ -184,7 +201,7 @@ func platformGenerationSnapshot(job model.PlatformGenerationJob) (dto.PlatformGe
 		Mode:                       request.Mode,
 		Inputs:                     request.Inputs,
 		Output:                     request.Output,
-		Metadata:                   request.Metadata,
+		Metadata:                   generationprofile.PublicMetadata(request.Metadata),
 		Status:                     job.Status,
 		ReservationAction:          platformGenerationReservationAction(job.Status),
 		Progress:                   job.Progress,

@@ -585,8 +585,11 @@ def test_oidc_provider_callback_errors_consume_state_without_token_exchange(
                     "&error=access_denied&code=must-not-be-exchanged"
                 )
             failed = browser.get(callback, follow_redirects=False)
-            assert failed.status_code == 401
-            assert failed.json()["code"] == "oidc_login_failed"
+            assert failed.status_code == 303
+            assert (
+                failed.headers["location"]
+                == "https://frontend.example.test/login?auth_error=oidc_login_failed&return_to=%2Fsettings"
+            )
             assert provider["token_calls"] == 0
 
             replay = browser.get(success_callback, follow_redirects=False)
@@ -666,43 +669,53 @@ def test_oidc_token_exchange_error_matrix_is_one_shot_and_secret_free(
 
 
 def test_owner_transfer_requires_csrf_and_recent_authentication() -> None:
-    app, engine, provider = _auth_app()
+    app, engine, provider = _auth_app(
+        provider_subject="recent-auth-company-owner",
+        provider_email="recent-auth-company-owner@example.com",
+        provider_name="Current Owner",
+    )
     try:
+        with app.state.session_factory.begin() as session:
+            company, current_owner, owner_membership = (
+                CompanyService.bootstrap_company(
+                    session,
+                    company_name="Recent Auth Transfer",
+                    owner_email="recent-auth-company-owner@example.com",
+                    owner_display_name="Current Owner",
+                )
+            )
+            target_user, target_membership, _ = CompanyService.add_member(
+                session,
+                company_id=company.id,
+                email="next-owner-recent@example.com",
+                display_name="Next Owner",
+            )
+            operator = AccessLifecycleService.system_role(
+                session, company_id=company.id, system_key="operator"
+            )
+            AccessLifecycleService.assign_role(
+                session,
+                company_id=company.id,
+                membership_id=target_membership.id,
+                role_id=operator.id,
+                actor_membership_id=owner_membership.id,
+            )
+            company_id = company.id
+            owner_user_id = current_owner.id
+            owner_membership_id = owner_membership.id
+            target_membership_id = target_membership.id
+            target_user_id = target_user.id
+
         with TestClient(app, base_url="https://testserver") as browser:
             _, callback = _login(browser, provider)
             assert browser.get(callback, follow_redirects=False).status_code == 303
             auth_state = browser.get("/api/v1/auth/session").json()
+            assert auth_state["user"]["id"] == owner_user_id
             csrf = auth_state["csrf_token"]
             with app.state.session_factory.begin() as session:
-                company, _, owner_membership = CompanyService.bootstrap_company(
-                    session,
-                    company_name="Recent Auth Transfer",
-                    owner_email="owner@example.com",
-                    owner_display_name="Current Owner",
-                )
-                target_user, target_membership, _ = CompanyService.add_member(
-                    session,
-                    company_id=company.id,
-                    email="next-owner-recent@example.com",
-                    display_name="Next Owner",
-                )
-                operator = AccessLifecycleService.system_role(
-                    session, company_id=company.id, system_key="operator"
-                )
-                AccessLifecycleService.assign_role(
-                    session,
-                    company_id=company.id,
-                    membership_id=target_membership.id,
-                    role_id=operator.id,
-                    actor_membership_id=owner_membership.id,
-                )
                 auth_session = session.scalar(select(AuthSession))
                 assert auth_session is not None
                 auth_session.auth_time = utcnow() - timedelta(seconds=301)
-                company_id = company.id
-                owner_membership_id = owner_membership.id
-                target_membership_id = target_membership.id
-                target_user_id = target_user.id
 
             body = {
                 "target_membership_id": target_membership_id,
@@ -748,41 +761,44 @@ def test_owner_transfer_requires_csrf_and_recent_authentication() -> None:
 
 
 def test_auth_list_endpoints_enforce_bounded_pagination() -> None:
-    app, engine, provider = _auth_app()
+    app, engine, provider = _auth_app(
+        provider_subject="pagination-company-owner",
+        provider_email="pagination-company-owner@example.com",
+        provider_name="Pagination Owner",
+    )
     try:
+        with app.state.session_factory.begin() as session:
+            company, company_owner, _ = CompanyService.bootstrap_company(
+                session,
+                company_name="Pagination Company",
+                owner_email="pagination-company-owner@example.com",
+                owner_display_name="Pagination Owner",
+            )
+            company_id = company.id
+            for index in range(3):
+                InvitationService.create(
+                    session,
+                    company_id=company_id,
+                    actor_user_id=company_owner.id,
+                    email=f"page-{index}@example.com",
+                    display_name=f"Page {index}",
+                    primary_role="operator",
+                    idempotency_key=f"pagination-{index:03d}",
+                    expires_in_seconds=3600,
+                    pepper=app.state.settings.jwt_signing_secret,
+                    request_id=f"pagination-{index}",
+                )
+            for index in range(3):
+                session.add(
+                    User(
+                        email=f"platform-page-{index}@example.com",
+                        display_name=f"Platform Page {index}",
+                    )
+                )
+
         with TestClient(app, base_url="https://testserver") as browser:
             _, callback = _login(browser, provider)
             assert browser.get(callback, follow_redirects=False).status_code == 303
-            auth_state = browser.get("/api/v1/auth/session").json()
-            with app.state.session_factory.begin() as session:
-                company, _, _ = CompanyService.bootstrap_company(
-                    session,
-                    company_name="Pagination Company",
-                    owner_email="owner@example.com",
-                    owner_display_name="Owner",
-                )
-                company_id = company.id
-                owner_id = auth_state["user"]["id"]
-                for index in range(3):
-                    InvitationService.create(
-                        session,
-                        company_id=company_id,
-                        actor_user_id=owner_id,
-                        email=f"page-{index}@example.com",
-                        display_name=f"Page {index}",
-                        primary_role="operator",
-                        idempotency_key=f"pagination-{index:03d}",
-                        expires_in_seconds=3600,
-                        pepper=app.state.settings.jwt_signing_secret,
-                        request_id=f"pagination-{index}",
-                    )
-                for index in range(3):
-                    session.add(
-                        User(
-                            email=f"platform-page-{index}@example.com",
-                            display_name=f"Platform Page {index}",
-                        )
-                    )
 
             sessions = browser.get("/api/v1/account/sessions?page=1&page_size=1")
             assert sessions.status_code == 200
@@ -806,20 +822,36 @@ def test_auth_list_endpoints_enforce_bounded_pagination() -> None:
                 headers={"X-Company-ID": company_id},
             ).json()["items"] == []
 
-            users = browser.get("/api/v1/platform-admin/users?page=2&page_size=2")
-            assert users.status_code == 200
-            assert users.json()["total"] >= 7
-            assert len(users.json()["items"]) == 2
-
             for path in (
                 "/api/v1/account/sessions?page=0",
                 "/api/v1/account/sessions?page_size=101",
-                "/api/v1/platform-admin/users?page_size=101",
             ):
                 assert browser.get(path).status_code == 422
             assert browser.get(
                 f"/api/v1/companies/{company_id}/invitations?page_size=0",
                 headers={"X-Company-ID": company_id},
+            ).status_code == 422
+
+        provider.update(
+            {
+                "subject": "owner-subject",
+                "email": "owner@example.com",
+                "name": "Owner",
+            }
+        )
+        with TestClient(app, base_url="https://testserver") as admin_browser:
+            _, callback = _login(admin_browser, provider)
+            assert admin_browser.get(
+                callback, follow_redirects=False
+            ).status_code == 303
+            users = admin_browser.get(
+                "/api/v1/platform-admin/users?page=2&page_size=2"
+            )
+            assert users.status_code == 200
+            assert users.json()["total"] >= 7
+            assert len(users.json()["items"]) == 2
+            assert admin_browser.get(
+                "/api/v1/platform-admin/users?page_size=101"
             ).status_code == 422
     finally:
         app.state.oidc_http_client.close()
@@ -1034,8 +1066,19 @@ def test_missing_auth_time_rejects_platform_owner_and_high_risk_account_actions(
 
 
 def test_invitation_acceptance_failures_publish_stable_codes() -> None:
-    app, engine, provider = _auth_app()
+    app, engine, provider = _auth_app(
+        provider_subject="stable-company-invitee",
+        provider_email="stable-company-invitee@example.com",
+        provider_name="Stable Invitee",
+    )
     try:
+        with app.state.session_factory.begin() as session:
+            CompanyService.bootstrap_company(
+                session,
+                company_name="Stable Invitee Home",
+                owner_email="stable-company-invitee@example.com",
+                owner_display_name="Stable Invitee",
+            )
         with TestClient(app, base_url="https://testserver") as browser:
             _, callback = _login(browser, provider)
             assert browser.get(callback, follow_redirects=False).status_code == 303

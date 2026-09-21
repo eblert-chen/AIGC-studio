@@ -9,7 +9,7 @@ import time
 from typing import Any, Callable, Literal, Mapping
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator, model_serializer
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -43,6 +43,14 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict:
 
 class RelayCallbackJob(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    execution_contract_sha256: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_execution_digest(self, handler):
+        payload = handler(self)
+        if self.execution_contract_sha256 is None:
+            payload.pop("execution_contract_sha256", None)
+        return payload
 
     api_version: Literal["v1"]
     id: UUID
@@ -455,6 +463,7 @@ class RelayCallbackService:
                 else None
             ),
             reservation_action=payload.job.reservation_action,
+            execution_contract_sha256=payload.job.execution_contract_sha256,
             personal_workspace_id=task.personal_workspace_id,
         )
         return updated_task, False

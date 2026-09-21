@@ -412,6 +412,10 @@ func EvaluatePlatformProviderMonitorSnapshot(
 }
 
 func GetPlatformProviderMonitorReadiness(enabled bool, maximumFreshness time.Duration) (PlatformProviderMonitorReadiness, error) {
+	return getPlatformProviderMonitorReadinessWithDB(model.DB, enabled, maximumFreshness)
+}
+
+func getPlatformProviderMonitorReadinessWithDB(db *gorm.DB, enabled bool, maximumFreshness time.Duration) (PlatformProviderMonitorReadiness, error) {
 	summary := PlatformProviderMonitorReadiness{Enabled: enabled}
 	if !enabled {
 		return summary, nil
@@ -419,7 +423,10 @@ func GetPlatformProviderMonitorReadiness(enabled bool, maximumFreshness time.Dur
 	if maximumFreshness < time.Second {
 		return summary, fmt.Errorf("provider monitor freshness threshold is invalid")
 	}
-	lease, err := model.GetPlatformProviderMonitorLease()
+	if db == nil {
+		return summary, fmt.Errorf("provider monitor database is unavailable")
+	}
+	lease, err := model.GetPlatformProviderMonitorLeaseWithDB(db)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		summary.Degraded = true
 		return summary, nil
@@ -431,7 +438,7 @@ func GetPlatformProviderMonitorReadiness(enabled bool, maximumFreshness time.Dur
 	summary.LastWorkerErrorCode = lease.LastErrorCode
 	if lease.LastCompletedAt != nil {
 		var now time.Time
-		err := model.DB.Transaction(func(tx *gorm.DB) error {
+		err := db.Transaction(func(tx *gorm.DB) error {
 			var clockErr error
 			now, clockErr = model.GetDBTimeTx(tx)
 			return clockErr
@@ -446,15 +453,15 @@ func GetPlatformProviderMonitorReadiness(enabled bool, maximumFreshness time.Dur
 		summary.FreshnessSeconds = int64(age / time.Second)
 		summary.Fresh = age <= maximumFreshness
 	}
-	if err := model.DB.Model(&model.PlatformProviderIncident{}).Where("active = ?", true).Count(&summary.ActiveIncidents).Error; err != nil {
+	if err := db.Model(&model.PlatformProviderIncident{}).Where("active = ?", true).Count(&summary.ActiveIncidents).Error; err != nil {
 		return summary, err
 	}
-	if err := model.DB.Model(&model.PlatformProviderRouteHealth{}).
+	if err := db.Model(&model.PlatformProviderRouteHealth{}).
 		Where("status IN ?", []string{model.PlatformProviderRouteHealthFailed, model.PlatformProviderRouteHealthInvalidated}).
 		Count(&summary.UnavailableRoutes).Error; err != nil {
 		return summary, err
 	}
-	counts, err := model.GetPlatformRelayDeliveryCounts(model.PlatformRelayDeliveryKindProviderAlert)
+	counts, err := model.GetPlatformRelayDeliveryCountsWithDB(db, model.PlatformRelayDeliveryKindProviderAlert)
 	if err != nil {
 		return summary, err
 	}

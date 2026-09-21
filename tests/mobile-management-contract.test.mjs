@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { managementSource } from "./management-source.mjs";
 
-const source = await readFile(
-  new URL("../src/ManagementConsole.jsx", import.meta.url),
-  "utf8",
-);
+const source = managementSource;
 const css = await readFile(
   new URL("../src/design-system/mobile-management.css", import.meta.url),
   "utf8",
@@ -13,10 +11,14 @@ const css = await readFile(
 
 test("company mobile chrome exposes one compact command bar and keeps every global control reachable", () => {
   assert.match(source, /className="control-mobile-commandbar"/);
-  assert.match(source, /aria-label="返回制作工作区"/);
+  assert.match(source, /aria-label=\{`返回\$\{preferredCreationLabel\}`\}/);
+  assert.match(source, /onSurfaceChange\(preferredCreationSurface\)[\s\S]*?>创作<\/button>/);
+  assert.doesNotMatch(source, />个人<\/button>|>企业<\/button>|>个人创作<\/button>|>企业创作<\/button>/);
   assert.match(source, /className="control-mobile-heading"[\s\S]*?\{activeSectionLabel\}/);
   assert.match(source, /aria-label="打开工作区、皮肤与账号菜单"/);
-  assert.match(source, /className="control-mobile-command-panel"[\s\S]*?<SkinSwitcher[\s\S]*?<DemoAccountSwitcher/);
+  assert.match(source, /className="control-mobile-command-panel"[\s\S]*?<SkinSwitcher[\s\S]*?setMobileDemoPersonaHost/);
+  assert.equal((source.match(/<DemoAccountSwitcher\b/g) || []).length, 1);
+  assert.match(source, /compactManagementChrome[\s\S]*?mobileDemoPersonaHost[\s\S]*?desktopDemoPersonaHost/);
   assert.match(source, /event\.target === summary && \(event\.key === "Enter" \|\| event\.key === " "\)[\s\S]*?event\.currentTarget\.open = !event\.currentTarget\.open/);
   assert.match(source, /event\.key === "Tab" && event\.currentTarget\.open && event\.target === summary && !event\.shiftKey[\s\S]*?firstControl\.focus\(\)/);
   assert.match(source, /event\.key !== "Escape"[\s\S]*?event\.currentTarget\.open = false[\s\S]*?summary\?\.focus\(\)/);

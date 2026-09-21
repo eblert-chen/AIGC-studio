@@ -16,7 +16,7 @@ jobs:
   frontend:
     name: Frontend tests and Sites build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -38,6 +38,10 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run test:sites
+      - name: Install the pinned browser used by the product gate
+        run: npx playwright install --with-deps chromium
+      - name: Run desktop and phone browser gates
+        run: npm run test:browser
 
   platform:
     name: Platform full suite and PostgreSQL migrations
@@ -291,7 +295,7 @@ jobs:
       - run: npm run test:relay-deployment
       - run: node --test tests/relay-cutover-release-contract.test.mjs
       - run: npm run relay:candidate:check
-      - run: docker compose config --quiet
+      - run: docker compose --env-file .env.example config --quiet
       - name: Validate staging new-api-only topology
         run: >-
           docker compose

@@ -22,6 +22,7 @@ import { formatDateTime, formatInteger } from "../adminConsoleUtils.js";
 export const NAV_ITEMS = [
   { id: "cockpit", label: "经营总览" },
   { id: "task-operations", label: "任务运营" },
+  { id: "prompt-collection", label: "提示词收集" },
   { id: "model-profit", label: "模型利润" },
   { id: "company-health", label: "企业健康" },
   { id: "entitlements", label: "权益分发" },
@@ -105,6 +106,7 @@ export const SOURCE_KEYS = [
   "relayChannels",
   "channelHealth",
   "relayUnknownSubmissions",
+  "relayProviderResultReconciliations",
   "relayCallbackDeadLetters",
   "exceptions",
   "matrix",
@@ -118,6 +120,7 @@ export const SOURCE_KEYS = [
 export const TIME_SCOPED_SECTIONS = new Set([
   "cockpit",
   "task-operations",
+  "prompt-collection",
   "model-profit",
   "company-health",
 ]);
@@ -134,11 +137,11 @@ export function cx(...values) {
 
 export function compactIdentifier(value, head = 8, tail = 6) {
   const normalized = String(value || "");
-  if (normalized.length <= head + tail + 1) return normalized || "—";
+  if (normalized.length <= head + tail + 1) return normalized || "未提供";
   return `${normalized.slice(0, head)}…${normalized.slice(-tail)}`;
 }
 
-export function evidenceCount(value, fallback = "—") {
+export function evidenceCount(value, fallback = "待核验") {
   const normalized = Number(value);
   return Number.isFinite(normalized) && normalized >= 0
     ? formatInteger(normalized)
@@ -298,7 +301,7 @@ export function ChartDataTable({
               <tr key={rowKey(row, index)}>
                 {columns.map((column) => (
                   <td key={column.key}>
-                    {column.format ? column.format(row[column.key], row) : row[column.key] ?? "—"}
+                    {column.format ? column.format(row[column.key], row) : row[column.key] ?? "未提供"}
                   </td>
                 ))}
               </tr>
@@ -322,26 +325,32 @@ export function PanelHeader({ title, detail, action, compact = false }) {
   );
 }
 
-export function TableScroller({ children, className = "", hasActions = false, label = "数据表格" }) {
+export function TableScroller({ children, className = "", hasActions = false, showScrollHint = false, label = "数据表格" }) {
+  const describeHorizontalScroll = hasActions || showScrollHint;
   return (
     <div
       className={cx("ops-table-wrap", hasActions && "has-sticky-actions", className)}
       role="region"
-      aria-label={hasActions ? `${label}，操作列固定在右侧，可横向滚动查看完整字段` : label}
+      aria-label={hasActions ? `${label}，操作列固定在右侧，可横向滚动查看完整字段` : describeHorizontalScroll ? `${label}，可横向滚动查看完整字段` : label}
       tabIndex="0"
     >
-      {hasActions ? <span className="ops-table-scroll-hint" aria-hidden="true"><CaretLeft size={13} />左右滑动查看字段<CaretRight size={13} /></span> : null}
+      {describeHorizontalScroll ? <span className="ops-table-scroll-hint" aria-hidden="true"><CaretLeft size={13} />左右滑动查看字段<CaretRight size={13} /></span> : null}
       {children}
     </div>
   );
 }
 
-export function PageTitle({ title, detail, controls }) {
+export function PageTitle({ title, detail, controls, index = 0, total = 0 }) {
+  const currentIndex = index > 0 ? String(index).padStart(2, "0") : "--";
+  const totalCount = total > 0 ? String(total).padStart(2, "0") : "--";
   return (
     <div className="ops-page-title">
-      <div>
-        <h1 id="ops-page-title">{title}</h1>
-        {detail ? <p>{detail}</p> : null}
+      <div className="ops-page-copy">
+        <span className="ops-page-index" aria-hidden="true"><strong>{currentIndex}</strong><small>/ {totalCount}</small></span>
+        <div>
+          <h1 id="ops-page-title">{title}</h1>
+          {detail ? <p>{detail}</p> : null}
+        </div>
       </div>
       {controls ? <div className="ops-page-controls">{controls}</div> : null}
     </div>

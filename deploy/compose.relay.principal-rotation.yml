@@ -150,6 +150,12 @@ services:
         bind:
           create_host_path: false
       - type: bind
+        source: ${PLATFORM_RELAY_CATALOG_SYNC_RUNTIME_SECRETS_FILE:?set owner-only Platform relay-catalog-sync runtime secret file}
+        target: /run/secrets/platform-relay-catalog-sync-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: ${PLATFORM_TIMEOUT_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform timeout-worker runtime secret file}
         target: /run/secrets/platform-timeout-worker-runtime-secrets.json
         read_only: true
@@ -194,6 +200,12 @@ services:
       - type: bind
         source: ${PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE:?set owner-only Platform relay-sync password file}
         target: /run/secrets/platform-relay-sync-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_RELAY_CATALOG_SYNC_DATABASE_PASSWORD_FILE:?set owner-only Platform relay-catalog-sync password file}
+        target: /run/secrets/platform-relay-catalog-sync-database-password
         read_only: true
         bind:
           create_host_path: false

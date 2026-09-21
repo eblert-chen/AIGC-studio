@@ -11,6 +11,7 @@ import {
 import { DemoAccountSwitcher } from "../DemoAccountSwitcher.jsx";
 import { normalizeSkin, SkinSwitcher } from "../SkinSwitcher.jsx";
 import { BrandLogo, BRAND_NAME } from "../BrandLogo.jsx";
+import { OperationsWorkspaceActions } from "./OperationsWorkspaceActions.jsx";
 import {
   buildEntitlementKey,
   downloadTextFile,
@@ -128,6 +129,9 @@ export function AdminOperationsConsole({
   onRelayCallbackDeadLetterRedrive,
   demoPersonaId = "platform_admin",
   onDemoPersonaChange,
+  onOpenPersonalCreation,
+  personalCreationPending = false,
+  personalCreationErrorMessageId = "",
   onLogout,
   skin = "paper",
   onSkinChange,
@@ -143,6 +147,7 @@ export function AdminOperationsConsole({
   canManageRelayChannels = false,
   canAuthorizeRelayNativeConsole = false,
   isPlatformOwner = false,
+  promptCollectionContent = null,
   showcaseContent = null,
   className = "",
 }) {
@@ -158,6 +163,7 @@ export function AdminOperationsConsole({
   const [selectedRelayUnknown, setSelectedRelayUnknown] = useState(null);
   const [relayUnknownDetailVersion, setRelayUnknownDetailVersion] = useState(0);
   const [relayUnknownError, setRelayUnknownError] = useState("");
+  const [relayUnknownFieldErrors, setRelayUnknownFieldErrors] = useState({});
   const [relayUnknownRequiresRefresh, setRelayUnknownRequiresRefresh] = useState(false);
   const [relayUnknownPendingForm, setRelayUnknownPendingForm] = useState(null);
   const [demoResolvedRelayUnknownIds, setDemoResolvedRelayUnknownIds] = useState(new Set());
@@ -192,6 +198,8 @@ export function AdminOperationsConsole({
   const [toast, setToast] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
   const operationsNavRef = useRef(null);
+  const accountButtonRef = useRef(null);
+  const accountMenuRef = useRef(null);
   const [navOverflow, setNavOverflow] = useState({ before: false, after: false });
 
   useEffect(() => {
@@ -239,6 +247,7 @@ export function AdminOperationsConsole({
       sourceErrors: {},
       relayChannelSourceStatus: "available",
       relayUnknownSubmissionSourceStatus: "available",
+      relayProviderResultReconciliationSourceStatus: "available",
       relayCallbackDeadLetterSourceStatus: "available",
     };
   }, [demoData, demoMode, demoRelayChannelOverrides, demoResolvedRelayUnknownIds, inputData]);
@@ -357,6 +366,39 @@ export function AdminOperationsConsole({
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
+  useEffect(() => {
+    if (!accountOpen) return undefined;
+    const trigger = accountButtonRef.current;
+    const menu = accountMenuRef.current;
+    const menuItem = menu?.querySelector('[role="menuitem"]');
+    const focusFrame = globalThis.requestAnimationFrame?.(() => menuItem?.focus());
+    const closeFromOutside = (event) => {
+      if (trigger?.contains(event.target) || menu?.contains(event.target)) return;
+      setAccountOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setAccountOpen(false);
+        trigger?.focus();
+        return;
+      }
+      if ((event.key === "ArrowDown" || event.key === "ArrowUp") && menu?.contains(document.activeElement)) {
+        event.preventDefault();
+        menuItem?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("focusin", closeFromOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      if (focusFrame !== undefined) globalThis.cancelAnimationFrame?.(focusFrame);
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("focusin", closeFromOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [accountOpen]);
+
   const navigate = (section) => {
     const targetSection = availableNavItems.some((item) => item.id === section)
       ? section
@@ -441,6 +483,7 @@ export function AdminOperationsConsole({
     setBusyAction(`relay-unknown-open:${item.jobId}`);
     setLocalError("");
     setRelayUnknownError("");
+    setRelayUnknownFieldErrors({});
     setRelayUnknownPendingForm(null);
     try {
       const detail = demoMode ? item : await onRelayUnknownDetail(item);
@@ -459,6 +502,7 @@ export function AdminOperationsConsole({
     if (!item) return;
     setBusyAction(`relay-unknown-refresh:${item.jobId}`);
     setRelayUnknownError("");
+    setRelayUnknownFieldErrors({});
     try {
       const refreshed = demoMode
         ? { state: "pending", item }
@@ -494,6 +538,7 @@ export function AdminOperationsConsole({
     }
     setBusyAction(`relay-unknown-resolve:${item.jobId}`);
     setRelayUnknownError("");
+    setRelayUnknownFieldErrors({});
     try {
       const result = await onRelayUnknownResolve?.({ item, form });
       if (demoMode) {
@@ -511,10 +556,13 @@ export function AdminOperationsConsole({
       );
     } catch (resolveError) {
       setRelayUnknownError(resolveError?.message || "resolve 结果不明。禁止重复提交，请刷新详情核实。");
+      setRelayUnknownFieldErrors(resolveError?.fieldErrors || {});
+      const mustRefresh = resolveError?.relayResultProofRequired === true
+        || resolveError?.cause?.status === 409;
       setRelayUnknownPendingForm(
-        resolveError?.relayResultProofRequired === true ? { ...form } : null,
+        mustRefresh ? { ...form } : null,
       );
-      setRelayUnknownRequiresRefresh(true);
+      setRelayUnknownRequiresRefresh(mustRefresh);
     } finally {
       setBusyAction("");
     }
@@ -858,10 +906,11 @@ export function AdminOperationsConsole({
   const pageMeta = {
     cockpit: { title: "平台经营总览", detail: "从需要处理的异常出发，连续查看经营趋势、模型利润与企业表现。" },
     "task-operations": { title: "任务运营中心", detail: "跟踪提交、排队、生成、转存与回调完整链路。" },
+    "prompt-collection": { title: "提示词收集", detail: "集中浏览用户随生成任务提交的提示词，按时间、工作区和任务状态快速定位。" },
     "model-profit": { title: "模型盈利", detail: "按模型核对调用量、收入、渠道成本、毛利与质量。" },
     "company-health": { title: "企业健康", detail: "提前发现余额、活跃度、消费、预留、失败率与权益风险。" },
     entitlements: { title: "企业权益分发", detail: "按企业统一控制模型、功能、智能体、外部 API 与自动发布。" },
-    channels: { title: "Relay 渠道控制面", detail: "通过 Platform 安全门面完成渠道读取、测试和启停，并保留未知提交与死信处置队列。" },
+    channels: { title: "Relay 渠道控制面", detail: "通过 Platform 安全门面完成渠道读取、测试和启停，并保留未知提交、供应商结果核对与死信队列。" },
     "publishing-assets": { title: "发布与资产异常", detail: "集中处理发布、OAuth、OBS 转存与下载登记异常。" },
     showcase: { title: "首页精选案例", detail: "编辑草稿、检查桌面与移动端预览，并以不可变版本发布或回滚首页内容。" },
     "access-audit": { title: "权限与审计", detail: "平台管理员最小权限、变更差异、导出和恢复线索。" },
@@ -879,6 +928,7 @@ export function AdminOperationsConsole({
   let content = null;
   if (renderSection === "cockpit") content = <OperatingCockpitScreen data={data} onNavigate={navigate} onExceptionSelect={setSelectedException} onCompanyOpen={onCompanyOpen} onModelOpen={onModelOpen} onRetry={refresh} />;
   if (renderSection === "task-operations") content = <TaskOperationsScreen data={data} onExceptionSelect={setSelectedException} onShowExceptionCenter={showExceptionCenter} onReliabilityAction={onReliabilityAction} onRetry={refresh} />;
+  if (renderSection === "prompt-collection") content = promptCollectionContent;
   if (renderSection === "model-profit") content = <ModelProfitabilityScreen data={data} onModelOpen={onModelOpen} onRetry={refresh} />;
   if (renderSection === "company-health") content = <CompanyHealthScreen data={data} onCompanyOpen={onCompanyOpen} onRetry={refresh} />;
   if (renderSection === "entitlements") content = <EntitlementMatrixScreen data={data} selectedCompanyIds={selectedCompanyIds} onSelectedCompanyIds={setSelectedCompanyIds} selectedProductIds={selectedProductIds} onSelectedProductIds={setSelectedProductIds} batchMode={batchMode} onBatchMode={setBatchMode} copySourceId={copySourceId} onCopySourceId={setCopySourceId} templateId={templateId} onTemplateId={setTemplateId} onPreview={buildBatchPreview} onCellOpen={openEntitlement} onRetry={refresh} readOnly={!entitlementsWritable} />;
@@ -921,7 +971,10 @@ export function AdminOperationsConsole({
   return (
     <div className={cx("ops-console", className)} data-theme={activeSkin} data-active-section={renderSection || "access"}>
       <header className="ops-topbar">
-        <button className="ops-brand" type="button" onClick={() => navigate(brandTargetSection)} disabled={!brandTargetSection} aria-label={brandTargetSection === "cockpit" ? `${BRAND_NAME} · 返回经营总览` : `${BRAND_NAME} · 前往首个已授权模块`}><BrandLogo variant="responsive" mobileBreakpoint={820} /></button>
+        <button className="ops-brand" type="button" onClick={() => navigate(brandTargetSection)} disabled={!brandTargetSection} aria-label={brandTargetSection === "cockpit" ? `${BRAND_NAME} · 返回经营总览` : `${BRAND_NAME} · 前往首个已授权模块`}>
+          <BrandLogo variant="responsive" mobileBreakpoint={820} />
+          <span className="ops-surface-name" aria-hidden="true">平台运营</span>
+        </button>
         <div className="ops-module-navigation">
           <button className="ops-nav-scroll-button is-previous" data-icon-only="true" type="button" onClick={() => scrollModules(-1)} disabled={!navOverflow.before} aria-label="查看前面的平台模块" title="前面的模块"><CaretLeft size={16} /></button>
           <nav ref={operationsNavRef} aria-label="平台管理员模块">
@@ -930,16 +983,44 @@ export function AdminOperationsConsole({
           <button className="ops-nav-scroll-button is-next" data-icon-only="true" type="button" onClick={() => scrollModules(1)} disabled={!navOverflow.after} aria-label="查看更多平台模块" title="更多模块"><CaretRight size={16} /></button>
         </div>
         <div className="ops-admin-tools">
+          <OperationsWorkspaceActions
+            canOpenPersonalCreation={isPlatformOwner === true}
+            onOpenPersonalCreation={onOpenPersonalCreation}
+            pending={personalCreationPending}
+            errorMessageId={personalCreationErrorMessageId}
+          />
           <SkinSwitcher value={activeSkin} onChange={onSkinChange} />
           {onOpenBasicConfig ? <button type="button" className="ops-basic-config-button" data-icon-only="true" onClick={onOpenBasicConfig} aria-label="打开基础配置" title="基础配置"><SlidersHorizontal size={16} /><span className="ops-basic-config-label">基础配置</span></button> : null}
-          <button type="button" className="ops-help-button" onClick={() => setToast("运营控制台说明：先处理异常，再核对经营、利润与企业健康。") }><WarningCircle size={16} />帮助</button>
+          <button type="button" className="ops-help-button" aria-label="打开运营控制台帮助" title="帮助" onClick={() => setToast("运营控制台说明：先处理异常，再核对经营、利润与企业健康。") }><WarningCircle size={16} /><span className="ops-help-label">帮助</span></button>
           <span className="ops-top-divider" />
           {demoMode && onDemoPersonaChange ? (
             <DemoAccountSwitcher value={demoPersonaId} onChange={onDemoPersonaChange} />
           ) : (
             <div className="ops-account-menu">
-              <button type="button" className="ops-account-button" aria-expanded={accountOpen} onClick={() => setAccountOpen((value) => !value)}><UserCircle size={18} /><span>{administrator.name}</span><CaretDown size={13} /></button>
-              {accountOpen ? <div role="menu"><span>{administrator.roleLabel}</span><button type="button" role="menuitem" onClick={onLogout}>退出登录</button></div> : null}
+              <button
+                ref={accountButtonRef}
+                type="button"
+                className="ops-account-button"
+                aria-haspopup="menu"
+                aria-controls="ops-account-menu"
+                aria-expanded={accountOpen}
+                onClick={() => setAccountOpen((value) => !value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                  event.preventDefault();
+                  setAccountOpen(true);
+                }}
+              >
+                <UserCircle size={18} />
+                <span>{administrator.name}</span>
+                <CaretDown size={13} />
+              </button>
+              {accountOpen ? (
+                <div ref={accountMenuRef} id="ops-account-menu" role="menu" aria-label={`${administrator.name} 的账号菜单`}>
+                  <span role="presentation">{administrator.roleLabel}</span>
+                  <button type="button" role="menuitem" onClick={() => { setAccountOpen(false); onLogout?.(); }}>退出登录</button>
+                </div>
+              ) : null}
             </div>
           )}
         </div>
@@ -948,6 +1029,8 @@ export function AdminOperationsConsole({
         <PageTitle
           title={pageMeta.title}
           detail={pageMeta.detail}
+          index={availableNavItems.findIndex((item) => item.id === renderSection) + 1}
+          total={availableNavItems.length}
           controls={renderSection === "showcase" ? null : <><RangeControls range={range} environment={environment} environmentOptions={environmentOptions} lastRefreshed={data.summary.lastRefreshed} onRange={changeRange} onEnvironment={changeEnvironment} onRefresh={refresh} loading={loading || busyAction === "refresh"} showRange={TIME_SCOPED_SECTIONS.has(renderSection)} />{renderSection === "task-operations" ? <button className="ops-primary-button" type="button" onClick={showExceptionCenter}><Lightning size={16} />进入异常处理</button> : null}</>}
         />
         <PageStatus error={localError || error} loading={loading} toast={toast} />
@@ -956,8 +1039,8 @@ export function AdminOperationsConsole({
 
       {exceptionCenterOpen ? <ExceptionCenterDrawer items={allExceptions} onClose={() => setExceptionCenterOpen(false)} onSelect={(item) => { setExceptionCenterOpen(false); setSelectedException(item); }} /> : null}
       {selectedException ? <ExceptionDrawer item={selectedException} onClose={() => setSelectedException(null)} onResolve={resolveException} onOpenRelayReconciliation={() => { setSelectedException(null); navigate("channels"); }} canResolve={canResolveException ? canResolveException(selectedException) : demoMode} busy={busyAction === `exception:${selectedException.id}`} /> : null}
-      {selectedRelayChannel ? <RelayChannelDrawer key={`${selectedRelayChannel.id}:${relayChannelOperationId || "detail"}`} channel={selectedRelayChannel} intent={relayChannelIntent} targetStatus={relayChannelTargetStatus} operationId={relayChannelOperationId} canManage={demoMode || canManageRelayChannels === true} demoMode={demoMode} busy={busyAction === `relay-channel-operation:${selectedRelayChannel.id}` || busyAction === `relay-channel-readback:${selectedRelayChannel.id}`} error={relayChannelError} requiresReadback={relayChannelRequiresReadback} receipt={relayChannelReceipt} onClose={closeRelayChannelDrawer} onSubmit={submitRelayChannelOperation} onReadback={readbackRelayChannelOperation} /> : null}
-      {selectedRelayUnknown ? <RelayUnknownDrawer key={`${selectedRelayUnknown.jobId}:${relayUnknownDetailVersion}`} item={selectedRelayUnknown} onClose={() => { setSelectedRelayUnknown(null); setRelayUnknownError(""); setRelayUnknownRequiresRefresh(false); setRelayUnknownPendingForm(null); }} onRefresh={refreshRelayUnknown} onResolve={resolveRelayUnknown} canManage={demoMode || canManageRelayUnknown === true} busy={busyAction === `relay-unknown-resolve:${selectedRelayUnknown.jobId}`} refreshing={busyAction === `relay-unknown-refresh:${selectedRelayUnknown.jobId}`} error={relayUnknownError} requiresRefresh={relayUnknownRequiresRefresh} /> : null}
+      {selectedRelayChannel ? <RelayChannelDrawer key={`${selectedRelayChannel.id}:${relayChannelOperationId || "detail"}`} channel={selectedRelayChannel} routeOptions={data.relayRouteOptions} intent={relayChannelIntent} targetStatus={relayChannelTargetStatus} operationId={relayChannelOperationId} canManage={demoMode || canManageRelayChannels === true} demoMode={demoMode} busy={busyAction === `relay-channel-operation:${selectedRelayChannel.id}` || busyAction === `relay-channel-readback:${selectedRelayChannel.id}`} error={relayChannelError} requiresReadback={relayChannelRequiresReadback} receipt={relayChannelReceipt} onClose={closeRelayChannelDrawer} onSubmit={submitRelayChannelOperation} onReadback={readbackRelayChannelOperation} /> : null}
+      {selectedRelayUnknown ? <RelayUnknownDrawer key={`${selectedRelayUnknown.jobId}:${relayUnknownDetailVersion}`} item={selectedRelayUnknown} onClose={() => { setSelectedRelayUnknown(null); setRelayUnknownError(""); setRelayUnknownFieldErrors({}); setRelayUnknownRequiresRefresh(false); setRelayUnknownPendingForm(null); }} onRefresh={refreshRelayUnknown} onResolve={resolveRelayUnknown} canManage={demoMode || canManageRelayUnknown === true} busy={busyAction === `relay-unknown-resolve:${selectedRelayUnknown.jobId}`} refreshing={busyAction === `relay-unknown-refresh:${selectedRelayUnknown.jobId}`} error={relayUnknownError} fieldErrors={relayUnknownFieldErrors} requiresRefresh={relayUnknownRequiresRefresh} /> : null}
       {selectedRelayCallbackDeadLetter ? <RelayCallbackDeadLetterDrawer item={selectedRelayCallbackDeadLetter} onClose={() => { setSelectedRelayCallbackDeadLetter(null); setRelayCallbackDeadLetterError(""); setRelayCallbackDeadLetterRequiresReadback(false); }} onRedrive={redriveRelayCallbackDeadLetter} canManage={canManageRelayCallbackDeadLetters === true} busy={busyAction === `relay-callback-dlq-redrive:${selectedRelayCallbackDeadLetter.eventId}`} error={relayCallbackDeadLetterError} requiresReadback={relayCallbackDeadLetterRequiresReadback} /> : null}
       {entitlementCell ? <EntitlementDrawer {...entitlementCell} onClose={() => setEntitlementCell(null)} onSave={saveEntitlement} busy={busyAction.startsWith("entitlement:")} /> : null}
       {batchPreview ? <BatchPreviewDrawer preview={batchPreview} companies={data.companies} products={data.entitlementProducts} onClose={() => setBatchPreview(null)} onConfirm={commitBatch} busy={busyAction === "batch-entitlements"} /> : null}

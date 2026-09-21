@@ -3,66 +3,38 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+const editorSource = await readFile(new URL("../src/components/GenerationEditor.jsx", import.meta.url), "utf8");
+const uiSource = `${appSource}\n${editorSource}`;
 const communitySource = await readFile(new URL("../src/CommunityHome.jsx", import.meta.url), "utf8");
-const communityCss = await readFile(new URL("../src/community.css", import.meta.url), "utf8");
-const lightTheme = await readFile(new URL("../src/light-theme.css", import.meta.url), "utf8");
 const shellsCss = await readFile(new URL("../src/design-system/shells.css", import.meta.url), "utf8");
+const controlsCss = await readFile(new URL("../src/design-system/controls.css", import.meta.url), "utf8");
+const chromeCss = await readFile(new URL("../src/design-system/chrome.css", import.meta.url), "utf8");
+const studioRoutesCss = await readFile(new URL("../src/design-system/studio-routes.css", import.meta.url), "utf8");
+const composerCss = await readFile(new URL("../src/design-system/composer.css", import.meta.url), "utf8");
+const mobileStudioCss = await readFile(new URL("../src/design-system/mobile-studio.css", import.meta.url), "utf8");
+const mobileManagementCss = await readFile(new URL("../src/design-system/mobile-management.css", import.meta.url), "utf8");
 
-function matchingRuleBodies(css, selectorFragment) {
-  return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-    .filter(([, selector]) => selector.includes(selectorFragment))
-    .map(([, , body]) => body);
-}
-
-function splitGridTracks(value) {
-  const tracks = [];
-  let current = "";
-  let depth = 0;
-  for (const character of value.trim()) {
-    if (character === "(") depth += 1;
-    if (character === ")") depth -= 1;
-    if (/\s/.test(character) && depth === 0) {
-      if (current) tracks.push(current);
-      current = "";
-    } else {
-      current += character;
-    }
-  }
-  if (current) tracks.push(current);
-  return tracks;
-}
-
-function usesInFlowCreationDock(css) {
-  const shellRules = matchingRuleBodies(css, ".app-shell.is-creation-hub");
-  const canvasRules = matchingRuleBodies(css, ".is-creation-hub .main-canvas");
-  const composerRules = matchingRuleBodies(css, ".is-creation-hub .community-composer");
-
-  const hasThreeRows = shellRules.some((body) => {
-    const declaration = body.match(/grid-template-rows:\s*([^;]+);/i);
-    return declaration && splitGridTracks(declaration[1]).length === 3;
-  });
-  const mainUsesContentRow = canvasRules.some((body) => /grid-row:\s*2(?:\s*\/\s*3)?\s*;/i.test(body));
-  const composerUsesDockRow = composerRules.some((body) => (
-    /position:\s*(?:static|relative|sticky)\s*;/i.test(body)
-    && /grid-row:\s*3(?:\s*\/\s*4)?\s*;/i.test(body)
-    && !/position:\s*(?:fixed|absolute)\s*;/i.test(body)
-  ));
-
-  return hasThreeRows && mainUsesContentRow && composerUsesDockRow;
-}
-
-test("Studio 手机导航固定在底部且不会继承旧版 top 定位", () => {
-  const mobileStart = lightTheme.indexOf("@media (max-width: 900px)");
-  const mobileEnd = lightTheme.indexOf("@media (max-width: 620px)", mobileStart);
-  const mobileStyles = lightTheme.slice(mobileStart, mobileEnd);
-
-  assert.ok(mobileStart >= 0 && mobileEnd > mobileStart);
-  assert.match(mobileStyles, /\.app-shell\.is-secondary-page \.side-nav\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*auto;[\s\S]*?bottom:\s*0;/);
-  assert.match(mobileStyles, /height:\s*100dvh;[\s\S]*?min-height:\s*0;[\s\S]*?padding-bottom:\s*64px;/);
+test("Studio 手机模块栏进入壳层网格并横向滚动，不挤压触控目标", () => {
+  assert.match(
+    shellsCss,
+    /@media \(max-width:\s*900px\)[\s\S]*?\.app-shell\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*grid-template-rows:\s*var\(--shell-topbar-size\) var\(--studio-mobile-nav-height, 50px\) minmax\(0, 1fr\);[\s\S]*?\.app-shell > \.side-nav\s*\{[^}]*grid-row:\s*2;/,
+  );
+  assert.match(
+    mobileStudioCss,
+    /\.app-shell\[data-theme\] > \.side-nav \.side-nav-track\s*\{[^}]*overflow-x:\s*auto;[^}]*overscroll-behavior-inline:\s*contain;[^}]*scrollbar-width:\s*none;/,
+  );
+  assert.match(mobileStudioCss, /\.app-shell\[data-theme\] > \.side-nav button\s*\{[^}]*min-height:\s*44px;/s);
+  assert.match(appSource, /className="side-nav-footer"[\s\S]*?onClick=\{\(\) => navigateStudio\("settings"\)\}[\s\S]*?<span>设置<\/span>/);
+  assert.match(appSource, /className="side-nav-scroll-forward"[\s\S]*?track\.scrollTo/);
 });
 
 test("共享换肤控件保留清晰的键盘焦点", () => {
-  assert.match(lightTheme, /\.skin-switcher:focus-within\s*\{[\s\S]*?outline:\s*2px solid var\(--accent\);[\s\S]*?outline-offset:\s*2px;/);
+  assert.match(
+    controlsCss,
+    /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--control-focus-ring\);[^}]*outline-offset:\s*2px;/s,
+  );
+  assert.match(controlsCss, /\.demo-account-switcher:focus-within\s*\{[^}]*border-color:\s*var\(--control-border-color\);[^}]*background:\s*var\(--control-surface-hover\);/s);
+  assert.match(controlsCss, /\.skin-switcher-trigger:focus-visible,[\s\S]*?\.skin-switcher-option:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--control-focus-ring/);
 });
 
 test("产物对话框支持焦点进入、循环、Escape 和关闭后还原", () => {
@@ -85,9 +57,13 @@ test("首页和生成器标签支持 roving tabindex 与方向键", () => {
   assert.match(communitySource, /event\.key === "ArrowLeft"/);
   assert.match(communitySource, /role="tabpanel"/);
 
-  assert.match(appSource, /onKeyDown=\{handleComposerMediaKeyDown\}/);
-  assert.match(appSource, /aria-controls="composer-parameters-panel"/);
-  assert.match(appSource, /id="composer-parameters-panel"[\s\S]*?role="tabpanel"/);
+  assert.match(uiSource, /onKeyDown=\{handleComposerMediaKeyDown\}/);
+  assert.match(uiSource, /aria-controls="composer-parameters-panel"/);
+  assert.match(uiSource, /tabIndex=\{composerMediaKind === "video" \? 0 : -1\}/);
+  assert.match(uiSource, /tabIndex=\{composerMediaKind === "image" \? 0 : -1\}/);
+  assert.match(uiSource, /id="composer-parameters-panel"[\s\S]*?role=\{isQuick \? "tabpanel" : "group"\}/);
+  assert.match(uiSource, /aria-labelledby=\{isQuick && activeCapability \? `composer-media-tab-\$\{composerMediaKind\}` : undefined\}/,
+    "contextual editors must not reference media tabs that only exist in quick creation");
 });
 
 test("Studio 导航切换只重置主画布滚动位置", () => {
@@ -111,14 +87,18 @@ test("程序化文件选择器不会产生不可见的 Tab 停点", () => {
   assert.match(appSource, /onClick=\{\(\) => inputRef\.current\?\.click\(\)\}/);
 });
 
-test("Studio 桌面生成器按 80px 导航后的工作画布居中", () => {
+test("Studio 桌面生成器参与主工作区网格而不覆盖画布", () => {
   assert.match(
-    lightTheme,
-    /\.is-community-home \.community-composer,[\s\S]*?left:\s*calc\(80px \+ \(100vw - 80px\) \/ 2\);/,
+    shellsCss,
+    /\.app-shell\s*\{[^}]*grid-template-columns:\s*var\(--shell-studio-rail-size\) minmax\(0, 1fr\);[\s\S]*?\.app-shell\.is-community-home > \.community-composer\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*3;/,
   );
   assert.match(
-    lightTheme,
-    /@media \(max-width: 1180px\)[\s\S]*?left:\s*calc\(72px \+ \(100vw - 72px\) \/ 2\);/,
+    shellsCss,
+    /@media \(max-width:\s*1180px\)[\s\S]*?--shell-studio-rail-size:\s*144px;/,
+  );
+  assert.match(
+    composerCss,
+    /\.community-composer\s*\{[^}]*position:\s*relative;[^}]*display:\s*grid;[^}]*overflow:\s*hidden;/s,
   );
 });
 
@@ -128,25 +108,24 @@ test("创作页桌面生成器进入专属第三行 dock 而不覆盖内容", ()
     /activeNav === "create" \? "is-creation-hub" : ""/,
   );
 
-  const mobileStart = lightTheme.indexOf("@media (max-width: 900px)");
-  const desktopStyles = lightTheme.slice(0, mobileStart);
-
-  assert.ok(mobileStart >= 0);
-  assert.ok(
-    usesInFlowCreationDock(desktopStyles),
-    "desktop create must use three grid rows, keep main in row 2, and place an in-flow composer in row 3",
+  assert.match(
+    shellsCss,
+    /\.app-shell\.is-community-home\s*\{[^}]*grid-template-rows:\s*var\(--shell-topbar-size\) minmax\(0, 1fr\) auto;/s,
   );
   assert.match(
     shellsCss,
-    /\.app-shell\.is-creation-hub > \.community-composer,[\s\S]*?inset-inline:\s*auto;/,
-    "the in-flow dock must clear the retired fixed composer's logical offsets",
+    /\.app-shell\.is-community-home > \.main-canvas\s*\{[^}]*grid-row:\s*2;[\s\S]*?\.app-shell\.is-community-home > \.community-composer\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*3;/,
+  );
+  assert.match(
+    composerCss,
+    /\.community-composer\s*\{[^}]*position:\s*relative;[^}]*display:\s*grid;[^}]*overflow:\s*hidden;/s,
   );
 });
 
-test("首页生成器仍保持浮动且创作页专属规则不会泄漏到首页", () => {
+test("首页与默认创作共享流内生成器，高级工作台不继承全局底栏与手机启动器", () => {
   assert.match(
-    communityCss,
-    /\.is-community-home \.community-composer\s*\{[^}]*position:\s*fixed\s*;/s,
+    composerCss,
+    /\.community-composer\s*\{[^}]*position:\s*relative;/s,
   );
   assert.match(
     appSource,
@@ -154,47 +133,56 @@ test("首页生成器仍保持浮动且创作页专属规则不会泄漏到首�
   );
   assert.match(
     appSource,
-    /className=\{`app-shell \$\{isPrimaryStudioView \? "is-community-home" : "is-secondary-page"\} \$\{activeNav === "create" \? "is-creation-hub" : ""\} \$\{composerExpanded \? "is-composer-expanded" : ""\}`\}/,
+    /className=\{`app-shell \$\{isQuickStudioView \? "is-community-home" : isAdvancedWorkbench \? "is-advanced-workbench" : "is-secondary-page"\} \$\{activeNav === "create" \? "is-creation-hub" : ""\} \$\{isQuickStudioView && composerExpanded \? "is-composer-expanded" : ""\} \$\{isQuickStudioView && mobileComposerOpen \? "is-mobile-composer-open" : ""\}`\}/,
   );
+  assert.match(
+    appSource,
+    /const isQuickStudioView = isPrimaryStudioView && !isAdvancedWorkbench/,
+  );
+  assert.equal(appSource.match(/\{isQuickStudioView && renderGenerationEditor\(\)\}/g)?.length, 1);
+  assert.equal(appSource.match(/renderEditor=\{renderGenerationEditor\}/g)?.length, 1);
+  assert.equal(uiSource.match(/data-editor-variant=\{variant\}/g)?.length, 1);
+  assert.match(uiSource, /data-ui=\{isQuick \? "director-composer" : "workbench-editor"\}/);
+  assert.match(uiSource, /\{isQuick && <>\s*<button\s*id="mobile-composer-launcher"/);
+  assert.doesNotMatch(appSource, /\{isPrimaryStudioView && \(\s*<aside/);
 });
 
 test("移动创作页生成器也不会覆盖末尾业务内容", () => {
-  const mobileStart = lightTheme.indexOf("@media (max-width: 900px)");
-  const mobileEnd = lightTheme.indexOf("@media (max-width: 720px)", mobileStart);
-  const mobileStyles = lightTheme.slice(mobileStart, mobileEnd);
-
-  assert.ok(mobileStart >= 0 && mobileEnd > mobileStart);
-  assert.ok(
-    usesInFlowCreationDock(mobileStyles),
-    "mobile create must preserve the three-row in-flow dock instead of restoring a fixed overlay",
+  assert.match(
+    shellsCss,
+    /@media \(max-width:\s*900px\)[\s\S]*?\.app-shell\.is-community-home\s*\{[^}]*grid-template-rows:\s*var\(--shell-topbar-size\) var\(--studio-mobile-nav-height, 50px\) minmax\(0, 1fr\) auto;[\s\S]*?\.app-shell\.is-community-home > \.main-canvas\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*3;[\s\S]*?\.app-shell\.is-community-home > \.community-composer\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*4;/,
   );
+  assert.match(
+    composerCss,
+    /@media \(max-width: 900px\)[\s\S]*?\.app-shell\.is-community-home > \.community-composer\s*\{[^}]*grid-column:\s*1;[^}]*margin:\s*0 12px 12px;/s,
+  );
+  assert.doesNotMatch(composerCss, /position:\s*fixed/);
 });
 
 test("Studio 移动导航与历史数据使用共享 12px 可读下限", () => {
-  const compactStart = lightTheme.indexOf("@media (max-width: 390px)");
-  const compactEnd = lightTheme.indexOf("@media (prefers-reduced-motion", compactStart);
-  const compactStyles = lightTheme.slice(compactStart, compactEnd);
-
-  assert.ok(compactStart >= 0 && compactEnd > compactStart);
   assert.match(
-    compactStyles,
-    /\.app-shell\.is-secondary-page \.side-nav button span\s*\{[^}]*font-size:\s*var\(--text-caption, 12px\);/s,
+    chromeCss,
+    /@media \(max-width:\s*900px\)[\s\S]*?\.app-shell > \.side-nav button span\s*\{[^}]*font-size:\s*13px;/,
   );
-  assert.doesNotMatch(compactStyles, /font-size:\s*(?:8|9|10)px;/);
+  assert.doesNotMatch(`${chromeCss}\n${mobileStudioCss}\n${studioRoutesCss}`, /font-size:\s*(?:8|9|10|11)px;/);
 
   assert.match(
-    lightTheme,
-    /\.is-secondary-page \.history-toolbar label,[\s\S]*?\.is-secondary-page \.history-cost\s*\{[^}]*font-size:\s*var\(--text-caption, 12px\);/s,
+    studioRoutesCss,
+    /\.history-toolbar label,[\s\S]*?\.artwork-toolbar label\s*\{[^}]*font-size:\s*12px;/s,
   );
   assert.match(
-    lightTheme,
-    /\.is-secondary-page \.history-toolbar select,[\s\S]*?\.is-secondary-page \.task-history-row footer \.text-button\s*\{[^}]*font-size:\s*12px;/s,
+    studioRoutesCss,
+    /\.task-history-row > footer\s*\{[^}]*font-size:\s*12px;/s,
   );
 });
 
-test("公司移动模块栏以细滚动条提示横向内容", () => {
+test("公司移动模块栏可横向到达并只用一个柔和填充表达选中状态", () => {
   assert.match(
-    lightTheme,
-    /@media \(max-width: 720px\)[\s\S]*?\.control-shell \.control-sidebar\s*\{[^}]*scrollbar-width:\s*thin;[\s\S]*?\.control-shell \.control-sidebar::\-webkit-scrollbar\s*\{[^}]*display:\s*block;[^}]*height:\s*4px;/s,
+    mobileManagementCss,
+    /@media \(max-width:\s*720px\)[\s\S]*?\.control-shell > \.control-sidebar\s*\{[^}]*overflow-x:\s*auto;[^}]*scroll-padding-inline:\s*12px;[^}]*scrollbar-width:\s*none;/,
   );
+  assert.match(mobileManagementCss, /\.control-shell \.control-sidebar nav\s*\{[^}]*width:\s*max-content;[^}]*min-width:\s*100%;/s);
+  assert.match(mobileManagementCss, /\.control-shell \.control-sidebar nav button\s*\{[^}]*min-width:\s*max-content;[^}]*min-height:\s*44px;[^}]*border-radius:\s*var\(--radius-xs, 8px\);/s);
+  assert.match(mobileManagementCss, /\.control-shell \.control-sidebar nav button\.is-active\s*\{[^}]*color:\s*var\(--management-cobalt-strong\);[^}]*background:\s*var\(--management-cobalt-soft\);/s);
+  assert.doesNotMatch(mobileManagementCss, /\.control-shell \.control-sidebar nav button\.is-active::before/);
 });

@@ -33,6 +33,7 @@ app_containers=(
   ai-video-platform-api-1
   ai-video-platform-dispatcher-1
   ai-video-platform-relay-sync-1
+  ai-video-platform-relay-catalog-sync-1
   ai-video-platform-timeout-worker-1
   ai-video-platform-download-gateway-registration-worker-1
   ai-video-relay-new-api-1

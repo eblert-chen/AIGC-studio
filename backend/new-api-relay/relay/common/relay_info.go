@@ -850,6 +850,8 @@ type TaskSubmitReq struct {
 	Mode           string                 `json:"mode,omitempty"`
 	Image          string                 `json:"image,omitempty"`
 	Images         []string               `json:"images,omitempty"`
+	Videos         []string               `json:"videos,omitempty"`
+	Audios         []string               `json:"audios,omitempty"`
 	Size           string                 `json:"size,omitempty"`
 	Duration       int                    `json:"duration,omitempty"`
 	Seconds        string                 `json:"seconds,omitempty"`
@@ -936,6 +938,40 @@ type TaskInfo struct {
 	Progress         string `json:"progress,omitempty"`
 	CompletionTokens int    `json:"completion_tokens,omitempty"` // 用于按倍率计费
 	TotalTokens      int    `json:"total_tokens,omitempty"`      // 用于按倍率计费
+	// ProviderResultProof is internal evidence from a provider-native terminal
+	// response. Platform-owned tasks validate it against the immutable job,
+	// route, request, and adapter-profile snapshots before accepting success.
+	ProviderResultProof *ProviderTaskResultProof `json:"-"`
+}
+
+type ProviderTaskResultProof struct {
+	SchemaVersion        int
+	Protocol             string
+	TaskID               string
+	Model                string
+	ProviderStatus       string
+	Resolution           string
+	DurationSeconds      int
+	AspectRatio          string
+	FramesPresent        bool
+	OutputCount          int
+	MediaType            string
+	UsageComplete        bool
+	InputTokens          int
+	OutputTokens         int
+	OutputVideoTokens    int
+	OutputTextTokens     int
+	ThoughtTokens        int
+	CachedTokens         int
+	TotalTokens          int
+	ProviderTotalSeconds int
+	InputSeconds         int
+	OutputSeconds        int
+	InputImageCount      int
+	ArtifactSizeBytes    int64
+	ArtifactSHA256       string
+	FailureOwner         string
+	FailureCode          string
 }
 
 func FailTaskInfo(reason string) *TaskInfo {

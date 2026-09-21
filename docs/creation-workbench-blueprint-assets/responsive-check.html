@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>蓝图文档窄屏检查</title>
+<style>body{margin:22px;background:#eef0ec;color:#243a2b;font:14px/1.6 system-ui,sans-serif}nav{display:flex;gap:18px;margin-bottom:20px;flex-wrap:wrap}a{color:#087b80}main{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}figure{margin:0}figcaption{margin-bottom:8px}iframe{display:block;border:0;background:white;height:1700px}h1{font-size:20px;margin:0 0 16px}</style></head>
+<body><h1>仅检查蓝图文档，不是产品手机验收</h1><nav aria-label="窄屏检查章节"><a href="?view=overview">总览</a><a href="?view=quick">快捷创作</a><a href="?view=console">3D 导演台</a><a href="?view=notebook">导演手记</a><a href="?view=canvas">谱系画布</a><a href="?view=rules">草稿规则</a></nav>
+<main><figure><figcaption>390px</figcaption><iframe width="390" title="390px蓝图"></iframe></figure><figure><figcaption>320px</figcaption><iframe width="320" title="320px蓝图"></iframe></figure></main>
+<script>(()=>{const allowed=['overview','quick','console','notebook','canvas','rules'];const request=new URLSearchParams(location.search).get('view');const view=allowed.includes(request)?request:'overview';document.querySelectorAll('iframe').forEach(frame=>{frame.src='../creation-workbench-blueprint.html#'+view;});})();</script></body></html>

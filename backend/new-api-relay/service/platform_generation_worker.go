@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"image"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -17,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/generationprofile"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -39,7 +44,12 @@ const (
 	platformGenerationCallbackBatch           = 32
 	platformGenerationFailureThresholdDefault = 3
 	platformGenerationProviderCooldownDefault = 30 * time.Second
+	platformGenerationVeoInputFetchTimeout    = 20 * time.Second
+	platformGenerationVeoInputMaxBytes        = 20 * 1024 * 1024
+	platformGenerationVeoInputMaxDimension    = 8192
 )
+
+var errPlatformGenerationInputAssetUnavailable = errors.New("platform generation input asset is unavailable")
 
 var (
 	errPlatformGenerationSubmissionLeaseFenced = errors.New("generation submission lease was fenced")
@@ -51,6 +61,8 @@ type platformNativeTaskRequest struct {
 	Model          string         `json:"model"`
 	Image          string         `json:"image,omitempty"`
 	Images         []string       `json:"images,omitempty"`
+	Videos         []string       `json:"videos,omitempty"`
+	Audios         []string       `json:"audios,omitempty"`
 	Size           string         `json:"size,omitempty"`
 	Duration       int            `json:"duration,omitempty"`
 	Seconds        string         `json:"seconds,omitempty"`
@@ -59,9 +71,13 @@ type platformNativeTaskRequest struct {
 }
 
 type platformNativeTemporaryResult struct {
-	NativeTaskID string `json:"native_task_id"`
-	ResultURL    string `json:"result_url"`
-	TaskData     string `json:"task_data"`
+	NativeTaskID          string `json:"native_task_id"`
+	ResultURL             string `json:"result_url"`
+	TaskData              string `json:"task_data,omitempty"`
+	ProofContractRevision string `json:"proof_contract_revision,omitempty"`
+	ReceiptSHA256         string `json:"receipt_sha256,omitempty"`
+	ReceiptProofSHA256    string `json:"receipt_proof_sha256,omitempty"`
+	ArtifactURLSHA256     string `json:"artifact_url_sha256,omitempty"`
 }
 
 func PlatformGenerationWorkersEnabled() bool {
@@ -121,11 +137,22 @@ func ValidatePlatformGenerationWorkerConfiguration() error {
 		// The Huawei OBS constructor performs a live bucket-versioning safety
 		// check. Startup must fail before workers accept work when permanent
 		// orphan deletion cannot be guaranteed.
-		store, err := NewPlatformArtifactStoreFromEnvironment()
-		if err != nil {
-			return err
-		}
-		closePlatformGenerationArtifactStore(store)
+		return validatePlatformGenerationWorkerArtifactReadiness()
+	}
+	return nil
+}
+
+func validatePlatformGenerationWorkerArtifactReadiness() error {
+	store, err := platformArtifactReadinessStoreFactory()
+	if err != nil {
+		return err
+	}
+	defer closePlatformGenerationArtifactStore(store)
+	if store == nil || !store.Persistent() {
+		return errors.New("production generation workers require persistent artifact storage")
+	}
+	if err := publishPlatformArtifactReadinessProof(true, store); err != nil {
+		return fmt.Errorf("artifact readiness startup proof failed: %w", err)
 	}
 	return nil
 }
@@ -184,47 +211,6 @@ func RunPlatformGenerationSubmissionOnce(ctx context.Context, outboxIDs ...int64
 		}
 		return true, failPlatformGenerationSubmission(*claim, code, "The generation request is not admitted by the pinned capability", false)
 	}
-	// The native task bridge exposes exactly one provider result. Reject a
-	// wider request before the provider POST instead of silently truncating it.
-	if request.Output.Count != 1 {
-		return true, failPlatformGenerationSubmission(
-			*claim,
-			model.PlatformGenerationErrorRequestNotSupportedByModel,
-			"The selected provider route does not support multiple output artifacts",
-			false,
-		)
-	}
-	if request.Mode == "text_to_image" || request.Output.FaceEnabled {
-		return true, failPlatformGenerationSubmission(
-			*claim,
-			model.PlatformGenerationErrorRequestNotSupportedByModel,
-			"The selected provider route requires a bridge feature that is not supported",
-			false,
-		)
-	}
-	videoCount := 0
-	for _, asset := range request.Inputs.Assets {
-		if asset.MediaType == "audio" {
-			return true, failPlatformGenerationSubmission(
-				*claim,
-				model.PlatformGenerationErrorRequestNotSupportedByModel,
-				"The selected provider route does not support audio input",
-				false,
-			)
-		}
-		if asset.MediaType == "video" {
-			videoCount++
-		}
-	}
-	if videoCount > 1 {
-		return true, failPlatformGenerationSubmission(
-			*claim,
-			model.PlatformGenerationErrorRequestNotSupportedByModel,
-			"The selected provider route supports at most one video input",
-			false,
-		)
-	}
-
 	routeClaim, err := model.ClaimPlatformGenerationProviderRoute(claim.Job.ID, request.Model, request.Mode)
 	if err != nil {
 		switch {
@@ -246,6 +232,46 @@ func RunPlatformGenerationSubmissionOnce(ctx context.Context, outboxIDs ...int64
 			return true, failPlatformGenerationSubmission(*claim, model.PlatformGenerationErrorGenerationChannelUnavailable, "No provider route can safely accept this generation", true)
 		}
 	}
+	runtimeTransport, transportRequired, transportErr := ResolvePlatformGenerationRuntimeTransport(routeClaim.Route)
+	if transportErr != nil {
+		_, _ = model.ReleasePlatformGenerationProviderRoute(claim.Job.ID, routeClaim.SubmissionToken)
+		return true, failPlatformGenerationSubmission(*claim, model.PlatformGenerationErrorGenerationChannelUnavailable, "The selected Google provider transport is not currently attested", false)
+	}
+	if !transportRequired {
+		runtimeTransport = PlatformGenerationRuntimeTransportBinding{}
+	}
+	profile, hasProfile, profileErr := platformGenerationProfileForProviderRoute(routeClaim.Route)
+	if profileErr != nil || (request.Mode == "text_to_image" && !hasProfile) {
+		_, _ = model.ReleasePlatformGenerationProviderRoute(claim.Job.ID, routeClaim.SubmissionToken)
+		return true, failPlatformGenerationSubmission(*claim, model.PlatformGenerationErrorGenerationChannelUnavailable, "The selected provider route has no executable adapter profile", false)
+	}
+	if hasProfile {
+		if err := profile.ValidateRequest(request); err != nil {
+			_, _ = model.ReleasePlatformGenerationProviderRoute(claim.Job.ID, routeClaim.SubmissionToken)
+			return true, failPlatformGenerationSubmission(*claim, model.PlatformGenerationErrorRequestNotSupportedByModel, "The generation request exceeds the selected route profile", false)
+		}
+		request.Metadata = generationprofile.SnapshotMetadata(request.Metadata, profile)
+		serializedRequest, err := common.Marshal(request)
+		if err != nil {
+			_, _ = model.ReleasePlatformGenerationProviderRoute(claim.Job.ID, routeClaim.SubmissionToken)
+			return true, failPlatformGenerationSubmission(*claim, model.PlatformGenerationErrorGenerationFailed, "The selected route profile could not be persisted", true)
+		}
+		if err := model.BindPlatformGenerationRequestToRouteProfile(
+			claim.Job.ID,
+			claim.Token,
+			routeClaim.AdmissionID,
+			routeClaim.SubmissionToken,
+			string(serializedRequest),
+		); err != nil {
+			_, _ = model.ReleasePlatformGenerationProviderRoute(claim.Job.ID, routeClaim.SubmissionToken)
+			return true, err
+		}
+		claim.Job.RequestJSON = string(serializedRequest)
+		claim.Job.ProviderRouteID = routeClaim.Route.ID
+		claim.Job.ProviderChannelID = routeClaim.Route.ChannelID
+		claim.Job.ProviderKeyIndex = routeClaim.Route.KeyIndex
+		claim.Job.ProviderSubmissionAttempt = routeClaim.Attempt
+	}
 
 	nativeTaskID, err := model.PlatformGenerationNativeTaskID(claim.Job.ID)
 	if err != nil {
@@ -257,9 +283,12 @@ func RunPlatformGenerationSubmissionOnce(ctx context.Context, outboxIDs ...int64
 		_, _ = model.ReleasePlatformGenerationProviderRoute(claim.Job.ID, routeClaim.SubmissionToken)
 		return true, failPlatformGenerationSubmission(*claim, model.PlatformGenerationErrorNoProviderAvailable, "The generation service binding is no longer configured", true)
 	}
-	body, err := buildPlatformNativeTaskRequest(request)
+	body, err := buildPlatformNativeTaskRequestWithContext(ctx, request)
 	if err != nil {
 		_, _ = model.ReleasePlatformGenerationProviderRoute(claim.Job.ID, routeClaim.SubmissionToken)
+		if errors.Is(err, errPlatformGenerationInputAssetUnavailable) {
+			return true, failPlatformGenerationSubmission(*claim, model.PlatformGenerationErrorInputAssetUnavailable, "The selected reference asset could not be verified for this model", true)
+		}
 		return true, failPlatformGenerationSubmission(*claim, model.PlatformGenerationErrorGenerationFailed, "The relay could not build the native provider request", true)
 	}
 
@@ -275,6 +304,7 @@ func RunPlatformGenerationSubmissionOnce(ctx context.Context, outboxIDs ...int64
 				*routeClaim,
 				*principal,
 				body,
+				runtimeTransport,
 			)
 		},
 	)
@@ -487,6 +517,9 @@ func RunPlatformGenerationReconciliationOnce(ctx context.Context) (bool, error) 
 	if nativeTask.PrivateData.UpstreamTaskID == "" {
 		return true, model.ReleasePlatformGenerationReconciliation(job.ID, token, platformGenerationReconcileWait)
 	}
+	if model.PlatformGenerationProviderResultReconciliationRequired(nativeTask) {
+		return true, inspectClaimedPlatformNativeTask(*job, token, model.PlatformGenerationStatusReconciliationRequired, *nativeTask)
+	}
 	if nativeTask.Status == model.TaskStatusSuccess || nativeTask.Status == model.TaskStatusFailure {
 		return true, inspectClaimedPlatformNativeTask(*job, token, model.PlatformGenerationStatusReconciliationRequired, *nativeTask)
 	}
@@ -670,11 +703,61 @@ func transferClaimedPlatformGenerationWithLeasePolicy(
 		return errors.New("native result bridge cannot prove the requested artifact count")
 	}
 	var temporary platformNativeTemporaryResult
-	if err := common.Unmarshal([]byte(job.TemporaryResultJSON), &temporary); err != nil {
+	rawTemporary := []byte(job.TemporaryResultJSON)
+	if err := common.RejectDuplicateJSONKeys(rawTemporary); err != nil {
+		if job.Mode != "text_to_image" {
+			return model.ErrPlatformGenerationProviderMaterialReconciliationRequired
+		}
+		return errors.New("provider result manifest is invalid")
+	}
+	if err := common.DecodeJsonDisallowUnknownFields(strings.NewReader(job.TemporaryResultJSON), &temporary); err != nil {
+		if job.Mode != "text_to_image" {
+			return model.ErrPlatformGenerationProviderMaterialReconciliationRequired
+		}
 		return fmt.Errorf("provider result manifest is unreadable: %w", err)
 	}
 	if strings.TrimSpace(temporary.ResultURL) == "" || temporary.NativeTaskID != job.NativeTaskID {
+		if job.Mode != "text_to_image" {
+			return model.ErrPlatformGenerationProviderMaterialReconciliationRequired
+		}
 		return errors.New("provider result manifest is incomplete")
+	}
+	providerProtocol := ""
+	var providerResultReceipt *model.PlatformGenerationProviderResultReceipt
+	if job.Mode != "text_to_image" {
+		profile, found, err := generationprofile.ResolveSnapshot(request.Metadata)
+		if err != nil || !found {
+			return model.ErrPlatformGenerationProviderMaterialReconciliationRequired
+		}
+		expectedRevision, supported := model.PlatformGenerationProviderResultProofRevision(profile.Protocol)
+		if !supported || temporary.ProofContractRevision != expectedRevision ||
+			temporary.ReceiptSHA256 == "" || temporary.ReceiptProofSHA256 == "" ||
+			temporary.ArtifactURLSHA256 == "" || temporary.TaskData != "" {
+			return model.ErrPlatformGenerationProviderMaterialReconciliationRequired
+		}
+		providerProtocol = profile.Protocol
+		artifactDigest := sha256.Sum256([]byte(temporary.ResultURL))
+		if temporary.ArtifactURLSHA256 != fmt.Sprintf("sha256:%x", artifactDigest) {
+			return model.ErrPlatformGenerationProviderMaterialReconciliationRequired
+		}
+		resolvedReceipt, err := model.ResolvePlatformGenerationProviderResultForTransfer(
+			job.ID,
+			token,
+			temporary.NativeTaskID,
+			temporary.ReceiptSHA256,
+			temporary.ReceiptProofSHA256,
+			temporary.ArtifactURLSHA256,
+		)
+		if err != nil {
+			if errors.Is(err, model.ErrPlatformGenerationProviderMaterialReconciliationRequired) {
+				return fmt.Errorf("provider result proof could not be revalidated for transfer: %w", err)
+			}
+			return err
+		}
+		providerResultReceipt = &resolvedReceipt
+	} else if temporary.ProofContractRevision != "" || temporary.ReceiptSHA256 != "" ||
+		temporary.ReceiptProofSHA256 != "" || temporary.ArtifactURLSHA256 != "" {
+		return errors.New("synchronous image result contains an unexpected asynchronous proof")
 	}
 	mediaType := "video"
 	if request.Mode == "text_to_image" {
@@ -751,13 +834,23 @@ func transferClaimedPlatformGenerationWithLeasePolicy(
 		}
 		return queueCleanupOnce(cause)
 	}
-	stored, err := TransferPlatformProviderArtifact(transferContext, downloader, store, PlatformArtifactTransferRequest{
-		SourceURL: temporary.ResultURL,
-		TenantID:  job.TenantID,
-		JobID:     job.ID,
-		AssetID:   storageObjectID,
-		MediaType: mediaType,
-	})
+	transferRequest, err := platformGenerationArtifactTransferRequest(job, request, temporary.ResultURL, storageObjectID, mediaType)
+	if err != nil {
+		return stopAndQueueCleanup(err)
+	}
+	if err := bindPlatformGenerationProviderArtifactExpectation(
+		&transferRequest,
+		providerProtocol,
+		providerResultReceipt,
+	); err != nil {
+		return stopAndQueueCleanup(err)
+	}
+	authorization, err := platformGenerationArtifactSourceAuthorization(job, temporary.ResultURL, providerProtocol)
+	if err != nil {
+		return stopAndQueueCleanup(err)
+	}
+	transferRequest.SourceAuthorization = authorization
+	stored, err := TransferPlatformProviderArtifact(transferContext, downloader, store, transferRequest)
 	if err != nil {
 		return stopAndQueueCleanup(err)
 	}
@@ -875,7 +968,139 @@ func startPlatformGenerationTransferLeaseKeeper(
 	return transferContext, stop, nil
 }
 
+func platformGenerationArtifactTransferRequest(
+	job model.PlatformGenerationJob,
+	request dto.PlatformGenerationRequest,
+	sourceURL string,
+	storageObjectID string,
+	mediaType string,
+) (PlatformArtifactTransferRequest, error) {
+	transferRequest := PlatformArtifactTransferRequest{
+		SourceURL: sourceURL,
+		TenantID:  job.TenantID,
+		JobID:     job.ID,
+		AssetID:   storageObjectID,
+		MediaType: mediaType,
+	}
+	profile, hasProfile, err := platformGenerationProfileForStoredJob(job, request)
+	if err != nil {
+		return PlatformArtifactTransferRequest{}, err
+	}
+	if request.Mode == "text_to_image" && !hasProfile {
+		return PlatformArtifactTransferRequest{}, errors.New("image artifact verification requires an immutable capability profile snapshot")
+	}
+	if hasProfile {
+		if err := profile.ValidateRequest(request); err != nil {
+			return PlatformArtifactTransferRequest{}, err
+		}
+		artifact, ok := profile.Artifact(request.Mode)
+		if !ok || artifact.MediaType != mediaType || artifact.Count != request.Output.Count {
+			return PlatformArtifactTransferRequest{}, errors.New("artifact does not match the immutable capability profile")
+		}
+		transferRequest.ExpectedContentType = artifact.ContentType
+		transferRequest.ExpectedImageWidth = artifact.Width
+		transferRequest.ExpectedImageHeight = artifact.Height
+	}
+	return transferRequest, nil
+}
+
+func bindPlatformGenerationProviderArtifactExpectation(
+	request *PlatformArtifactTransferRequest,
+	protocol string,
+	receipt *model.PlatformGenerationProviderResultReceipt,
+) error {
+	if protocol != generationprofile.GoogleGeminiInteractionsVideoProtocolV1 {
+		return nil
+	}
+	if request == nil || receipt == nil || receipt.Protocol != protocol ||
+		receipt.ArtifactSizeBytes <= 0 {
+		return model.ErrPlatformGenerationProviderMaterialReconciliationRequired
+	}
+	normalized, err := normalizePlatformArtifactSHA256(receipt.ArtifactSHA256)
+	if err != nil || normalized != receipt.ArtifactSHA256 {
+		return model.ErrPlatformGenerationProviderMaterialReconciliationRequired
+	}
+	expectedSize := receipt.ArtifactSizeBytes
+	request.ExpectedSizeBytes = &expectedSize
+	request.ExpectedSHA256 = receipt.ArtifactSHA256
+	return nil
+}
+
+// platformGenerationArtifactSourceAuthorization reconstructs provider
+// authentication from the exact encrypted credential version already bound to
+// the native task. Google Files download URLs are deliberately persisted
+// without an API key; the key exists only in this immediate network boundary.
+func platformGenerationArtifactSourceAuthorization(
+	job model.PlatformGenerationJob,
+	sourceURL string,
+	protocol string,
+) (*PlatformArtifactDownloadAuthorization, error) {
+	switch protocol {
+	case "":
+		return nil, nil
+	case generationprofile.GoogleGeminiInteractionsVideoProtocolV1, generationprofile.GoogleGeminiVeoVideoProtocolV1:
+		if err := validateGoogleGeminiFileDownloadURL(sourceURL); err != nil {
+			return nil, err
+		}
+		nativeTask, err := loadProtectedPlatformNativeTaskForJob(job, false)
+		if err != nil || nativeTask == nil {
+			return nil, fmt.Errorf("%w: Google artifact credential binding is unavailable", ErrPlatformArtifactSecurity)
+		}
+		providerKey, err := model.ResolveTaskProviderCredential(nativeTask)
+		if err != nil || providerKey == "" || providerKey != strings.TrimSpace(providerKey) ||
+			len(providerKey) > 4096 || strings.ContainsAny(providerKey, "\x00\r\n") {
+			return nil, fmt.Errorf("%w: Google artifact credential is unavailable", ErrPlatformArtifactSecurity)
+		}
+		return &PlatformArtifactDownloadAuthorization{
+			HeaderName:  "x-goog-api-key",
+			HeaderValue: providerKey,
+			AllowedHost: "generativelanguage.googleapis.com",
+		}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func validateGoogleGeminiFileDownloadURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "generativelanguage.googleapis.com" ||
+		(parsed.Port() != "" && parsed.Port() != "443") || parsed.User != nil || parsed.Fragment != "" ||
+		parsed.RawPath != "" || parsed.ForceQuery || parsed.RawQuery != "alt=media" {
+		return fmt.Errorf("%w: Google artifact URL is outside the reviewed Files endpoint", ErrPlatformArtifactSecurity)
+	}
+	const prefix = "/v1beta/files/"
+	if !strings.HasPrefix(parsed.Path, prefix) || !strings.HasSuffix(parsed.Path, ":download") {
+		return fmt.Errorf("%w: Google artifact URL is outside the reviewed Files endpoint", ErrPlatformArtifactSecurity)
+	}
+	fileID := strings.TrimSuffix(strings.TrimPrefix(parsed.Path, prefix), ":download")
+	if fileID == "" || len(fileID) > 192 {
+		return fmt.Errorf("%w: Google artifact file identity is invalid", ErrPlatformArtifactSecurity)
+	}
+	for _, character := range fileID {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_' || character == '.' {
+			continue
+		}
+		return fmt.Errorf("%w: Google artifact file identity is invalid", ErrPlatformArtifactSecurity)
+	}
+	return nil
+}
+
 func retryOrFailPlatformGenerationTransfer(job model.PlatformGenerationJob, token string, cause error) error {
+	if errors.Is(cause, model.ErrPlatformGenerationProviderMaterialReconciliationRequired) {
+		won, err := model.CompletePlatformGenerationTransferProviderMaterialConflict(
+			job.ID,
+			token,
+			BuildPlatformGenerationCallbackDelivery,
+		)
+		if err != nil || !won {
+			if err != nil {
+				return err
+			}
+			return errPlatformGenerationTransferLeaseFenced
+		}
+		return nil
+	}
 	maxAttempts := common.GetEnvOrDefault("RELAY_ARTIFACT_TRANSFER_MAX_ATTEMPTS", 8)
 	if maxAttempts < 1 || maxAttempts > 100 {
 		maxAttempts = 8
@@ -1139,6 +1364,36 @@ func ResolvePlatformGenerationUnknownSubmission(
 	default:
 		return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, model.ErrPlatformGenerationReconciliationConflict
 	}
+	if existing, err := model.GetPlatformGenerationReconciliationReceiptByOperation(
+		tenantID,
+		request.OperationID,
+	); err == nil {
+		if existing.Event.JobID != jobID {
+			return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, model.ErrPlatformGenerationReconciliationConflict
+		}
+		return replayPlatformGenerationReconciliation(
+			tenantID,
+			jobID,
+			request,
+			requestID,
+			existing.Event,
+		)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, err
+	}
+	var synchronousResult *model.PlatformGenerationSynchronousResultEvidence
+	if created {
+		candidate, err := model.GetPlatformGenerationSubmissionUnknown(jobID, tenantID)
+		if err != nil {
+			return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, err
+		}
+		synchronousResult, err = validatePlatformGenerationCreatedReconciliation(*candidate, request)
+		if err != nil {
+			return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, err
+		}
+	} else if request.SynchronousResult != nil {
+		return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, model.ErrPlatformGenerationReconciliationConflict
+	}
 	job, event, idempotentReplay, err := model.ResolvePlatformGenerationSubmissionUnknown(
 		jobID,
 		tenantID,
@@ -1155,6 +1410,7 @@ func ResolvePlatformGenerationUnknownSubmission(
 			ApprovalReason:              request.ApprovalReason,
 			ApprovalKeyID:               request.ApprovalKeyID,
 			ApprovalSignature:           request.ApprovalSignature,
+			SynchronousResult:           synchronousResult,
 		},
 		BuildPlatformGenerationCallbackDelivery,
 	)
@@ -1168,14 +1424,203 @@ func ResolvePlatformGenerationUnknownSubmission(
 	if event == nil {
 		return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, fmt.Errorf("generation reconciliation receipt was not committed")
 	}
-	return snapshot, platformGenerationReconciliationResult(*event, snapshot.Status), idempotentReplay, nil
+	reconciliationResult, err := platformGenerationReconciliationResult(*event, snapshot.Status)
+	if err != nil {
+		return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, err
+	}
+	return snapshot, reconciliationResult, idempotentReplay, nil
+}
+
+func replayPlatformGenerationReconciliation(
+	tenantID string,
+	jobID string,
+	request dto.PlatformGenerationReconciliationRequest,
+	requestID string,
+	existing model.PlatformGenerationReconciliationEvent,
+) (dto.PlatformGenerationSnapshot, dto.PlatformGenerationReconciliationResult, bool, error) {
+	var synchronousResult *model.PlatformGenerationSynchronousResultEvidence
+	if request.Outcome == "created" {
+		var err error
+		synchronousResult, err = platformGenerationSynchronousResultReplayEvidence(existing, request)
+		if err != nil {
+			return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, err
+		}
+	} else if request.SynchronousResult != nil {
+		return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, model.ErrPlatformGenerationReconciliationConflict
+	}
+	job, event, idempotentReplay, err := model.ResolvePlatformGenerationSubmissionUnknown(
+		jobID,
+		tenantID,
+		platformGenerationReconciliationResolution(request, requestID, synchronousResult),
+		BuildPlatformGenerationCallbackDelivery,
+	)
+	if err != nil {
+		return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, err
+	}
+	if !idempotentReplay || event == nil {
+		return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, model.ErrPlatformGenerationReconciliationConflict
+	}
+	snapshot, err := platformGenerationSnapshot(*job)
+	if err != nil {
+		return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, err
+	}
+	result, err := platformGenerationReconciliationResult(*event, snapshot.Status)
+	if err != nil {
+		return dto.PlatformGenerationSnapshot{}, dto.PlatformGenerationReconciliationResult{}, false, err
+	}
+	return snapshot, result, true, nil
+}
+
+func platformGenerationSynchronousResultReplayEvidence(
+	event model.PlatformGenerationReconciliationEvent,
+	request dto.PlatformGenerationReconciliationRequest,
+) (*model.PlatformGenerationSynchronousResultEvidence, error) {
+	stored, err := model.PlatformGenerationReconciliationSynchronousResult(event)
+	if err != nil {
+		return nil, err
+	}
+	requested := request.SynchronousResult
+	if stored == nil || requested == nil {
+		if stored == nil && requested == nil {
+			return nil, nil
+		}
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	artifactURL := strings.TrimSpace(requested.ArtifactURL)
+	parsedURL, urlErr := url.Parse(artifactURL)
+	providerCreatedAt, createdErr := time.Parse(time.RFC3339, requested.ProviderCreatedAt)
+	artifactDigest := sha256.Sum256([]byte(artifactURL))
+	if urlErr != nil || artifactURL != requested.ArtifactURL || len(artifactURL) > 8192 ||
+		parsedURL.Scheme != "https" || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.Fragment != "" ||
+		createdErr != nil || requested.ProviderCreatedAt != providerCreatedAt.UTC().Format(time.RFC3339) ||
+		requested.ProviderModelID != stored.ProviderModelID ||
+		requested.ProviderResponseSHA256 != stored.ProviderResponseSHA256 ||
+		hex.EncodeToString(artifactDigest[:]) != stored.ArtifactURLSHA256 ||
+		!providerCreatedAt.Equal(stored.ProviderCreatedAt) ||
+		requested.GeneratedImages != stored.GeneratedImages || requested.OutputTokens != stored.OutputTokens ||
+		requested.TotalTokens != stored.TotalTokens {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	return &model.PlatformGenerationSynchronousResultEvidence{
+		ProviderModelID:        requested.ProviderModelID,
+		ProviderResponseSHA256: requested.ProviderResponseSHA256,
+		ResultURL:              artifactURL,
+		// Size is validated and used only while reconstructing a first native
+		// task. On replay, the immutable receipt has already committed all
+		// public synchronous fields and model.Resolve returns before mutation.
+		Size:              "receipt-replay",
+		ProviderCreatedAt: providerCreatedAt.UTC(),
+		GeneratedImages:   requested.GeneratedImages,
+		OutputTokens:      requested.OutputTokens,
+		TotalTokens:       requested.TotalTokens,
+	}, nil
+}
+
+func platformGenerationReconciliationResolution(
+	request dto.PlatformGenerationReconciliationRequest,
+	requestID string,
+	synchronousResult *model.PlatformGenerationSynchronousResultEvidence,
+) model.PlatformGenerationReconciliationResolution {
+	return model.PlatformGenerationReconciliationResolution{
+		Created:                     request.Outcome == "created",
+		UpstreamTaskID:              request.UpstreamTaskID,
+		ExpectedRouteID:             request.ExpectedRouteID,
+		ExpectedSubmissionAttempt:   request.ExpectedSubmissionAttempt,
+		ExpectedReconciliationToken: request.ExpectedReconciliationToken,
+		OperationID:                 request.OperationID,
+		RequestID:                   requestID,
+		VerificationReference:       request.VerificationReference,
+		ApprovedBy:                  request.ApprovedBy,
+		ApprovalReason:              request.ApprovalReason,
+		ApprovalKeyID:               request.ApprovalKeyID,
+		ApprovalSignature:           request.ApprovalSignature,
+		SynchronousResult:           synchronousResult,
+	}
+}
+
+func validatePlatformGenerationCreatedReconciliation(
+	candidate model.PlatformGenerationReconciliationCandidate,
+	request dto.PlatformGenerationReconciliationRequest,
+) (*model.PlatformGenerationSynchronousResultEvidence, error) {
+	job := candidate.Job
+	var accepted dto.PlatformGenerationRequest
+	if err := common.Unmarshal([]byte(job.RequestJSON), &accepted); err != nil || accepted.Mode != job.Mode {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	if accepted.Mode != "text_to_image" {
+		if request.SynchronousResult != nil {
+			return nil, model.ErrPlatformGenerationReconciliationConflict
+		}
+		return nil, nil
+	}
+	evidence := request.SynchronousResult
+	if evidence == nil || candidate.Route.ID != request.ExpectedRouteID ||
+		candidate.Route.UpstreamModel != evidence.ProviderModelID ||
+		request.UpstreamTaskID != "seedream:"+evidence.ProviderResponseSHA256 {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	responseDigest, digestErr := hex.DecodeString(evidence.ProviderResponseSHA256)
+	if digestErr != nil || len(responseDigest) != sha256.Size || strings.ToLower(evidence.ProviderResponseSHA256) != evidence.ProviderResponseSHA256 {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	artifactURL := strings.TrimSpace(evidence.ArtifactURL)
+	parsedURL, urlErr := url.Parse(artifactURL)
+	if urlErr != nil || artifactURL != evidence.ArtifactURL || len(artifactURL) > 8192 || parsedURL.Scheme != "https" ||
+		parsedURL.Host == "" || parsedURL.User != nil || parsedURL.Fragment != "" {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	providerCreatedAt, createdErr := time.Parse(time.RFC3339, evidence.ProviderCreatedAt)
+	if createdErr != nil || evidence.ProviderCreatedAt != providerCreatedAt.UTC().Format(time.RFC3339) ||
+		providerCreatedAt.Before(job.CreatedAt.UTC().Add(-5*time.Minute)) || providerCreatedAt.After(time.Now().UTC().Add(5*time.Minute)) {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	profile, hasProfile, profileErr := platformGenerationProfileForStoredJob(job, accepted)
+	if profileErr != nil || !hasProfile || profile.Image == nil {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	if err := profile.ValidateRequest(accepted); err != nil {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	artifact, hasArtifact := profile.Artifact(accepted.Mode)
+	if !hasArtifact || artifact.MediaType != "image" || artifact.ContentType != "image/png" ||
+		artifact.Count != accepted.Output.Count || evidence.GeneratedImages != artifact.Count ||
+		evidence.OutputTokens < 0 || evidence.TotalTokens < evidence.OutputTokens {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	// A manual created decision may not turn a missing provider price into an
+	// implicit zero-cost fact. Require a versioned contract rate that covers the
+	// provider occurrence before committing the terminal provider evidence.
+	facts := model.PlatformProviderCostMaterializationFacts{
+		Job:   job,
+		Route: candidate.Route,
+		Outcome: model.PlatformProviderTerminalOutcome{
+			OccurredAt: providerCreatedAt.UTC(),
+		},
+	}
+	rate, rateErr := model.FindPlatformProviderContractRate(facts, accepted.Output.Resolution)
+	if rateErr != nil {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	if _, costErr := calculatePlatformProviderContractCost(*rate, accepted.Output); costErr != nil {
+		return nil, model.ErrPlatformGenerationReconciliationConflict
+	}
+	return &model.PlatformGenerationSynchronousResultEvidence{
+		ProviderModelID:        evidence.ProviderModelID,
+		ProviderResponseSHA256: evidence.ProviderResponseSHA256,
+		ResultURL:              evidence.ArtifactURL,
+		Size:                   profile.Image.Size,
+		ProviderCreatedAt:      providerCreatedAt.UTC(),
+		GeneratedImages:        evidence.GeneratedImages,
+		OutputTokens:           evidence.OutputTokens,
+		TotalTokens:            evidence.TotalTokens,
+	}, nil
 }
 
 func platformGenerationReconciliationResult(
 	event model.PlatformGenerationReconciliationEvent,
 	currentStatus string,
-) dto.PlatformGenerationReconciliationResult {
-	return dto.PlatformGenerationReconciliationResult{
+) (dto.PlatformGenerationReconciliationResult, error) {
+	result := dto.PlatformGenerationReconciliationResult{
 		APIVersion:                  dto.PlatformRelayAPIVersion,
 		SchemaVersion:               dto.PlatformRelaySchemaVersion,
 		Object:                      "generation.reconciliation_result",
@@ -1199,6 +1644,22 @@ func platformGenerationReconciliationResult(
 		PayloadSHA256:               event.PayloadSHA256,
 		ResolvedAt:                  event.ResolvedAt,
 	}
+	synchronous, err := model.PlatformGenerationReconciliationSynchronousResult(event)
+	if err != nil {
+		return dto.PlatformGenerationReconciliationResult{}, err
+	}
+	if synchronous != nil {
+		result.SynchronousResult = &dto.PlatformGenerationSynchronousResultReceipt{
+			ProviderModelID:        synchronous.ProviderModelID,
+			ProviderResponseSHA256: synchronous.ProviderResponseSHA256,
+			ArtifactURLSHA256:      synchronous.ArtifactURLSHA256,
+			ProviderCreatedAt:      synchronous.ProviderCreatedAt.UTC().Format(time.RFC3339),
+			GeneratedImages:        synchronous.GeneratedImages,
+			OutputTokens:           synchronous.OutputTokens,
+			TotalTokens:            synchronous.TotalTokens,
+		}
+	}
+	return result, nil
 }
 
 func GetPlatformGenerationReconciliationResult(
@@ -1216,7 +1677,7 @@ func GetPlatformGenerationReconciliationResult(
 	if err != nil {
 		return dto.PlatformGenerationReconciliationResult{}, err
 	}
-	return platformGenerationReconciliationResult(receipt.Event, receipt.CurrentStatus), nil
+	return platformGenerationReconciliationResult(receipt.Event, receipt.CurrentStatus)
 }
 
 func platformGenerationReconciliationItem(
@@ -1298,6 +1759,103 @@ func ListPlatformGenerationUnknownSubmissions(
 	}, nil
 }
 
+func platformGenerationProviderResultReconciliationItem(
+	job model.PlatformGenerationJob,
+) (dto.PlatformGenerationProviderResultReconciliationItem, error) {
+	evidenceRetained, err := model.PlatformGenerationProviderReconciliationEvidenceRetained(job)
+	if err != nil {
+		return dto.PlatformGenerationProviderResultReconciliationItem{}, err
+	}
+	kind := model.PlatformGenerationProviderReconciliationKind(job)
+	errorCode := ""
+	if job.ErrorCode == model.PlatformGenerationErrorProviderPollReconciliationRequired {
+		errorCode = job.ErrorCode
+	}
+	errorMessage := "Provider result evidence requires manual reconciliation"
+	switch kind {
+	case model.PlatformGenerationProviderReconciliationKindMissingNativeTask:
+		errorMessage = "Native task evidence is unavailable and requires manual reconciliation"
+	case model.PlatformGenerationProviderReconciliationKindProviderResultProof:
+		errorMessage = "Provider terminal proof requires manual reconciliation"
+	case model.PlatformGenerationProviderReconciliationKindProviderMaterial:
+		errorMessage = "Retained provider material requires manual reconciliation"
+	}
+	return dto.PlatformGenerationProviderResultReconciliationItem{
+		APIVersion:                dto.PlatformRelayAPIVersion,
+		SchemaVersion:             dto.PlatformRelaySchemaVersion,
+		Object:                    "generation.provider_result_reconciliation",
+		JobID:                     job.ID,
+		TenantID:                  job.TenantID,
+		ClientReferenceID:         job.ClientReferenceID,
+		Model:                     job.Model,
+		Mode:                      job.Mode,
+		Status:                    job.Status,
+		Progress:                  job.Progress,
+		ProviderRouteID:           job.ProviderRouteID,
+		ProviderChannelID:         job.ProviderChannelID,
+		ProviderSubmissionAttempt: job.ProviderSubmissionAttempt,
+		UpstreamTaskID:            job.UpstreamTaskID,
+		ReconciliationKind:        kind,
+		ResolutionSupported:       false,
+		EvidenceRetained:          evidenceRetained,
+		// A terminal provider-material marker deliberately leaves the successful
+		// job's error fact empty. Project that persisted fact instead of
+		// fabricating a poll error for an already-published canonical artifact.
+		ErrorCode:    errorCode,
+		ErrorMessage: errorMessage,
+		CreatedAt:    job.CreatedAt,
+		UpdatedAt:    job.UpdatedAt,
+	}, nil
+}
+
+func GetPlatformGenerationProviderResultReconciliation(
+	tenantID string,
+	jobID string,
+) (dto.PlatformGenerationProviderResultReconciliationItem, error) {
+	if _, err := uuid.Parse(tenantID); err != nil {
+		return dto.PlatformGenerationProviderResultReconciliationItem{}, gorm.ErrRecordNotFound
+	}
+	if _, err := uuid.Parse(jobID); err != nil {
+		return dto.PlatformGenerationProviderResultReconciliationItem{}, gorm.ErrRecordNotFound
+	}
+	job, err := model.GetPlatformGenerationProviderResultReconciliation(jobID, tenantID)
+	if err != nil {
+		return dto.PlatformGenerationProviderResultReconciliationItem{}, err
+	}
+	return platformGenerationProviderResultReconciliationItem(*job)
+}
+
+func ListPlatformGenerationProviderResultReconciliations(
+	tenantID string,
+	page int,
+	pageSize int,
+) (dto.PlatformGenerationProviderResultReconciliationPage, error) {
+	if _, err := uuid.Parse(tenantID); err != nil {
+		return dto.PlatformGenerationProviderResultReconciliationPage{}, gorm.ErrRecordNotFound
+	}
+	jobs, total, err := model.ListPlatformGenerationProviderResultReconciliations(tenantID, page, pageSize)
+	if err != nil {
+		return dto.PlatformGenerationProviderResultReconciliationPage{}, err
+	}
+	items := make([]dto.PlatformGenerationProviderResultReconciliationItem, 0, len(jobs))
+	for _, job := range jobs {
+		item, err := platformGenerationProviderResultReconciliationItem(job)
+		if err != nil {
+			return dto.PlatformGenerationProviderResultReconciliationPage{}, err
+		}
+		items = append(items, item)
+	}
+	return dto.PlatformGenerationProviderResultReconciliationPage{
+		APIVersion:    dto.PlatformRelayAPIVersion,
+		SchemaVersion: dto.PlatformRelaySchemaVersion,
+		Object:        "list",
+		Data:          items,
+		Page:          page,
+		PageSize:      pageSize,
+		Total:         total,
+	}, nil
+}
+
 func inspectPlatformNativeTask(job model.PlatformGenerationJob, token string, fromStatus string) error {
 	nativeTask, err := loadProtectedPlatformNativeTaskForJob(job, true)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1314,6 +1872,9 @@ func inspectPlatformNativeTask(job model.PlatformGenerationJob, token string, fr
 			"error_code":      model.PlatformGenerationErrorProviderPollReconciliationRequired,
 			"error_message":   "The native task row is temporarily unavailable",
 			"error_retryable": true,
+			"error_details_json": model.PlatformGenerationProviderReconciliationDetailsJSON(
+				model.PlatformGenerationProviderReconciliationKindMissingNativeTask,
+			),
 		}, BuildPlatformGenerationCallbackDelivery)
 		return completeErr
 	}
@@ -1332,15 +1893,83 @@ func inspectPlatformNativeTask(job model.PlatformGenerationJob, token string, fr
 }
 
 func inspectClaimedPlatformNativeTask(job model.PlatformGenerationJob, token string, fromStatus string, nativeTask model.Task) error {
-	failureThreshold, cooldown, err := platformGenerationProviderFailurePolicy()
-	if err != nil {
+	if model.PlatformGenerationProviderResultReconciliationRequired(&nativeTask) {
+		_, err := model.CompletePlatformGenerationProviderProofConflict(
+			job.ID,
+			token,
+			fromStatus,
+			BuildPlatformGenerationCallbackDelivery,
+		)
 		return err
 	}
 	switch nativeTask.Status {
 	case model.TaskStatusSuccess:
+		if job.Mode != "text_to_image" {
+			transition, receipt, err := platformGenerationProviderResultTransition(job, nativeTask, true)
+			if err != nil {
+				_, conflictErr := model.CompletePlatformGenerationProviderProofConflict(
+					job.ID,
+					token,
+					fromStatus,
+					BuildPlatformGenerationCallbackDelivery,
+				)
+				return conflictErr
+			}
+			failureThreshold, cooldown, err := platformGenerationProviderFailurePolicy()
+			if err != nil {
+				return err
+			}
+			temporary, err := common.Marshal(platformNativeTemporaryResult{
+				NativeTaskID:          nativeTask.TaskID,
+				ResultURL:             nativeTask.PrivateData.ResultURL,
+				ProofContractRevision: receipt.ProofContractRevision,
+				ReceiptSHA256:         transition.ReceiptSHA256,
+				ReceiptProofSHA256:    receipt.ProofSHA256,
+				ArtifactURLSHA256:     transition.ArtifactURLSHA256,
+			})
+			if err != nil {
+				return err
+			}
+			outcome, err := platformGenerationProviderTerminalOutcome(job, nativeTask, true, &receipt)
+			if err != nil {
+				return err
+			}
+			_, err = model.CompletePlatformGenerationTerminalWithProviderResultProofPolicy(
+				job.ID,
+				token,
+				fromStatus,
+				map[string]any{
+					"status":                    model.PlatformGenerationStatusTransferring,
+					"progress":                  95,
+					"temporary_result_json":     string(temporary),
+					"error_code":                "",
+					"error_message":             "",
+					"error_retryable":           false,
+					"callback_backfill_pending": true,
+				},
+				outcome,
+				failureThreshold,
+				cooldown,
+				transition,
+			)
+			if errors.Is(err, model.ErrPlatformGenerationProviderMaterialReconciliationRequired) {
+				_, conflictErr := model.CompletePlatformGenerationProviderProofConflict(
+					job.ID,
+					token,
+					fromStatus,
+					BuildPlatformGenerationCallbackDelivery,
+				)
+				return conflictErr
+			}
+			return err
+		}
+		failureThreshold, cooldown, err := platformGenerationProviderFailurePolicy()
+		if err != nil {
+			return err
+		}
 		temporary, err := common.Marshal(platformNativeTemporaryResult{
 			NativeTaskID: nativeTask.TaskID,
-			ResultURL:    nativeTask.GetResultURL(),
+			ResultURL:    nativeTask.PrivateData.ResultURL,
 			TaskData:     string(nativeTask.Data),
 		})
 		if err != nil {
@@ -1361,6 +1990,57 @@ func inspectClaimedPlatformNativeTask(job model.PlatformGenerationJob, token str
 		}, outcome, failureThreshold, cooldown)
 		return err
 	case model.TaskStatusFailure:
+		if job.Mode != "text_to_image" {
+			transition, receipt, err := platformGenerationProviderResultTransition(job, nativeTask, false)
+			if err != nil {
+				_, conflictErr := model.CompletePlatformGenerationProviderProofConflict(
+					job.ID,
+					token,
+					fromStatus,
+					BuildPlatformGenerationCallbackDelivery,
+				)
+				return conflictErr
+			}
+			failureThreshold, cooldown, err := platformGenerationProviderFailurePolicy()
+			if err != nil {
+				return err
+			}
+			outcome, err := platformGenerationProviderTerminalOutcome(job, nativeTask, false, &receipt)
+			if err != nil {
+				return err
+			}
+			_, err = model.CompletePlatformGenerationTerminalWithProviderResultProofPolicy(
+				job.ID,
+				token,
+				fromStatus,
+				map[string]any{
+					"status":                    model.PlatformGenerationStatusFailed,
+					"progress":                  100,
+					"error_code":                platformGenerationProviderFailurePublicError(receipt),
+					"error_message":             "The provider reported that generation failed",
+					"error_retryable":           false,
+					"callback_backfill_pending": true,
+				},
+				outcome,
+				failureThreshold,
+				cooldown,
+				transition,
+			)
+			if errors.Is(err, model.ErrPlatformGenerationProviderMaterialReconciliationRequired) {
+				_, conflictErr := model.CompletePlatformGenerationProviderProofConflict(
+					job.ID,
+					token,
+					fromStatus,
+					BuildPlatformGenerationCallbackDelivery,
+				)
+				return conflictErr
+			}
+			return err
+		}
+		failureThreshold, cooldown, err := platformGenerationProviderFailurePolicy()
+		if err != nil {
+			return err
+		}
 		outcome, err := platformGenerationProviderTerminalOutcome(job, nativeTask, false)
 		if err != nil {
 			return err
@@ -1388,6 +2068,39 @@ func inspectClaimedPlatformNativeTask(job model.PlatformGenerationJob, token str
 		}
 		return model.ReleasePlatformGenerationPoll(job.ID, token, platformGenerationPollInterval)
 	}
+}
+
+func platformGenerationProviderResultTransition(
+	job model.PlatformGenerationJob,
+	nativeTask model.Task,
+	succeeded bool,
+) (model.PlatformGenerationProviderResultTransition, model.PlatformGenerationProviderResultReceipt, error) {
+	if job.ID == "" || nativeTask.TaskID != job.NativeTaskID ||
+		(succeeded && nativeTask.Status != model.TaskStatusSuccess) ||
+		(!succeeded && nativeTask.Status != model.TaskStatusFailure) || nativeTask.Progress != "100%" {
+		return model.PlatformGenerationProviderResultTransition{}, model.PlatformGenerationProviderResultReceipt{},
+			errors.New("provider result transition identity is inconsistent")
+	}
+	receipt, err := model.DecodePlatformGenerationProviderResultReceipt(nativeTask.Data)
+	if err != nil {
+		return model.PlatformGenerationProviderResultTransition{}, model.PlatformGenerationProviderResultReceipt{}, err
+	}
+	binding, err := model.ResolvePlatformGenerationProviderResultBinding(nativeTask)
+	if err != nil || binding.Job.ID != job.ID {
+		return model.PlatformGenerationProviderResultTransition{}, model.PlatformGenerationProviderResultReceipt{},
+			errors.New("provider result transition durable binding is inconsistent")
+	}
+	if err := model.ValidatePlatformGenerationProviderResultReceipt(nativeTask, binding, receipt); err != nil {
+		return model.PlatformGenerationProviderResultTransition{}, model.PlatformGenerationProviderResultReceipt{}, err
+	}
+	transition := model.PlatformGenerationProviderResultTransition{
+		NativeTaskID:       nativeTask.TaskID,
+		ReceiptSHA256:      model.PlatformGenerationProviderResultReceiptSHA256(nativeTask.Data),
+		ReceiptProofSHA256: receipt.ProofSHA256,
+		ArtifactURLSHA256:  receipt.ArtifactURLSHA256,
+		Succeeded:          succeeded,
+	}
+	return transition, receipt, nil
 }
 
 func platformGenerationProviderFailurePolicy() (int, time.Duration, error) {
@@ -1421,6 +2134,7 @@ func platformGenerationProviderTerminalOutcome(
 	job model.PlatformGenerationJob,
 	nativeTask model.Task,
 	succeeded bool,
+	receipts ...*model.PlatformGenerationProviderResultReceipt,
 ) (*model.PlatformProviderTerminalOutcome, error) {
 	upstreamTaskID := nativeTask.PrivateData.UpstreamTaskID
 	if upstreamTaskID == "" {
@@ -1446,8 +2160,22 @@ func platformGenerationProviderTerminalOutcome(
 		outcome.Outcome = model.PlatformProviderOutcomeFailed
 		outcome.FailureOwner = model.PlatformProviderFailureOwnerProvider
 		outcome.FailureCode = "upstream_failed"
+		if len(receipts) == 1 && receipts[0] != nil {
+			outcome.FailureOwner = receipts[0].FailureOwner
+			outcome.FailureCode = receipts[0].FailureCode
+		}
 	}
 	return outcome, nil
+}
+
+func platformGenerationProviderFailurePublicError(
+	receipt model.PlatformGenerationProviderResultReceipt,
+) string {
+	if receipt.FailureOwner == model.PlatformProviderFailureOwnerClient &&
+		receipt.FailureCode == "content_policy_rejected" {
+		return model.PlatformGenerationErrorContentPolicyRejected
+	}
+	return model.PlatformGenerationErrorUpstreamFailed
 }
 
 func failPlatformGenerationSubmission(claim model.PlatformGenerationClaim, code string, message string, retryable bool) error {
@@ -1465,6 +2193,41 @@ func failPlatformGenerationSubmission(claim model.PlatformGenerationClaim, code 
 }
 
 func buildPlatformNativeTaskRequest(request dto.PlatformGenerationRequest) ([]byte, error) {
+	return buildPlatformNativeTaskRequestWithContext(context.Background(), request)
+}
+
+func buildPlatformNativeTaskRequestWithContext(ctx context.Context, request dto.PlatformGenerationRequest) ([]byte, error) {
+	return buildPlatformNativeTaskRequestWithClient(ctx, request, GetSSRFProtectedHTTPClient())
+}
+
+func buildPlatformNativeTaskRequestWithClient(
+	ctx context.Context,
+	request dto.PlatformGenerationRequest,
+	assetClient *http.Client,
+) ([]byte, error) {
+	return buildPlatformNativeTaskRequestWithDependencies(
+		ctx,
+		request,
+		assetClient,
+		ValidateSSRFProtectedFetchURL,
+	)
+}
+
+func buildPlatformNativeTaskRequestWithDependencies(
+	ctx context.Context,
+	request dto.PlatformGenerationRequest,
+	assetClient *http.Client,
+	validateAssetURL func(string) error,
+) ([]byte, error) {
+	profile, hasProfile, err := platformGenerationProfileForStoredRequest(request)
+	if err != nil {
+		return nil, err
+	}
+	if hasProfile {
+		if err := profile.ValidateRequest(request); err != nil {
+			return nil, err
+		}
+	}
 	metadata := make(map[string]any, len(request.Metadata)+7)
 	for key, value := range request.Metadata {
 		metadata[key] = value
@@ -1476,33 +2239,174 @@ func buildPlatformNativeTaskRequest(request dto.PlatformGenerationRequest) ([]by
 	metadata["sampleCount"] = request.Output.Count
 	metadata["face_enabled"] = request.Output.FaceEnabled
 	images := make([]string, 0)
+	videos := make([]string, 0)
+	audios := make([]string, 0)
 	inputReference := ""
 	for _, asset := range request.Inputs.Assets {
+		assetValue := asset.URL
+		if hasProfile && asset.MediaType == "image" && request.Mode == "image_to_video" &&
+			platformGenerationGoogleVeoProfile(profile) {
+			assetValue, err = platformGenerationInlineVeoImageWithValidator(
+				ctx,
+				assetClient,
+				asset.URL,
+				validateAssetURL,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", errPlatformGenerationInputAssetUnavailable, err)
+			}
+		}
 		switch asset.MediaType {
 		case "image":
-			images = append(images, asset.URL)
+			images = append(images, assetValue)
 		case "video":
+			videos = append(videos, assetValue)
 			if inputReference == "" {
-				inputReference = asset.URL
+				inputReference = assetValue
 			}
+		case "audio":
+			audios = append(audios, assetValue)
 		}
 	}
 	image := ""
 	if len(images) > 0 {
 		image = images[0]
 	}
+	providerSize := platformGenerationVideoSize(request.Output.Resolution, request.Output.AspectRatio)
+	duration := request.Output.DurationSeconds
+	seconds := strconv.Itoa(request.Output.DurationSeconds)
+	if request.Mode == "text_to_image" {
+		if !hasProfile || profile.Image == nil {
+			return nil, errors.New("protected image generation requires an immutable capability profile")
+		}
+		providerSize = profile.Image.Size
+		// Image duration is not a provider capability. Omit the legacy v1
+		// duration sentinel from the native request entirely.
+		duration = 0
+		seconds = ""
+	}
 	native := platformNativeTaskRequest{
 		Prompt:         request.Inputs.Prompt,
 		Model:          request.Model,
 		Image:          image,
 		Images:         images,
-		Size:           platformGenerationVideoSize(request.Output.Resolution, request.Output.AspectRatio),
-		Duration:       request.Output.DurationSeconds,
-		Seconds:        strconv.Itoa(request.Output.DurationSeconds),
+		Videos:         videos,
+		Audios:         audios,
+		Size:           providerSize,
+		Duration:       duration,
+		Seconds:        seconds,
 		InputReference: inputReference,
 		Metadata:       metadata,
 	}
 	return common.Marshal(native)
+}
+
+func platformGenerationGoogleVeoProfile(profile generationprofile.Profile) bool {
+	switch profile.Protocol {
+	case generationprofile.GoogleGeminiVeoVideoProtocolV1,
+		generationprofile.GoogleVertexVeoVideoProtocolV1:
+		return true
+	default:
+		return false
+	}
+}
+
+func platformGenerationInlineVeoImage(
+	ctx context.Context,
+	client *http.Client,
+	rawURL string,
+) (string, error) {
+	return platformGenerationInlineVeoImageWithValidator(
+		ctx,
+		client,
+		rawURL,
+		ValidateSSRFProtectedFetchURL,
+	)
+}
+
+func platformGenerationInlineVeoImageWithValidator(
+	ctx context.Context,
+	client *http.Client,
+	rawURL string,
+	validateURL func(string) error,
+) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", errors.New("reference image URL is invalid")
+	}
+	if PlatformRelayProductionSecurityEnabled() && parsed.Scheme != "https" {
+		return "", errors.New("reference image URL must use HTTPS")
+	}
+	if validateURL == nil {
+		return "", errors.New("reference image URL policy is unavailable")
+	}
+	if err := validateURL(parsed.String()); err != nil {
+		return "", errors.New("reference image URL is not permitted")
+	}
+	if client == nil {
+		return "", errors.New("reference image fetch client is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	fetchContext, cancel := context.WithTimeout(ctx, platformGenerationVeoInputFetchTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(fetchContext, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return "", errors.New("reference image request is invalid")
+	}
+	request.Header.Set("Accept", "image/png, image/jpeg, image/webp")
+	request.Header.Set("Accept-Encoding", "identity")
+	boundedClient := *client
+	boundedClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := boundedClient.Do(request)
+	if err != nil {
+		return "", errors.New("reference image could not be fetched")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("reference image returned HTTP %d", response.StatusCode)
+	}
+	if encoding := strings.TrimSpace(response.Header.Get("Content-Encoding")); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return "", errors.New("reference image content encoding is unsupported")
+	}
+	if response.ContentLength > platformGenerationVeoInputMaxBytes {
+		return "", errors.New("reference image exceeds the size limit")
+	}
+	payload, err := io.ReadAll(io.LimitReader(response.Body, platformGenerationVeoInputMaxBytes+1))
+	if err != nil {
+		return "", errors.New("reference image could not be read")
+	}
+	if len(payload) == 0 || len(payload) > platformGenerationVeoInputMaxBytes {
+		return "", errors.New("reference image size is invalid")
+	}
+	detectedMIME := http.DetectContentType(payload)
+	declaredMIME := strings.TrimSpace(response.Header.Get("Content-Type"))
+	if declaredMIME != "" {
+		declaredMIME, _, err = mime.ParseMediaType(declaredMIME)
+		if err != nil {
+			return "", errors.New("reference image content type is invalid")
+		}
+	}
+	if declaredMIME == "" || declaredMIME == "application/octet-stream" {
+		declaredMIME = detectedMIME
+	}
+	if declaredMIME != detectedMIME {
+		return "", errors.New("reference image content type does not match its bytes")
+	}
+	switch detectedMIME {
+	case "image/png", "image/jpeg", "image/webp":
+	default:
+		return "", errors.New("reference image format is unsupported")
+	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(payload))
+	if err != nil || config.Width < 1 || config.Height < 1 ||
+		config.Width > platformGenerationVeoInputMaxDimension || config.Height > platformGenerationVeoInputMaxDimension ||
+		int64(config.Width)*int64(config.Height) > int64(platformGenerationVeoInputMaxDimension)*int64(platformGenerationVeoInputMaxDimension) {
+		return "", errors.New("reference image dimensions are invalid")
+	}
+	return "data:" + detectedMIME + ";base64," + base64.StdEncoding.EncodeToString(payload), nil
 }
 
 func platformGenerationVideoSize(resolution string, aspectRatio string) string {
@@ -1557,7 +2461,15 @@ func submitPlatformNativeTask(
 	routeClaim model.PlatformGenerationRouteClaim,
 	principal PlatformRelayPrincipal,
 	body []byte,
+	transportBindings ...PlatformGenerationRuntimeTransportBinding,
 ) (bool, int, error) {
+	transport := PlatformGenerationRuntimeTransportBinding{}
+	if len(transportBindings) > 1 {
+		return false, 0, errors.New("protected Google transport binding is ambiguous")
+	}
+	if len(transportBindings) == 1 {
+		transport = transportBindings[0]
+	}
 	if err := ValidateProtectedPlatformRelayPrincipalForJobID(claim.Job.ID); err != nil {
 		return false, 0, err
 	}
@@ -1583,6 +2495,14 @@ func submitPlatformNativeTask(
 	req.Header.Set(constant.HeaderPlatformGenerationRouteID, strconv.FormatInt(routeClaim.Route.ID, 10))
 	req.Header.Set(constant.HeaderPlatformGenerationWorkerLeaseToken, claim.Token)
 	req.Header.Set(constant.HeaderPlatformGenerationSubmissionToken, routeClaim.SubmissionToken)
+	if transport.Revision != "" || transport.SHA256 != "" {
+		if !platformRelaySnapshotDigestPattern.MatchString(transport.Revision) ||
+			!platformRelaySnapshotDigestPattern.MatchString(transport.SHA256) {
+			return false, 0, errors.New("protected Google transport binding is invalid")
+		}
+		req.Header.Set(constant.HeaderPlatformGenerationTransportRevision, transport.Revision)
+		req.Header.Set(constant.HeaderPlatformGenerationTransportSHA256, transport.SHA256)
+	}
 	client := GetHttpClient()
 	if client == nil {
 		client = http.DefaultClient

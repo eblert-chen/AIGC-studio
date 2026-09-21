@@ -14,6 +14,7 @@ import {
 } from "@phosphor-icons/react";
 import { useAuth } from "./auth/AuthGateway.jsx";
 import { currentReturnTo, safeAccountManagementUrl } from "./auth/authClient.js";
+import { SkinSwitcher } from "./SkinSwitcher.jsx";
 
 function formatDateTime(value) {
   if (!value) return "未提供";
@@ -65,6 +66,29 @@ function sessionDevice(item) {
   return /mobile|iphone|android/.test(agent) ? "移动设备" : "桌面设备";
 }
 
+const AUTHENTICATION_METHOD_LABELS = Object.freeze({
+  pwd: "密码",
+  password: "密码",
+  otp: "一次性验证码",
+  totp: "验证器验证码",
+  sms: "短信验证码",
+  email: "邮箱验证码",
+  mfa: "多重验证",
+  hwk: "安全密钥",
+  webauthn: "通行密钥或安全密钥",
+  passkey: "通行密钥",
+  fido2: "通行密钥或安全密钥",
+  "phishing-resistant": "防钓鱼验证",
+});
+
+function authenticationMethodSummary(methods) {
+  if (!Array.isArray(methods) || methods.length === 0) return "验证方式未提供";
+  const labels = [...new Set(methods.map((method) => (
+    AUTHENTICATION_METHOD_LABELS[String(method || "").trim().toLowerCase()] || "其他验证"
+  )))];
+  return `验证方式：${labels.join("、")}`;
+}
+
 function accountError(error) {
   if (error?.code === "STEP_UP_REQUIRED") return "此安全操作需要重新验证身份，正在前往身份提供方。";
   return error?.message || "账号信息暂时无法读取，请稍后重试。";
@@ -72,7 +96,7 @@ function accountError(error) {
 
 function deactivationError(error) {
   if (error?.status === 409) {
-    return "账号安全状态已变化，或当前账号仍承担平台所有者/企业老板职责。安全状态已刷新；如仍有所有权，请先在对应管理台完成交接再停用。";
+    return "账号状态已经变化，或当前账号仍承担企业或平台所有权。信息已刷新，请先完成职责交接，再重新停用账号。";
   }
   return accountError(error);
 }
@@ -82,6 +106,8 @@ export function AccountCenter({
   demoIdentity = null,
   taskCompletionNotices,
   onTaskCompletionNoticesChange,
+  skin = "paper",
+  onSkinChange = () => {},
 }) {
   const {
     client,
@@ -102,6 +128,7 @@ export function AccountCenter({
   const [displayName, setDisplayName] = useState(account.display_name);
   const [deactivateOpen, setDeactivateOpen] = useState(false);
   const [deactivateConfirmation, setDeactivateConfirmation] = useState("");
+  const [preferenceNotice, setPreferenceNotice] = useState("");
 
   const accountManagementUrl = useMemo(
     () => safeAccountManagementUrl(session?.account_management_url),
@@ -265,7 +292,7 @@ export function AccountCenter({
       <section className="secondary-view account-center" aria-labelledby="account-center-loading" aria-busy="true">
         <div className="account-state" role="status">
           <SpinnerGap className="is-spinning" size={24} aria-hidden="true" />
-          <div><h1 id="account-center-loading">正在读取账号安全状态</h1><p>资料和设备会话确认完成前不会开放安全操作。</p></div>
+          <div><h1 id="account-center-loading">正在读取账号信息</h1><p>读取完成前，资料修改和安全操作暂不可用。</p></div>
         </div>
       </section>
     );
@@ -280,13 +307,12 @@ export function AccountCenter({
     <section className="secondary-view account-center" aria-labelledby="account-center-title">
       <header className="secondary-heading account-center-heading">
         <div>
-          <span className="view-kicker">账号与安全</span>
-          <h1 id="account-center-title">账号中心</h1>
-          <p>管理个人资料、正式身份提供方和登录设备。企业权限与个人积分继续保持隔离。</p>
+          <h1 id="account-center-title">设置</h1>
+          <p>管理个人资料、登录设备和当前浏览器的工作台偏好。</p>
         </div>
         {!demoMode ? (
           <button className="account-quiet-button" type="button" onClick={() => load()} disabled={Boolean(busy)}>
-            <ClockCounterClockwise size={17} aria-hidden="true" />刷新安全状态
+            <ClockCounterClockwise size={17} aria-hidden="true" />刷新账号信息
           </button>
         ) : null}
       </header>
@@ -299,9 +325,17 @@ export function AccountCenter({
       {error ? <div className="account-banner is-error" role="alert">{error}</div> : null}
       {notice ? <div className="account-banner is-success" role="status"><Check size={17} aria-hidden="true" />{notice}</div> : null}
 
-      <div className="account-sections">
+      <div className="account-settings-layout">
+        <nav className="account-section-nav" aria-label="设置分类">
+          <a href="#profile-title">个人资料</a>
+          <a href="#identity-provider-title">登录方式</a>
+          <a href="#sessions-title">登录设备</a>
+          <a href="#preferences-title">工作台偏好</a>
+          <a href="#deactivate-title">停用账号</a>
+        </nav>
+        <div className="account-sections">
         <section className="account-section" aria-labelledby="profile-title">
-          <header><span><UserCircle size={21} aria-hidden="true" /></span><div><h2 id="profile-title">个人资料</h2><p>姓名会显示在任务、审计和协作记录中。</p></div></header>
+          <header><span><UserCircle size={21} aria-hidden="true" /></span><div><h2 id="profile-title">个人资料</h2><p>姓名会显示在任务和协作记录中。</p></div></header>
           <form className="account-profile-form" onSubmit={saveProfile}>
             <label><span>姓名</span><input name="displayName" value={displayName} maxLength={120} autoComplete="name" disabled={demoMode || busy === "profile"} onChange={(event) => setDisplayName(event.target.value)} /></label>
             <label><span>登录邮箱</span><input value={visibleAccount.email} type="email" autoComplete="email" readOnly /></label>
@@ -318,9 +352,9 @@ export function AccountCenter({
         </section>
 
         <section className="account-section" aria-labelledby="identity-provider-title">
-          <header><span><LockKey size={21} aria-hidden="true" /></span><div><h2 id="identity-provider-title">登录方式</h2><p>密码、MFA、通行密钥和恢复方式全部由正式身份提供方管理。</p></div></header>
+          <header><span><LockKey size={21} aria-hidden="true" /></span><div><h2 id="identity-provider-title">登录方式</h2><p>密码、验证方式和账号恢复由你的组织登录服务管理。</p></div></header>
           <div className="identity-provider-row">
-            <div><strong>企业身份提供方</strong><small>旭天不展示伪本地密码、MFA 或通行密钥设置。</small></div>
+            <div><strong>组织登录服务</strong><small>平台不会在这里收集或显示你的密码与验证密钥。</small></div>
             {accountManagementUrl ? (
               <a className="account-quiet-button" href={accountManagementUrl} target="_blank" rel="noopener noreferrer">前往管理<ArrowSquareOut size={16} aria-hidden="true" /></a>
             ) : (
@@ -338,7 +372,11 @@ export function AccountCenter({
               {sessions.map((item) => (
                 <article key={item.id} className={item.current ? "is-current" : ""}>
                   <span className="account-device-icon" aria-hidden="true">{sessionDevice(item) === "移动设备" ? <DeviceMobile size={20} /> : <Laptop size={20} />}</span>
-                  <div><strong>{sessionDevice(item)}{item.current ? " · 当前设备" : ""}</strong><small>最近活动 {formatDateTime(item.last_seen_at)} · 到期 {formatDateTime(item.expires_at)}</small><small>{Array.isArray(item.amr) && item.amr.length ? `验证方式 ${item.amr.join(" · ")}` : "验证方式未提供"}</small></div>
+                  <div>
+                    <strong>{sessionDevice(item)}{item.current ? "，当前设备" : ""}</strong>
+                    <small>最近活动 {formatDateTime(item.last_seen_at)}，到期 {formatDateTime(item.expires_at)}</small>
+                    <small>{authenticationMethodSummary(item.amr)}</small>
+                  </div>
                   <button className="account-quiet-button" type="button" disabled={Boolean(busy)} onClick={() => revokeSession(item)}>
                     {busy === `session:${item.id}` ? <SpinnerGap className="is-spinning" size={16} aria-hidden="true" /> : <SignOut size={16} aria-hidden="true" />}
                     {item.current ? "退出" : "撤销"}
@@ -360,17 +398,38 @@ export function AccountCenter({
         </section>
 
         <section className="account-section" aria-labelledby="preferences-title">
-          <header><span><Check size={21} aria-hidden="true" /></span><div><h2 id="preferences-title">工作台偏好</h2><p>偏好仅保存在当前浏览器，不改变权限、计费或归档策略。</p></div></header>
-          <label className="account-toggle-row">
-            <span><strong>任务结果站内提示</strong><small>任务完成、失败、超时或需要人工确认时显示站内提示。</small></span>
-            <input type="checkbox" checked={taskCompletionNotices} onChange={(event) => onTaskCompletionNoticesChange(event.target.checked)} />
-          </label>
+          <header><span><Check size={21} aria-hidden="true" /></span><div><h2 id="preferences-title">工作台偏好</h2><p>更改会自动保存在当前浏览器。</p></div></header>
+          <div className="account-preference-list">
+            <div className="account-toggle-row">
+              <span><strong>界面主题</strong><small>纯白为默认，雾灰和暖米只改变页面底色。</small></span>
+              <SkinSwitcher
+                className="account-skin-switcher"
+                value={skin}
+                onChange={(nextSkin) => {
+                  onSkinChange(nextSkin);
+                  setPreferenceNotice("界面主题已保存在此浏览器。");
+                }}
+              />
+            </div>
+            <label className="account-toggle-row">
+              <span><strong>任务结果站内提示</strong><small>任务完成、失败、超时或需要人工确认时显示站内提示。</small></span>
+              <input
+                type="checkbox"
+                checked={taskCompletionNotices}
+                onChange={(event) => {
+                  onTaskCompletionNoticesChange(event.target.checked);
+                  setPreferenceNotice("提示偏好已保存在此浏览器。");
+                }}
+              />
+            </label>
+            {preferenceNotice ? <p className="account-preference-status" role="status">{preferenceNotice}</p> : null}
+          </div>
         </section>
 
         <section className="account-section is-danger-zone" aria-labelledby="deactivate-title">
-          <header><span><Trash size={21} aria-hidden="true" /></span><div><h2 id="deactivate-title">停用账号</h2><p>停止自然人账号的新访问；历史任务、账务与审计记录仍按平台规则保留。</p></div></header>
+          <header><span><Trash size={21} aria-hidden="true" /></span><div><h2 id="deactivate-title">停用账号</h2><p>停用后将无法登录；历史任务、账单与必要的安全记录仍会按规定保留。</p></div></header>
           {!deactivateOpen ? (
-            <button className="account-danger-quiet" type="button" disabled={demoMode || Boolean(busy)} onClick={() => setDeactivateOpen(true)}>了解并停用账号</button>
+            <button className="account-danger-quiet" type="button" disabled={demoMode || Boolean(busy)} onClick={() => setDeactivateOpen(true)}>查看停用说明</button>
           ) : (
             <div className="account-deactivate-confirm" role="group" aria-labelledby="deactivate-confirm-title">
               <strong id="deactivate-confirm-title">确认停用账号</strong>
@@ -380,13 +439,14 @@ export function AccountCenter({
                   <button className="account-quiet-button" type="button" onClick={() => globalThis.location?.assign?.("/company")}>前往企业成员管理完成交接</button>
                 </div>
               ) : null}
-              {session?.platform_admin ? <p>若此账号位于平台所有者服务端允许列表，还需先由部署管理员完成所有者主体变更。</p> : null}
-              <label><span>确认文案</span><input type="text" autoComplete="off" spellCheck="false" value={deactivateConfirmation} onChange={(event) => setDeactivateConfirmation(event.target.value)} /></label>
+              {session?.platform_admin ? <p>如果此账号同时是平台所有者，请先联系平台管理员完成所有者账号变更。</p> : null}
+              <label><span>输入 DEACTIVATE</span><input type="text" autoComplete="off" spellCheck="false" value={deactivateConfirmation} onChange={(event) => setDeactivateConfirmation(event.target.value)} /></label>
               {!hasAuthVersion && !demoMode ? <p className="account-inline-error" role="alert">账号版本尚未返回，刷新安全状态后才能停用。</p> : null}
-              <div><button className="account-quiet-button" type="button" onClick={() => { setDeactivateOpen(false); setDeactivateConfirmation(""); }}>取消</button><button className="account-danger-button" type="button" disabled={!deactivationMatches || !hasAuthVersion || busy === "deactivate"} onClick={deactivate}>{busy === "deactivate" ? <SpinnerGap className="is-spinning" size={17} aria-hidden="true" /> : null}确认停用</button></div>
+              <div><button className="account-quiet-button" type="button" onClick={() => { setDeactivateOpen(false); setDeactivateConfirmation(""); }}>取消</button><button className="account-danger-button" type="button" disabled={!deactivationMatches || !hasAuthVersion || busy === "deactivate"} onClick={deactivate}>{busy === "deactivate" ? <SpinnerGap className="is-spinning" size={17} aria-hidden="true" /> : null}停用账号并退出</button></div>
             </div>
           )}
         </section>
+        </div>
       </div>
     </section>
   );

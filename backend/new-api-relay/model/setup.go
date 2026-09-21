@@ -1,6 +1,9 @@
 package model
 
-import "github.com/QuantumNous/new-api/common"
+import (
+	"github.com/QuantumNous/new-api/common"
+	"gorm.io/gorm"
+)
 
 type Setup struct {
 	ID            uint   `json:"id" gorm:"primaryKey"`
@@ -18,16 +21,20 @@ func GetSetup() *Setup {
 }
 
 func SetupReady() bool {
-	if DB == nil {
+	return SetupReadyWithDB(DB)
+}
+
+func SetupReadyWithDB(db *gorm.DB) bool {
+	if db == nil {
 		return false
 	}
 	var setups []Setup
-	if err := DB.Order("id ASC").Find(&setups).Error; err != nil || len(setups) != 1 ||
+	if err := db.Order("id ASC").Find(&setups).Error; err != nil || len(setups) != 1 ||
 		setups[0].Version == "" || setups[0].InitializedAt <= 0 {
 		return false
 	}
 	var roots []User
-	if err := DB.Where("role = ?", common.RoleRootUser).Order("id ASC").Find(&roots).Error; err != nil || len(roots) != 1 {
+	if err := db.Where("role = ?", common.RoleRootUser).Order("id ASC").Find(&roots).Error; err != nil || len(roots) != 1 {
 		return false
 	}
 	return roots[0].Status == common.UserStatusEnabled

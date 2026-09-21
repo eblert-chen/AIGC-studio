@@ -31,6 +31,7 @@ from ..models import (
     ShowcaseReleaseItem,
     TaskArtifact,
     TaskStatus,
+    User,
 )
 from ..relay_client import (
     RelayPermanentError,
@@ -53,6 +54,7 @@ from ..showcase_schemas import (
     ShowcaseRetireRequest,
     ShowcaseUnpublishResponse,
 )
+from ..services.account_partition import AccountPartitionService
 from ..services.audit import AuditService
 from ..services.errors import ConflictError
 from ..services.showcase import ShowcaseService
@@ -236,6 +238,10 @@ def create_showcase_media(
         )
     else:
         assert source_task_artifact_id is not None
+        user = session.get(User, context.user_id)
+        if user is None:
+            raise HTTPException(status_code=403, detail="Current user is unavailable")
+        AccountPartitionService.require_personal(session, user=user)
         row = session.execute(
             select(TaskArtifact, GenerationTask)
             .join(GenerationTask, GenerationTask.id == TaskArtifact.task_id)

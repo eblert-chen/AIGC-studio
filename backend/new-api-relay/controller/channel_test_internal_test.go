@@ -130,6 +130,24 @@ func TestMultiprotocolGatewayEndpointTypes(t *testing.T) {
 	assert.Equal(t, want, common.GetEndpointTypesByChannelType(constant.ChannelTypeSub2API, "gpt-5"))
 }
 
+func TestVolcEngineSeedreamChannelTestUsesImageRequest(t *testing.T) {
+	channel := &model.Channel{Type: constant.ChannelTypeVolcEngine}
+	providerModel := constant.PlatformGenerationArkSeedream50Model
+	endpointType := normalizeChannelTestEndpoint(channel, providerModel, "")
+
+	require.Equal(t, string(constant.EndpointTypeImageGeneration), endpointType)
+	request := buildTestRequest(providerModel, endpointType, channel, false)
+	imageRequest, ok := request.(*dto.ImageRequest)
+	require.True(t, ok, "Seedream channel tests must build an image request")
+	assert.Equal(t, providerModel, imageRequest.Model)
+	assert.Equal(t, "a cute cat", imageRequest.Prompt)
+	assert.Equal(t, "2K", imageRequest.Size)
+	assert.Equal(t, "url", imageRequest.ResponseFormat)
+	assert.Nil(t, imageRequest.N)
+	assert.False(t, *imageRequest.Stream)
+	assert.True(t, *imageRequest.Watermark)
+}
+
 func TestCopyChannelRejectsInvalidLegacyProxySettings(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	settingBytes, err := common.Marshal(dto.ChannelSettings{

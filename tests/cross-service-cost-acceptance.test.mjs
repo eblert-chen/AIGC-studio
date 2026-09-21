@@ -143,6 +143,11 @@ test("cost acceptance probe explicitly authenticates every Platform bootstrap", 
     /headers=\{"X-Bootstrap-Token": BOOTSTRAP_TOKEN\}/g,
   );
   assert.equal(bootstrapHeaders?.length, 2);
+  assert.match(source, /"platform_billing_scope": "company"/);
+  assert.match(source, /"platform_billing_scope_id": company_id/);
+  assert.match(source, /f"relay-contract-cost:\{outcome_id\}"/);
+  assert.match(source, /f"relay-contract-cost-\{outcome_id\}"/);
+  assert.doesNotMatch(source, /relay-contract-cost:\{outcome_id\}:\{CONTRACT_RATE_ID\}/);
 });
 
 test("canonical Python executable parsing is strict and platform-aware", () => {
@@ -271,16 +276,27 @@ test("Platform source snapshot binds runtime, migrations, and cost harness", asy
   assert(snapshot.file_count > 100);
   for (const required of [
     "backend/platform/platform_api/main.py",
+    "backend/platform/platform_api/billing_worker.py",
+    "backend/platform/platform_api/database_privileges_v14.py",
+    "backend/platform/platform_api/database_privileges_behavior_v14.py",
     "backend/platform/platform_api/services/channel_costs.py",
+    "backend/platform/platform_api/services/models.py",
     "backend/platform/platform_api/services/provider_alerts.py",
     "backend/platform/migrations/env.py",
     "backend/platform/migrations/versions/0023_download_gateway_registration_attempts.py",
     "backend/platform/migrations/versions/0028_provider_alert_bridge.py",
     "backend/platform/migrations/versions/0029_artifact_input_promotion.py",
+    "backend/platform/migrations/versions/0049_payment_finance_closure.py",
     "backend/platform/Dockerfile",
     "backend/platform/alembic.ini",
     "backend/platform/requirements.txt",
     "backend/platform/tests/test_provider_alert_bridge.py",
+    "backend/platform/tests/test_billing_worker.py",
+    "backend/platform/tests/test_commercial_billing_migration.py",
+    "backend/platform/tests/test_payment_worker_closure.py",
+    "backend/platform/tests/test_minimax_h3_catalog_integration.py",
+    "backend/platform/tests/test_local_video_lab.py",
+    "backend/platform/tests/test_model_grant_point_price_flush_order.py",
     "backend/platform/tests/integration/cost_acceptance_server.py",
     "backend/platform/tests/integration/test_new_api_channel_cost_delivery.py",
   ]) assert(snapshot.files.includes(required), `Platform snapshot is missing ${required}`);
@@ -513,6 +529,10 @@ test("cross-service cost acceptance exercises the Relay runtime materializer", a
   ]);
 
   for (const required of [
+    "prepareRelayDevelopmentRoleStubs",
+    "installRelayWorkerRecoveryFence",
+    "renewRelayWorkerRecoveryFence",
+    "waitForRelayGenerationWorkersRunning",
     "seedRelayNativeChannel",
     "waitForRelaySchemaMigration",
     "relayMigration",
@@ -527,20 +547,141 @@ test("cross-service cost acceptance exercises the Relay runtime materializer", a
   ]) assert(runner.includes(required), `runtime materializer runner is missing ${required}`);
 
   const migrationStart = runner.indexOf('"run", "--detach", "--name", relayMigration');
+  const roleStubPreparation = runner.indexOf("await prepareRelayDevelopmentRoleStubs(");
   const migrationWait = runner.indexOf("await waitForRelaySchemaMigration(", migrationStart);
   const migrationRemove = runner.indexOf('["rm", relayMigration]', migrationWait);
   const channelSeed = runner.indexOf("await seedRelayNativeChannel(", migrationRemove);
   const runtimeEnvironment = runner.indexOf("await writePrivateFile(relayEnvPath", channelSeed);
+  const recoveryFenceInstall = runner.indexOf(
+    "await installRelayWorkerRecoveryFence(redis)",
+    runtimeEnvironment,
+  );
+  const runtimeLaunch = runner.indexOf('"run", "--detach", "--name", relay,', runtimeEnvironment);
+  const workersRunning = runner.indexOf(
+    "await waitForRelayGenerationWorkersRunning(",
+    runtimeLaunch,
+  );
+  const recoveryFenceRenewal = runner.indexOf(
+    "await renewRelayWorkerRecoveryFence(redis)",
+    workersRunning,
+  );
+  const pytestStart = runner.indexOf("const pytestStarted", recoveryFenceRenewal);
   assert(migrationStart > 0);
+  assert(roleStubPreparation > 0);
+  assert(roleStubPreparation < migrationStart);
   assert(migrationWait > migrationStart);
   assert(migrationRemove > migrationWait);
   assert(channelSeed > migrationRemove);
   assert(runtimeEnvironment > channelSeed);
+  assert(recoveryFenceInstall > runtimeEnvironment);
+  assert(runtimeLaunch > recoveryFenceInstall);
+  assert(workersRunning > runtimeLaunch);
+  assert(recoveryFenceRenewal > workersRunning);
+  assert(pytestStart > recoveryFenceRenewal);
   const migrationLaunch = runner.slice(migrationStart, migrationWait);
   assert(migrationLaunch.includes("...acceptanceResourceLabels(runSuffix)"));
   assert(migrationLaunch.includes('"--entrypoint", "/new-api"'));
   assert(migrationLaunch.includes("candidateImageId"));
   assert(!migrationLaunch.includes('"--publish"'));
+  const migrationEnvironmentStart = runner.indexOf("const relayMigrationEnv =");
+  assert(migrationEnvironmentStart > 0);
+  assert(migrationEnvironmentStart < migrationStart);
+  const migrationEnvironment = runner.slice(migrationEnvironmentStart, migrationStart);
+  for (const exactDevelopmentGate of [
+    'APP_ENV: "development"',
+    'DEPLOYMENT_ENV: "development"',
+    'RELAY_COMPAT_ENVIRONMENT: "development"',
+    'RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED: "false"',
+    'RELAY_DATABASE_TLS_ATTESTATION_REQUIRED: "false"',
+    'RELAY_LOCAL_DATABASE_ROLE_REHEARSAL: "false"',
+    'RELAY_RUNTIME_DATABASE_ROLE: "relay_runtime"',
+  ]) assert(migrationEnvironment.includes(exactDevelopmentGate));
+  assert.match(
+    runner,
+    /if \(relayContainer\.Image !== candidateImageId\)[\s\S]*?await assertRelayStillRunning\(relay, forbiddenValues\)/,
+  );
+  assert.match(
+    runner,
+    /candidate Relay exited during startup[\s\S]*?redactAcceptanceDiagnostic\(logs\.stdout, logs\.stderr, forbiddenValues\)/,
+  );
+  const roleStubHelper = runner.slice(
+    runner.indexOf("async function prepareRelayDevelopmentRoleStubs"),
+    runner.indexOf("async function seedRelayNativeChannel"),
+  );
+  for (const required of [
+    "CREATE ROLE relay_runtime",
+    "CREATE ROLE relay_download_edge",
+    "NOLOGIN NOINHERIT NOSUPERUSER",
+    "REVOKE CONNECT, CREATE, TEMPORARY",
+    "REVOKE ALL ON SCHEMA public",
+    "GRANT USAGE ON SCHEMA public",
+    "ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC",
+    "ALTER ROLE cost_acceptance SET log_parameter_max_length = 0",
+    "ALTER ROLE cost_acceptance SET log_parameter_max_length_on_error = 0",
+    "ALTER ROLE cost_acceptance SET auto_explain.log_parameter_max_length = 0",
+    "ALTER ROLE cost_acceptance SET pgaudit.log_parameter = 'off'",
+    "ALTER ROLE cost_acceptance SET search_path = public",
+    "ALTER ROLE cost_acceptance SET row_security = on",
+    "pg_db_role_setting",
+    "setdatabase = 0",
+    '"auto_explain.log_parameter_max_length=0"',
+    '"log_parameter_max_length=0"',
+    '"log_parameter_max_length_on_error=0"',
+    '"pgaudit.log_parameter=off"',
+    '"row_security=on"',
+    '"search_path=public"',
+    "logging_settings is None or sorted(logging_settings) != expected_logging_settings",
+    "Relay development database logging policy is invalid",
+    "Relay development role stub isolation is invalid",
+  ]) assert(roleStubHelper.includes(required));
+
+  const runtimeConfiguration = runner.slice(runtimeEnvironment, recoveryFenceInstall);
+  for (const required of [
+    'RELAY_COMPAT_WORKER_ENABLED: "true"',
+    'RELAY_COMPAT_DELAY_QUEUE_NAMESPACE: "new-api-relay"',
+    'RELAY_COMPAT_DELAY_QUEUE_RECOVERY_SECONDS: "60"',
+  ]) assert(runtimeConfiguration.includes(required));
+  assert(!runtimeConfiguration.includes('RELAY_COMPAT_WORKER_ENABLED: "false"'));
+  for (const required of [
+    "const relayWorkerRecoveryFenceToken = randomBytes(32)",
+    "forbiddenValues",
+    "COST_ACCEPTANCE_DELAY_RECOVERY_FENCE_TOKEN: relayWorkerRecoveryFenceToken",
+    '"{new-api-relay:platform-generation-delay}:recovery:v1"',
+    '"{new-api-relay:platform-generation-delay}:scheduled:v1"',
+    '"{new-api-relay:platform-generation-delay}:inflight:v1"',
+    '"{new-api-relay:platform-generation-delay}:lease-tokens:v1"',
+    "relayWorkerRecoveryFenceTTLMilliseconds = 60_000",
+  ]) assert(runner.includes(required), `worker recovery fixture is missing ${required}`);
+  const recoveryFenceHelper = runner.slice(
+    runner.indexOf("function relayWorkerRecoveryFenceMetrics"),
+    runner.indexOf("async function postgresFingerprints"),
+  );
+  for (const required of [
+    "SET",
+    "PX ${relayWorkerRecoveryFenceTTLMilliseconds} NX",
+    "GET",
+    "PEXPIRE",
+    "ZCARD",
+    "HLEN",
+    "COST_ACCEPTANCE_DELAY_RECOVERY_FENCE_TOKEN",
+    "ttlMilliseconds < 55_000",
+    "scheduled !== 0",
+    "inflight !== 0",
+    "leaseTokens !== 0",
+    "Relay worker recovery fence is not isolated",
+  ]) assert(recoveryFenceHelper.includes(required));
+  const workerStateHelper = runner.slice(
+    runner.indexOf("async function waitForRelayGenerationWorkersRunning"),
+    runner.indexOf("async function assertRuntimeIdentityIsProtected"),
+  );
+  for (const required of [
+    "/health/ready",
+    'dependency?.name === "platform_relay_compat"',
+    "compatibility?.details?.enabled === true",
+    "compatibility.details.workers_enabled === true",
+    'compatibility.details.worker_runtime_state === "running"',
+    "compatibility.details.worker_runtime_running === true",
+  ]) assert(workerStateHelper.includes(required));
 
   for (const required of [
     "/v1/generations",
@@ -566,6 +707,145 @@ test("cross-service cost acceptance exercises the Relay runtime materializer", a
     integration.indexOf("wrong_company_payload ="),
   );
   assert(!positiveFlow.includes("_insert_rejection_delivery_fixture"));
+});
+
+test("personal provider cost linkage is frozen across Platform and Relay", async () => {
+  const [
+    platformOutbox,
+    relayGeneration,
+    relayCostDTO,
+    relayCostLinkage,
+    relayCostDelivery,
+    relayV7Migration,
+    platformCostService,
+    platformSignatureVerifier,
+    platformContractTest,
+  ] = await Promise.all([
+    readFile(
+      new URL("../backend/platform/platform_api/services/relay_outbox.py", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../backend/new-api-relay/service/platform_generation.go", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../backend/new-api-relay/dto/platform_channel_cost.go", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../backend/new-api-relay/service/platform_channel_cost_reconciliation.go",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL("../backend/new-api-relay/service/platform_provider_delivery.go", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../backend/new-api-relay/model/platform_channel_cost_personal_scope_v7.go",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL("../backend/platform/platform_api/services/channel_costs.py", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../backend/platform/platform_api/services/channel_cost_events.py",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../backend/platform/tests/test_channel_cost_relay_contract.py",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ]);
+
+  for (const required of [
+    '"platform_billing_scope"',
+    '"platform_billing_scope_id"',
+    '"platform_company_id"',
+    '"platform_personal_workspace_id"',
+    '"platform_task_id"',
+  ]) assert(platformOutbox.includes(required), `Platform outbox is missing ${required}`);
+  assert.match(
+    platformOutbox,
+    /"company" if task\.company_id is not None else "personal"/,
+  );
+
+  for (const required of [
+    "RequestJSON:                string(serialized)",
+    "ClientReferenceID:          request.ClientReferenceID",
+    "common.Unmarshal([]byte(job.RequestJSON), &request)",
+  ]) assert(relayGeneration.includes(required), `Relay request snapshot is missing ${required}`);
+
+  for (const required of [
+    "PersonalWorkspaceID",
+    'json:"personal_workspace_id,omitempty"',
+    "task-linked channel cost requires exactly one billing scope",
+    "task-linked channel cost requires relay_job_id",
+  ]) assert(relayCostDTO.includes(required), `Relay cost DTO is missing ${required}`);
+
+  for (const required of [
+    'request.Metadata["platform_company_id"]',
+    'request.Metadata["platform_personal_workspace_id"]',
+    'request.Metadata["platform_task_id"]',
+    'request.Metadata["platform_billing_scope"]',
+    'request.Metadata["platform_billing_scope_id"]',
+    "job.ClientReferenceID",
+    "PersonalWorkspaceID:  personalWorkspaceID",
+    "if !hasScope || !hasScopeID",
+  ]) assert(relayCostLinkage.includes(required), `Relay linkage is missing ${required}`);
+
+  for (const required of [
+    "PersonalWorkspaceID:  input.PersonalWorkspaceID",
+    "PersonalWorkspaceID:  event.PersonalWorkspaceID",
+    "payload := []byte(event.PayloadJSON)",
+    "bytes.Equal(expectedJSON, payload)",
+    'request.Header.Set("X-Relay-Signature", signature)',
+  ]) assert(relayCostDelivery.includes(required), `signed Relay delivery is missing ${required}`);
+
+  for (const required of [
+    "ADD COLUMN personal_workspace_id varchar(64)",
+    "idx_platform_channel_cost_personal_workspace",
+    "ck_platform_channel_cost_billing_scope_v7",
+    "num_nonnulls(NULLIF(company_id, ''), NULLIF(personal_workspace_id, '')) = 1",
+    "trg_platform_channel_cost_billing_scope_v7_insert",
+    "trg_platform_channel_cost_billing_scope_v7_update",
+    "NULLIF(NEW.relay_job_id, '') IS NULL",
+  ]) assert(relayV7Migration.includes(required), `Relay v7 scope migration is missing ${required}`);
+
+  for (const required of [
+    "signed Relay task costs require exactly one billing scope",
+    "personal_workspace_id does not match the task",
+    "relay_job_id does not match the task",
+    '"personal_workspace_id": personal_workspace_id',
+    '"relay_payload_sha256": relay_payload_sha256',
+  ]) assert(platformCostService.includes(required), `Platform ingest is missing ${required}`);
+  for (const required of [
+    "hmac.compare_digest",
+    "event_id",
+    "timestamp",
+    "payload",
+  ]) assert(platformSignatureVerifier.includes(required), `Platform verifier is missing ${required}`);
+
+  for (const required of [
+    "test_signed_personal_relay_cost_preserves_exact_workspace_task_and_job_linkage",
+    'payload["personal_workspace_id"] = task["workspace_id"]',
+    '"company_id": str(uuid4())',
+    "assert entries[0].relay_job_id == PERSONAL_RELAY_JOB_ID",
+    "assert (wallet.available_points, wallet.reserved_points) == wallet_before",
+  ]) assert(platformContractTest.includes(required), `personal Platform contract test is missing ${required}`);
 });
 
 test("native channel bootstrap uses the guarded encrypted credential-set path", async () => {

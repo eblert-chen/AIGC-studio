@@ -78,7 +78,11 @@ export function SecureVerificationDialog({
   const handleVerify = () => {
     if (!activeMethod) return
     const payload = activeMethod === '2fa' ? state.code : undefined
-    onVerify(activeMethod, payload)
+    void Promise.resolve(onVerify(activeMethod, payload)).catch(() => {
+      // The verification hook owns the user-visible error. Swallow the
+      // already-reported rejection so a failed step-up never becomes an
+      // unhandled browser promise rejection.
+    })
   }
 
   const verifyDisabled =

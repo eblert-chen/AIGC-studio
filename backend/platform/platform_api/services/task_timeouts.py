@@ -8,6 +8,8 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..models import (
+    BillingUnit,
+    CompanyPointLedgerEntry,
     GenerationTask,
     LedgerEntry,
     PersonalLedgerEntry,
@@ -299,9 +301,16 @@ class TaskTimeoutService:
                     idempotency_key=f"task-timeout:{task.id}:undispatched",
                     failure_reason=reason,
                 )
-                released_cents = ledger.amount_cents
-                released_points = 0
-                company_ledger_id = ledger.id
+                if task.billing_unit == BillingUnit.POINT:
+                    released_cents = 0
+                    released_points = ledger.amount_points
+                    company_ledger_id = None
+                    company_point_ledger_id = ledger.id
+                else:
+                    released_cents = ledger.amount_cents
+                    released_points = 0
+                    company_ledger_id = ledger.id
+                    company_point_ledger_id = None
                 personal_ledger_id = None
             else:
                 if task.personal_workspace_id is None:
@@ -316,6 +325,7 @@ class TaskTimeoutService:
                 released_cents = 0
                 released_points = ledger.amount_points
                 company_ledger_id = None
+                company_point_ledger_id = None
                 personal_ledger_id = ledger.id
             outbox.status = RelayOutboxStatus.PERMANENTLY_FAILED
             outbox.last_error = reason
@@ -331,6 +341,7 @@ class TaskTimeoutService:
                 released_cents=released_cents,
                 released_points=released_points,
                 ledger_entry_id=company_ledger_id,
+                company_point_ledger_entry_id=company_point_ledger_id,
                 personal_ledger_entry_id=personal_ledger_id,
                 relay_job_id=None,
             )
@@ -459,17 +470,28 @@ class TaskTimeoutService:
                 failure_reason=error_message,
                 error_snapshot=error_snapshot,
                 reservation_action=snapshot.reservation_action,
+                execution_contract_sha256=snapshot.execution_contract_sha256,
                 personal_workspace_id=task.personal_workspace_id,
             )
             terminal_status = target_status
             ledger_key = f"relay-terminal:{relay_job_id}:{terminal_status.value}"
             if task.company_id is not None:
-                ledger = session.scalar(
-                    select(LedgerEntry).where(
-                        LedgerEntry.company_id == task.company_id,
-                        LedgerEntry.idempotency_key == ledger_key,
+                if task.billing_unit == BillingUnit.POINT:
+                    company_point_ledger = session.scalar(
+                        select(CompanyPointLedgerEntry).where(
+                            CompanyPointLedgerEntry.company_id == task.company_id,
+                            CompanyPointLedgerEntry.idempotency_key == ledger_key,
+                        )
                     )
-                )
+                    ledger = None
+                else:
+                    ledger = session.scalar(
+                        select(LedgerEntry).where(
+                            LedgerEntry.company_id == task.company_id,
+                            LedgerEntry.idempotency_key == ledger_key,
+                        )
+                    )
+                    company_point_ledger = None
                 personal_ledger = None
                 released_cents = (
                     ledger.amount_cents
@@ -477,9 +499,15 @@ class TaskTimeoutService:
                     and terminal_status in {TaskStatus.FAILED, TaskStatus.CANCELLED}
                     else 0
                 )
-                released_points = 0
+                released_points = (
+                    company_point_ledger.amount_points
+                    if company_point_ledger is not None
+                    and terminal_status in {TaskStatus.FAILED, TaskStatus.CANCELLED}
+                    else 0
+                )
             else:
                 ledger = None
+                company_point_ledger = None
                 personal_ledger = session.scalar(
                     select(PersonalLedgerEntry).where(
                         PersonalLedgerEntry.workspace_id == task.personal_workspace_id,
@@ -508,6 +536,11 @@ class TaskTimeoutService:
                 released_cents=released_cents,
                 released_points=released_points,
                 ledger_entry_id=ledger.id if ledger is not None else None,
+                company_point_ledger_entry_id=(
+                    company_point_ledger.id
+                    if company_point_ledger is not None
+                    else None
+                ),
                 personal_ledger_entry_id=(
                     personal_ledger.id if personal_ledger is not None else None
                 ),

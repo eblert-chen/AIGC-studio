@@ -79,15 +79,26 @@ def test_available_models_only_returns_enabled_current_company_grants(
     quote_revision = items[0].pop("quote_revision")
     assert quote_revision.startswith(QUOTE_REVISION_PREFIX)
     assert len(quote_revision) == len(QUOTE_REVISION_PREFIX) + 64
+    readiness_checked_at = items[0].pop("readiness_checked_at")
+    assert readiness_checked_at
+    price_version_id = items[0].pop("price_version_id")
+    assert price_version_id.startswith(QUOTE_REVISION_PREFIX)
+    assert len(price_version_id) == len(QUOTE_REVISION_PREFIX) + 64
+    mode_readiness = items[0].pop("mode_readiness")
+    assert mode_readiness["text_to_video"]["default"] == {
+        "ready": True,
+        "status": "ready",
+        "blockers": [],
+    }
     assert items == [
         {
             "id": enabled_id,
             "slug": "enabled-model",
-                "display_name": "Model enabled-model",
-                "capability_version": 4,
-                "relay_capability_revision": None,
-                "relay_capability_synced_at": None,
-                "capabilities": {"text-to-video": {"durations": [5, 10]}},
+            "display_name": "Model enabled-model",
+            "capability_version": 4,
+            "relay_capability_revision": None,
+            "relay_capability_synced_at": None,
+            "capabilities": {"text-to-video": {"durations": [5, 10]}},
             "effective_capabilities": {
                 "schema_version": 1,
                 "modes": {
@@ -109,7 +120,10 @@ def test_available_models_only_returns_enabled_current_company_grants(
                 },
             },
             "pricing_mode": "per_second",
+            "billing_unit": "CNY_CENT",
+            "billing_version": 1,
             "unit_price_cents": 88,
+            "unit_price_points": None,
             "config_override": {"priority": "high"},
             "call_quota": None,
             "concurrency_limit": None,

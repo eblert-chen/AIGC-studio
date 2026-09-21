@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -47,6 +48,7 @@ type platformProviderRuntimeConfiguration struct {
 	Cost                PlatformChannelCostSinkConfig
 	CostConfigured      bool
 	ContractRates       []dto.PlatformProviderContractRateInput
+	CostRateSets        []dto.PlatformProviderCostRateSet
 	CostLease           time.Duration
 	CostPoll            time.Duration
 	Telemetry           PlatformTelemetrySinkConfig
@@ -55,31 +57,70 @@ type platformProviderRuntimeConfiguration struct {
 	TelemetryPoll       time.Duration
 }
 
+func validatePlatformProviderCostRateSetRoutes(rateSets []dto.PlatformProviderCostRateSet) error {
+	if len(rateSets) == 0 {
+		return nil
+	}
+	if model.DB == nil {
+		return fmt.Errorf("provider cost rate-set validation requires the Relay database")
+	}
+	for _, rateSet := range rateSets {
+		var routes []model.PlatformGenerationProviderRoute
+		if err := model.DB.Where(
+			"provider_name = ? AND channel_id = ? AND upstream_model = ? AND mode = ?",
+			rateSet.ProviderName, rateSet.ChannelID, rateSet.UpstreamModel, rateSet.Mode,
+		).Order("id ASC").Limit(2).Find(&routes).Error; err != nil {
+			return err
+		}
+		if len(routes) != 1 {
+			return fmt.Errorf("provider cost rate set %s does not bind exactly one configured route", rateSet.ID)
+		}
+		var channel model.Channel
+		if err := model.DB.Select("id", "type", "base_url").Where("id = ?", rateSet.ChannelID).First(&channel).Error; err != nil {
+			return err
+		}
+		origin, err := platformProviderRateSetOrigin(channel.GetBaseURL())
+		if err != nil || origin != rateSet.ProviderOrigin {
+			return fmt.Errorf("provider cost rate set %s origin does not match its channel", rateSet.ID)
+		}
+	}
+	return nil
+}
+
+func platformProviderRateSetOrigin(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Port() != "" {
+		return "", fmt.Errorf("provider channel origin is invalid")
+	}
+	return "https://" + parsed.Hostname(), nil
+}
+
 // PlatformProviderReadinessSummary is diagnostic state, not an API admission
 // decision. In particular, provider incidents and delivery backlog set
 // Degraded but do not turn a provider-only outage into an HTTP 503.
 type PlatformProviderReadinessSummary struct {
-	Enabled                         bool       `json:"enabled"`
-	Degraded                        bool       `json:"degraded"`
-	MonitorFresh                    bool       `json:"monitor_fresh"`
-	MonitorLastCompletedAt          *time.Time `json:"monitor_last_completed_at"`
-	MonitorFreshnessSeconds         int64      `json:"monitor_freshness_seconds"`
-	MonitorLastWorkerErrorCode      string     `json:"monitor_last_worker_error_code"`
-	ActiveAlerts                    int64      `json:"active_alerts"`
-	UnavailableRoutes               int64      `json:"unavailable_routes"`
-	AlertBacklog                    int64      `json:"alert_backlog"`
-	AlertDeadLetter                 int64      `json:"alert_dead_letter"`
-	CostIncomplete                  int64      `json:"cost_incomplete"`
-	CostBacklog                     int64      `json:"cost_backlog"`
-	CostDeadLetter                  int64      `json:"cost_dead_letter"`
-	CostSuccessfulRelayJobs         int64      `json:"cost_successful_relay_jobs"`
-	CostExplicitRelayJobs           int64      `json:"cost_explicit_relay_jobs"`
-	NativeBillingReconciliationJobs int64      `json:"native_billing_reconciliation_jobs"`
-	CostReconciliationComplete      bool       `json:"cost_reconciliation_complete"`
-	TaskStageBacklog                int64      `json:"task_stage_backlog"`
-	TaskStageDeadLetter             int64      `json:"task_stage_dead_letter"`
-	OperationsSnapshotBacklog       int64      `json:"operations_snapshot_backlog"`
-	OperationsSnapshotDeadLetter    int64      `json:"operations_snapshot_dead_letter"`
+	Enabled                             bool       `json:"enabled"`
+	Degraded                            bool       `json:"degraded"`
+	MonitorFresh                        bool       `json:"monitor_fresh"`
+	MonitorLastCompletedAt              *time.Time `json:"monitor_last_completed_at"`
+	MonitorFreshnessSeconds             int64      `json:"monitor_freshness_seconds"`
+	MonitorLastWorkerErrorCode          string     `json:"monitor_last_worker_error_code"`
+	ActiveAlerts                        int64      `json:"active_alerts"`
+	UnavailableRoutes                   int64      `json:"unavailable_routes"`
+	AlertBacklog                        int64      `json:"alert_backlog"`
+	AlertDeadLetter                     int64      `json:"alert_dead_letter"`
+	CostIncomplete                      int64      `json:"cost_incomplete"`
+	CostBacklog                         int64      `json:"cost_backlog"`
+	CostDeadLetter                      int64      `json:"cost_dead_letter"`
+	CostSuccessfulRelayJobs             int64      `json:"cost_successful_relay_jobs"`
+	CostExplicitRelayJobs               int64      `json:"cost_explicit_relay_jobs"`
+	NativeBillingReconciliationJobs     int64      `json:"native_billing_reconciliation_jobs"`
+	CostReconciliationComplete          bool       `json:"cost_reconciliation_complete"`
+	TaskStageBacklog                    int64      `json:"task_stage_backlog"`
+	TaskStageDeadLetter                 int64      `json:"task_stage_dead_letter"`
+	OperationsSnapshotBacklog           int64      `json:"operations_snapshot_backlog"`
+	OperationsSnapshotDeadLetter        int64      `json:"operations_snapshot_dead_letter"`
+	ProviderResultReconciliationBacklog int64      `json:"provider_result_reconciliation_backlog"`
 }
 
 type platformProviderRuntimeCoordinator struct {
@@ -111,9 +152,11 @@ func ValidatePlatformProviderRuntimeConfiguration() error {
 		return err
 	}
 	if len(configuration.ContractRates) > 0 {
-		return model.SyncPlatformProviderContractRates(configuration.ContractRates)
+		if err := model.SyncPlatformProviderContractRates(configuration.ContractRates); err != nil {
+			return err
+		}
 	}
-	return nil
+	return validatePlatformProviderCostRateSetRoutes(configuration.CostRateSets)
 }
 
 // StartPlatformProviderRuntimeWorkers starts identical workers in every Relay
@@ -134,6 +177,9 @@ func StartPlatformProviderRuntimeWorkers() error {
 		if err := model.SyncPlatformProviderContractRates(configuration.ContractRates); err != nil {
 			return fmt.Errorf("platform provider contract rates rejected: %w", err)
 		}
+	}
+	if err := validatePlatformProviderCostRateSetRoutes(configuration.CostRateSets); err != nil {
+		return fmt.Errorf("platform provider cost rate sets rejected: %w", err)
 	}
 	return platformProviderRuntimeWorkers.start(configuration)
 }
@@ -292,6 +338,10 @@ func GetPlatformProviderReadinessSummary(ctx context.Context) (PlatformProviderR
 	if !PlatformRelayCompatEnabled() {
 		return summary, nil
 	}
+	if model.DB == nil {
+		return summary, fmt.Errorf("provider readiness database is unavailable")
+	}
+	database := model.DB.WithContext(ctx)
 	configuration, err := getPlatformProviderRuntimeConfiguration()
 	if err != nil {
 		return summary, err
@@ -302,14 +352,14 @@ func GetPlatformProviderReadinessSummary(ctx context.Context) (PlatformProviderR
 		return summary, nil
 	}
 
-	monitor, err := GetPlatformProviderMonitorReadiness(true, configuration.MaximumFreshness)
+	monitor, err := getPlatformProviderMonitorReadinessWithDB(database, true, configuration.MaximumFreshness)
 	if err != nil {
 		return summary, err
 	}
 	if err := ctx.Err(); err != nil {
 		return summary, err
 	}
-	cost, err := model.GetPlatformChannelCostReconciliationSummary()
+	cost, err := model.GetPlatformChannelCostReconciliationSummaryWithDB(database)
 	if err != nil {
 		return summary, err
 	}
@@ -331,11 +381,11 @@ func GetPlatformProviderReadinessSummary(ctx context.Context) (PlatformProviderR
 	// incomplete until at least one successful provider outcome has matching,
 	// delivered, evidence-backed cost (including an explicit zero amount).
 	summary.CostReconciliationComplete = cost.SuccessfulRelayJobs > 0 && cost.ReconciliationComplete
-	stageCounts, err := model.GetPlatformRelayDeliveryCounts(model.PlatformRelayDeliveryKindTaskStage)
+	stageCounts, err := model.GetPlatformRelayDeliveryCountsWithDB(database, model.PlatformRelayDeliveryKindTaskStage)
 	if err != nil {
 		return summary, err
 	}
-	snapshotCounts, err := model.GetPlatformRelayDeliveryCounts(model.PlatformRelayDeliveryKindOperationsSnapshot)
+	snapshotCounts, err := model.GetPlatformRelayDeliveryCountsWithDB(database, model.PlatformRelayDeliveryKindOperationsSnapshot)
 	if err != nil {
 		return summary, err
 	}
@@ -343,11 +393,17 @@ func GetPlatformProviderReadinessSummary(ctx context.Context) (PlatformProviderR
 	summary.TaskStageDeadLetter = stageCounts.DeadLetter
 	summary.OperationsSnapshotBacklog = snapshotCounts.Pending + snapshotCounts.Claimed
 	summary.OperationsSnapshotDeadLetter = snapshotCounts.DeadLetter
+	providerResultReconciliationBacklog, err := model.CountPlatformGenerationProviderResultReconciliationBacklogWithDB(database)
+	if err != nil {
+		return summary, err
+	}
+	summary.ProviderResultReconciliationBacklog = providerResultReconciliationBacklog
 	summary.Degraded = monitor.Degraded || summary.CostIncomplete > 0 ||
 		summary.NativeBillingReconciliationJobs > 0 || summary.CostBacklog > 0 ||
 		summary.CostDeadLetter > 0 || !summary.CostReconciliationComplete ||
 		summary.TaskStageBacklog > 0 || summary.TaskStageDeadLetter > 0 ||
-		summary.OperationsSnapshotBacklog > 0 || summary.OperationsSnapshotDeadLetter > 0
+		summary.OperationsSnapshotBacklog > 0 || summary.OperationsSnapshotDeadLetter > 0 ||
+		summary.ProviderResultReconciliationBacklog > 0
 	return summary, nil
 }
 
@@ -626,6 +682,34 @@ func loadPlatformProviderRuntimeConfiguration() (platformProviderRuntimeConfigur
 			}
 		}
 	}
+	costRateSetsRaw := strings.TrimSpace(os.Getenv("RELAY_PROVIDER_COST_RATE_SETS_JSON"))
+	if costRateSetsRaw != "" {
+		if !configuration.CostConfigured {
+			return configuration, fmt.Errorf("RELAY_PROVIDER_COST_RATE_SETS_JSON requires the Platform channel-cost sink")
+		}
+		if common.RejectDuplicateJSONKeys([]byte(costRateSetsRaw)) != nil ||
+			common.DecodeJsonDisallowUnknownFields(strings.NewReader(costRateSetsRaw), &configuration.CostRateSets) != nil {
+			return configuration, fmt.Errorf("RELAY_PROVIDER_COST_RATE_SETS_JSON is invalid")
+		}
+		if len(configuration.CostRateSets) == 0 {
+			return configuration, fmt.Errorf("RELAY_PROVIDER_COST_RATE_SETS_JSON must contain at least one rate set")
+		}
+		identities := make(map[string]struct{}, len(configuration.CostRateSets)*2)
+		for _, rateSet := range configuration.CostRateSets {
+			if err := rateSet.Validate(); err != nil {
+				return configuration, fmt.Errorf("RELAY_PROVIDER_COST_RATE_SETS_JSON is invalid: %w", err)
+			}
+			scope := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%s\x00%s\x00%s\x00%s",
+				rateSet.ProviderName, rateSet.ProviderOrigin, rateSet.PricingMarket, rateSet.ChannelID,
+				rateSet.UpstreamModel, rateSet.Mode, rateSet.Resolution, rateSet.EffectiveFrom.Format(time.RFC3339Nano))
+			for _, identity := range []string{"id:" + rateSet.ID, "scope:" + scope} {
+				if _, duplicate := identities[identity]; duplicate {
+					return configuration, fmt.Errorf("RELAY_PROVIDER_COST_RATE_SETS_JSON contains a duplicate immutable identity")
+				}
+				identities[identity] = struct{}{}
+			}
+		}
+	}
 
 	taskStageURLRaw := os.Getenv("RELAY_PLATFORM_TASK_STAGE_URL")
 	taskStageURL := strings.TrimSpace(taskStageURLRaw)
@@ -745,6 +829,7 @@ func platformProviderRuntimeEnvironmentFingerprint() [32]byte {
 		"RELAY_PLATFORM_INTERNAL_SERVICE_TOKEN",
 		"RELAY_PLATFORM_CHANNEL_COST_SIGNING_SECRET",
 		"RELAY_PROVIDER_CONTRACT_RATES_JSON",
+		"RELAY_PROVIDER_COST_RATE_SETS_JSON",
 		"RELAY_CHANNEL_COST_CLAIM_LEASE_SECONDS",
 		"RELAY_CHANNEL_COST_POLL_SECONDS",
 		"RELAY_PLATFORM_TASK_STAGE_URL",

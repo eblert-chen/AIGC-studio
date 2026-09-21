@@ -1,18 +1,17 @@
 import { ClockCounterClockwise, WarningCircle } from "@phosphor-icons/react";
 import {
   taskAuthor,
-  taskCompany,
   taskCostLabel,
-  taskParametersLabel,
 } from "../../taskArtifacts.js";
 import { resolveTaskStatus } from "../../taskStatus.js";
+import { LoadingRows, PageControls, ScopeControl } from "../../components/studio/StudioCollectionControls.jsx";
+import { DownloadStatus } from "../../components/studio/StudioWorkspaceViews.jsx";
 import {
-  DownloadBadge,
-  LoadingRows,
-  PageControls,
-  ScopeControl,
-} from "../../components/studio/StudioCollectionControls.jsx";
-import { shortDate, shortId } from "../../components/studio/studioPresentation.js";
+  shortDate,
+  shortId,
+  studioErrorMessage,
+  studioTaskParametersLabel,
+} from "../../components/studio/studioPresentation.js";
 
 export function HistoryView({
   onRetry,
@@ -33,23 +32,27 @@ export function HistoryView({
   pageSize = 24,
   total = 0,
   onPageChange,
-  companyName = "",
   currentUserId = "",
   currentUserName = "",
   workspaceKind = "company",
   statusDefinitions,
 }) {
   const displayedTasks = liveMode ? tasks : demoTasks;
+  const hasActiveFilters = Boolean(statusFilter);
+  const attentionCount = displayedTasks.filter((task) => (
+    ["failed", "timed_out", "reconciliation_required", "unknown"].includes(String(task?.status || ""))
+  )).length;
   return (
-    <section className="secondary-view history-view">
+    <section className="secondary-view history-view" aria-labelledby="history-title" aria-busy={loading}>
       <div className="secondary-heading">
         <div>
-          <span className="view-kicker">生成记录</span>
-          <h1>任务历史</h1>
+          <h1 id="history-title">历史</h1>
           <p>
-            {workspaceKind === "personal"
-              ? "只显示当前个人空间的任务、模型、原始参数、状态与积分消耗。"
-              : "记录发起人、公司、模型、原始参数、状态与最终费用。"}
+            {!liveMode
+              ? "以下为示例任务，用于体验状态、费用与详情。"
+              : workspaceKind === "personal"
+                ? "按时间查看当前个人空间的任务、状态与积分消耗。"
+                : "按时间查看任务状态、模型与最终费用。"}
           </p>
         </div>
         <div className="history-toolbar">
@@ -73,20 +76,31 @@ export function HistoryView({
           </label>
         </div>
       </div>
+      {!loading && !error && displayedTasks.length > 0 ? (
+        <div className="history-summary" aria-label="当前任务摘要">
+          <span>当前页 <strong>{displayedTasks.length}</strong> 条任务</span>
+          <span>{attentionCount > 0 ? <><strong>{attentionCount}</strong> 条需要关注</> : "当前页没有异常任务"}</span>
+        </div>
+      ) : null}
       <div className="history-list">
         {loading && <LoadingRows label="正在读取任务历史" />}
         {!loading && error && (
           <div className="artifact-empty" role="alert">
             <WarningCircle size={26} aria-hidden="true" />
             <strong>任务历史读取失败</strong>
-            <span>{error}</span>
+            <span>{studioErrorMessage(error, "任务历史暂时无法读取，请稍后重试。")}</span>
           </div>
         )}
         {!loading && !error && displayedTasks.length === 0 && (
           <div className="artifact-empty">
             <ClockCounterClockwise size={26} aria-hidden="true" />
-            <strong>当前范围还没有任务</strong>
-            <span>提交第一条任务后会显示在这里。</span>
+            <strong>{hasActiveFilters ? "没有符合当前筛选的任务" : "还没有任务"}</strong>
+            <span>{hasActiveFilters ? "清除筛选即可查看全部任务。" : "提交第一个创作任务后，记录会显示在这里。"}</span>
+            {hasActiveFilters ? (
+              <button className="text-button" type="button" onClick={() => onStatusChange("")}>
+                清除筛选
+              </button>
+            ) : null}
           </div>
         )}
         {!loading && !error && displayedTasks.map((task) => {
@@ -106,6 +120,16 @@ export function HistoryView({
             task.capability_snapshot?.model_slug ||
             "模型未记录";
           const artifactCount = Number(task.artifact_count ?? task.output_artifacts?.length ?? 0);
+          const attentionDetail = ["failed", "timed_out", "reconciliation_required", "unknown"].includes(statusDefinition.status)
+            ? studioErrorMessage(task.failure_reason, statusDefinition.detail)
+            : "";
+          const artifactSummary = artifactCount > 0
+            ? `${artifactCount} 个作品文件`
+            : statusDefinition.status === "succeeded"
+              ? "未找到已保存作品"
+              : statusDefinition.active
+                ? "作品生成中"
+                : "没有生成作品";
           return (
             <article className="task-history-row" key={taskId}>
               <header>
@@ -118,33 +142,33 @@ export function HistoryView({
                 </span>
                 <span className="task-row-title">
                   <strong>{task.request_payload?.prompt?.slice(0, 56) || `任务 ${shortId(taskId)}`}</strong>
-                  <small title={taskId}>任务 {shortId(taskId)}，{shortDate(task.created_at)}</small>
+                  <small title={liveMode ? taskId : undefined}>
+                    {liveMode ? `任务 ${shortId(taskId)}` : "演示任务"}，{shortDate(task.created_at)}
+                  </small>
                 </span>
-                <span className={statusClass} title={task.failure_reason || statusDefinition.detail}>
+                <span className={statusClass} title={studioErrorMessage(task.failure_reason, statusDefinition.detail)}>
                   {state.label}
                 </span>
                 <strong className="history-cost">{taskCostLabel(task)}</strong>
               </header>
               <dl className="task-audit-grid">
-                <div><dt>发起人</dt><dd>{taskAuthor(task, task.user_id === currentUserId ? currentUserName : "")}</dd></div>
-                <div>
-                  <dt>{workspaceKind === "personal" ? "空间" : "公司"}</dt>
-                  <dd title={task.company_id || task.workspace_id}>{taskCompany(task, companyName)}</dd>
-                </div>
+                {scope === "company" && (
+                  <div><dt>发起人</dt><dd>{taskAuthor(task, task.user_id === currentUserId ? currentUserName : "")}</dd></div>
+                )}
                 <div><dt>模型</dt><dd>{modelName}</dd></div>
-                <div><dt>参数</dt><dd>{taskParametersLabel(task.request_payload)}</dd></div>
+                <div><dt>创作设置</dt><dd>{studioTaskParametersLabel(task.request_payload)}</dd></div>
               </dl>
               <footer>
-                <span>{artifactCount > 0 ? `${artifactCount} 个归档产物` : "暂无归档产物"}</span>
-                {artifactCount > 0 && <DownloadBadge source={task} />}
+                <span className={`task-row-detail ${attentionDetail ? `is-${statusDefinition.tone}` : ""}`}>
+                  {attentionDetail || artifactSummary}
+                </span>
+                {artifactCount > 0 && <DownloadStatus source={task} />}
                 <button
                   className="text-button"
                   type="button"
-                  disabled={stage === "failed" && !canCreateTasks}
-                  title={stage === "failed" && !canCreateTasks ? "缺少 tasks.create 权限" : undefined}
-                  onClick={() => stage === "failed" ? onRetry?.(task) : onOpen?.(task)}
+                  onClick={() => stage === "failed" && canCreateTasks ? onRetry?.(task) : onOpen?.(task)}
                 >
-                  {stage === "failed" ? "按原参数重试" : "查看任务"}
+                  {stage === "failed" && canCreateTasks ? "恢复为草稿" : "查看任务"}
                 </button>
               </footer>
             </article>

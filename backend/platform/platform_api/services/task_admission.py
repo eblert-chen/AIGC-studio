@@ -7,16 +7,42 @@ from typing import Any
 from .errors import ConflictError
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2, 3})
 SUPPORTED_MODES = frozenset(
     {
         "text_to_image",
+        "image_to_image",
         "text_to_video",
         "image_to_video",
         "video_to_video",
     }
 )
 SUPPORTED_MEDIA_TYPES = frozenset({"image", "video", "audio"})
+SUPPORTED_INPUT_ROLES = frozenset(
+    {
+        "reference_image",
+        "first_frame",
+        "last_frame",
+        "reference_video",
+        "director_previs",
+        "driving_audio",
+    }
+)
+INPUT_ROLE_MEDIA_TYPE = {
+    "reference_image": "image",
+    "first_frame": "image",
+    "last_frame": "image",
+    "reference_video": "video",
+    "director_previs": "video",
+    "driving_audio": "audio",
+}
+SUPPORTED_TEMPORAL_CONTROLS = frozenset(
+    {"first_frame", "last_frame", "reference_video", "director_previs"}
+)
+SUPPORTED_STRUCTURED_INPUTS = frozenset(
+    {"director_shot_v1", "director_shot_v2", "director_motion_v1"}
+)
 MAX_TOTAL_ASSETS = 15
 MAX_DURATION_SECONDS = 3600
 MAX_OUTPUT_COUNT = 16
@@ -26,6 +52,7 @@ ASPECT_RATIO_PATTERN = re.compile(
 )
 RESOLUTION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
 RESOURCE_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,118}[a-z0-9]$")
+SUPPORTED_RESOURCE_CONDITIONS = frozenset({"face_enabled"})
 
 
 def _capability_error(message: str) -> ConflictError:
@@ -148,6 +175,35 @@ def _resource_key_values(value: object, *, field_name: str) -> set[str]:
     return keys
 
 
+def _conditional_resource_key_values(
+    value: object, *, field_name: str
+) -> dict[str, set[str]]:
+    if not isinstance(value, dict):
+        raise _capability_error(f"{field_name} must contain an object")
+    unknown = set(value) - set(SUPPORTED_RESOURCE_CONDITIONS)
+    if unknown:
+        raise _capability_error(
+            f"{field_name} contains unsupported conditions: "
+            + ", ".join(sorted(str(item) for item in unknown))
+        )
+    result: dict[str, set[str]] = {}
+    for condition, raw_keys in value.items():
+        keys = _resource_key_values(
+            raw_keys,
+            field_name=f"{field_name}.{condition}",
+        )
+        if isinstance(raw_keys, list) and len(raw_keys) != len(keys):
+            raise _capability_error(
+                f"{field_name}.{condition} must contain unique resource keys"
+            )
+        if not keys:
+            raise _capability_error(
+                f"{field_name}.{condition} must not be empty"
+            )
+        result[condition] = keys
+    return result
+
+
 @dataclass
 class _Constraints:
     aspect_ratios: set[str] | None = None
@@ -155,6 +211,9 @@ class _Constraints:
     durations: set[int] | None = None
     output_counts: set[int] | None = None
     input_media_types: set[str] | None = None
+    input_roles: set[str] | None = None
+    temporal_controls: set[str] | None = None
+    structured_inputs: set[str] | None = None
     max_duration_seconds: int | None = None
     min_duration_seconds: int | None = None
     max_prompt_length: int | None = None
@@ -164,6 +223,9 @@ class _Constraints:
     max_audio: int | None = None
     supports_face: bool | None = None
     required_resource_keys: set[str] = field(default_factory=set)
+    conditional_required_resource_keys: dict[str, set[str]] = field(
+        default_factory=dict
+    )
 
     def restrict_set(self, name: str, values: set[Any]) -> None:
         current = getattr(self, name)
@@ -188,6 +250,9 @@ class _Constraints:
             "durations",
             "output_counts",
             "input_media_types",
+            "input_roles",
+            "temporal_controls",
+            "structured_inputs",
         ):
             values = getattr(other, name)
             if values is not None:
@@ -210,13 +275,21 @@ class _Constraints:
         if other.supports_face is not None:
             self.restrict_bool("supports_face", other.supports_face)
         self.required_resource_keys.update(other.required_resource_keys)
+        for condition, keys in other.conditional_required_resource_keys.items():
+            self.conditional_required_resource_keys.setdefault(
+                condition, set()
+            ).update(keys)
 
 
 @dataclass
 class _ModeCapability:
     input_media_types: set[str]
+    input_roles: set[str]
+    temporal_controls: set[str]
+    structured_inputs: set[str]
     supports_face: bool
     required_resource_keys: set[str]
+    conditional_required_resource_keys: dict[str, set[str]]
     max_prompt_length: int
     max_images: int
     max_videos: int
@@ -229,8 +302,15 @@ class _ModeCapability:
     def clone(self) -> "_ModeCapability":
         return _ModeCapability(
             input_media_types=set(self.input_media_types),
+            input_roles=set(self.input_roles),
+            temporal_controls=set(self.temporal_controls),
+            structured_inputs=set(self.structured_inputs),
             supports_face=self.supports_face,
             required_resource_keys=set(self.required_resource_keys),
+            conditional_required_resource_keys={
+                condition: set(keys)
+                for condition, keys in self.conditional_required_resource_keys.items()
+            },
             max_prompt_length=self.max_prompt_length,
             max_images=self.max_images,
             max_videos=self.max_videos,
@@ -241,11 +321,32 @@ class _ModeCapability:
             output_counts=set(self.output_counts),
         )
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, schema_version: int) -> dict[str, Any]:
         return {
             "input_media_types": sorted(self.input_media_types),
+            **(
+                {
+                    "input_roles": sorted(self.input_roles),
+                    "temporal_controls": sorted(self.temporal_controls),
+                    "structured_inputs": sorted(self.structured_inputs),
+                }
+                if schema_version >= 3
+                else {}
+            ),
             "supports_face": self.supports_face,
             "required_resource_keys": sorted(self.required_resource_keys),
+            **(
+                {
+                    "conditional_required_resource_keys": {
+                        condition: sorted(keys)
+                        for condition, keys in sorted(
+                            self.conditional_required_resource_keys.items()
+                        )
+                    }
+                }
+                if schema_version >= 2
+                else {}
+            ),
             "limits": {
                 "max_prompt_length": self.max_prompt_length,
                 "max_images": self.max_images,
@@ -277,6 +378,8 @@ class TaskCapabilityAdmission:
             "output_count",
             "face_enabled",
             "metadata",
+            "director_shot_package",
+            "director_temporal_binding",
         }
     )
     _SET_ALIASES = {
@@ -285,6 +388,9 @@ class TaskCapabilityAdmission:
         "durations": ("duration_seconds", "durations", "duration"),
         "output_counts": ("output_counts", "output_count"),
         "input_media_types": ("input_media_types", "media_types"),
+        "input_roles": ("input_roles",),
+        "temporal_controls": ("temporal_controls",),
+        "structured_inputs": ("structured_inputs",),
     }
     _MAX_ALIASES = {
         "max_duration_seconds": ("max_duration_seconds", "max_duration"),
@@ -294,13 +400,19 @@ class TaskCapabilityAdmission:
         "max_videos": ("max_videos", "video"),
         "max_audio": ("max_audio", "audio"),
     }
-    _CANONICAL_MODE_KEYS = frozenset(
+    _CANONICAL_MODE_KEYS_V1 = frozenset(
         {
             "input_media_types",
             "supports_face",
             "required_resource_keys",
             "limits",
         }
+    )
+    _CANONICAL_MODE_KEYS_V2 = _CANONICAL_MODE_KEYS_V1 | frozenset(
+        {"conditional_required_resource_keys"}
+    )
+    _CANONICAL_MODE_KEYS = _CANONICAL_MODE_KEYS_V2 | frozenset(
+        {"input_roles", "temporal_controls", "structured_inputs"}
     )
     _CANONICAL_LIMIT_KEYS = frozenset(
         {
@@ -333,11 +445,16 @@ class TaskCapabilityAdmission:
     ) | SUPPORTED_MODES
 
     @classmethod
-    def _document(cls, modes: dict[str, _ModeCapability]) -> dict[str, Any]:
+    def _document(
+        cls,
+        modes: dict[str, _ModeCapability],
+        *,
+        schema_version: int,
+    ) -> dict[str, Any]:
         return {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": schema_version,
             "modes": {
-                mode: modes[mode].snapshot()
+                mode: modes[mode].snapshot(schema_version=schema_version)
                 for mode in sorted(modes)
             },
         }
@@ -384,29 +501,96 @@ class TaskCapabilityAdmission:
                 raise _capability_error(
                     f"{mode} {media_type} input declaration conflicts with its maximum"
                 )
-        if mode == "image_to_video" and capability.max_images == 0:
+        for role in capability.input_roles:
+            media_type = INPUT_ROLE_MEDIA_TYPE[role]
+            if media_type not in capability.input_media_types:
+                raise _capability_error(
+                    f"{mode} input role {role} requires undeclared {media_type} input"
+                )
+        if not capability.temporal_controls <= capability.input_roles:
             raise _capability_error(
-                "image_to_video must allow at least one image input"
+                f"{mode} temporal controls must also be declared input roles"
+            )
+        if not capability.temporal_controls <= SUPPORTED_TEMPORAL_CONTROLS:
+            raise _capability_error(
+                f"{mode} contains an unsupported temporal control"
+            )
+        if (
+            capability.structured_inputs
+            & {"director_shot_v1", "director_shot_v2"}
+            and not capability.input_roles & {"reference_image", "first_frame"}
+        ):
+            raise _capability_error(
+                f"{mode} director shot input requires a composition image role"
+            )
+        if "director_motion_v1" in capability.structured_inputs and (
+            not {"first_frame", "last_frame"}
+            <= capability.input_roles
+            or not {"first_frame", "last_frame"}
+            <= capability.temporal_controls
+            or not capability.structured_inputs
+            & {"director_shot_v1", "director_shot_v2"}
+        ):
+            raise _capability_error(
+                f"{mode} director_motion_v1 requires a director shot token "
+                "and first/last frame controls"
+            )
+        if mode in {"image_to_image", "image_to_video"} and capability.max_images == 0:
+            raise _capability_error(
+                f"{mode} must allow at least one image input"
             )
         if mode == "video_to_video" and capability.max_videos == 0:
             raise _capability_error(
                 "video_to_video must allow at least one video input"
             )
+        if (
+            not capability.supports_face
+            and capability.conditional_required_resource_keys.get("face_enabled")
+        ):
+            raise _capability_error(
+                f"{mode} cannot require face resources when supports_face is false"
+            )
+        conditional_keys = {
+            key
+            for keys in capability.conditional_required_resource_keys.values()
+            for key in keys
+        }
+        overlap = capability.required_resource_keys & conditional_keys
+        if overlap:
+            raise _capability_error(
+                f"{mode} resource keys cannot be both unconditional and conditional: "
+                + ", ".join(sorted(overlap))
+            )
 
     @classmethod
     def _canonical_mode(
-        cls, mode: str, source: object
+        cls, mode: str, source: object, *, schema_version: int
     ) -> _ModeCapability:
         if mode not in SUPPORTED_MODES:
             raise _capability_error(f"modes contains unsupported mode {mode}")
         if not isinstance(source, dict):
             raise _capability_error(f"modes.{mode} must contain an object")
+        allowed_mode_keys = {
+            1: cls._CANONICAL_MODE_KEYS_V1,
+            2: cls._CANONICAL_MODE_KEYS_V2,
+            3: cls._CANONICAL_MODE_KEYS,
+        }[schema_version]
         cls._ensure_exact_keys(
             source,
-            allowed=cls._CANONICAL_MODE_KEYS,
+            allowed=allowed_mode_keys,
             field_name=f"modes.{mode}",
         )
-        missing = set(cls._CANONICAL_MODE_KEYS) - set(source)
+        # v2 adds an optional conditional map. Omitting it is canonical and
+        # normalizes to an empty object; v1 still rejects the new field.
+        required_mode_keys = cls._CANONICAL_MODE_KEYS_V1
+        if schema_version >= 3:
+            # The v3 semantic arrays are explicit so callers never infer role
+            # or structured-input support.  The v2 conditional resource map
+            # remains optional in every later schema version.
+            required_mode_keys |= frozenset(
+                {"input_roles", "temporal_controls", "structured_inputs"}
+            )
+        missing = set(required_mode_keys) - set(source)
         if missing:
             raise _capability_error(
                 f"modes.{mode} is missing fields: {', '.join(sorted(missing))}"
@@ -431,6 +615,33 @@ class TaskCapabilityAdmission:
                 field_name=f"modes.{mode}.input_media_types",
                 allowed=SUPPORTED_MEDIA_TYPES,
             ),
+            input_roles=(
+                _string_values(
+                    source.get("input_roles", []),
+                    field_name=f"modes.{mode}.input_roles",
+                    allowed=SUPPORTED_INPUT_ROLES,
+                )
+                if schema_version >= 3
+                else set()
+            ),
+            temporal_controls=(
+                _string_values(
+                    source.get("temporal_controls", []),
+                    field_name=f"modes.{mode}.temporal_controls",
+                    allowed=SUPPORTED_TEMPORAL_CONTROLS,
+                )
+                if schema_version >= 3
+                else set()
+            ),
+            structured_inputs=(
+                _string_values(
+                    source.get("structured_inputs", []),
+                    field_name=f"modes.{mode}.structured_inputs",
+                    allowed=SUPPORTED_STRUCTURED_INPUTS,
+                )
+                if schema_version >= 3
+                else set()
+            ),
             supports_face=_boolean(
                 source["supports_face"],
                 field_name=f"modes.{mode}.supports_face",
@@ -438,6 +649,16 @@ class TaskCapabilityAdmission:
             required_resource_keys=_resource_key_values(
                 source["required_resource_keys"],
                 field_name=f"modes.{mode}.required_resource_keys",
+            ),
+            conditional_required_resource_keys=(
+                _conditional_resource_key_values(
+                    source.get("conditional_required_resource_keys", {}),
+                    field_name=(
+                        f"modes.{mode}.conditional_required_resource_keys"
+                    ),
+                )
+                if schema_version >= 2
+                else {}
             ),
             max_prompt_length=_positive_integer(
                 limits["max_prompt_length"],
@@ -501,13 +722,16 @@ class TaskCapabilityAdmission:
             allowed=frozenset({"schema_version", "modes"}),
             field_name="generation",
         )
-        if generation.get("schema_version") != SCHEMA_VERSION:
-            raise _capability_error("generation.schema_version must be 1")
+        schema_version = generation.get("schema_version")
+        if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
+            raise _capability_error("generation.schema_version must be 1, 2 or 3")
         raw_modes = generation["modes"]
         if not raw_modes:
             raise _capability_error("generation.modes must not be empty")
         return {
-            mode: cls._canonical_mode(mode, source)
+            mode: cls._canonical_mode(
+                mode, source, schema_version=schema_version
+            )
             for mode, source in raw_modes.items()
         }
 
@@ -558,6 +782,24 @@ class TaskCapabilityAdmission:
                         raw_value,
                         field_name=f"{field_name}.{alias}",
                         allowed=SUPPORTED_MEDIA_TYPES,
+                    )
+                elif target == "input_roles":
+                    values = _string_values(
+                        raw_value,
+                        field_name=f"{field_name}.{alias}",
+                        allowed=SUPPORTED_INPUT_ROLES,
+                    )
+                elif target == "temporal_controls":
+                    values = _string_values(
+                        raw_value,
+                        field_name=f"{field_name}.{alias}",
+                        allowed=SUPPORTED_TEMPORAL_CONTROLS,
+                    )
+                elif target == "structured_inputs":
+                    values = _string_values(
+                        raw_value,
+                        field_name=f"{field_name}.{alias}",
+                        allowed=SUPPORTED_STRUCTURED_INPUTS,
                     )
                 elif target == "durations":
                     values = _integer_values(
@@ -795,6 +1037,7 @@ class TaskCapabilityAdmission:
         }
 
         required_media_type = {
+            "image_to_image": "image",
             "image_to_video": "image",
             "video_to_video": "video",
         }.get(mode)
@@ -821,8 +1064,18 @@ class TaskCapabilityAdmission:
 
         capability = _ModeCapability(
             input_media_types=media_types,
+            # Legacy catalogs did not make input semantics contractual. Keep
+            # roleful and temporal requests fail-closed until a v3 Relay
+            # candidate is explicitly approved by the Platform.
+            input_roles=set(),
+            temporal_controls=set(),
+            structured_inputs=set(),
             supports_face=bool(constraints.supports_face),
             required_resource_keys=set(constraints.required_resource_keys),
+            conditional_required_resource_keys={
+                condition: set(keys)
+                for condition, keys in constraints.conditional_required_resource_keys.items()
+            },
             max_prompt_length=constraints.max_prompt_length or MAX_PROMPT_LENGTH,
             max_images=media_limits["max_images"],
             max_videos=media_limits["max_videos"],
@@ -875,8 +1128,11 @@ class TaskCapabilityAdmission:
             allowed=frozenset({"schema_version", "modes"}),
             field_name="config_override",
         )
-        if override.get("schema_version") != SCHEMA_VERSION:
-            raise _capability_error("config_override.schema_version must be 1")
+        schema_version = override.get("schema_version")
+        if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
+            raise _capability_error(
+                "config_override.schema_version must be 1, 2 or 3"
+            )
         raw_modes = override.get("modes")
         if not isinstance(raw_modes, dict) or not raw_modes:
             raise _capability_error("config_override.modes must be a non-empty object")
@@ -892,9 +1148,14 @@ class TaskCapabilityAdmission:
                 raise _capability_error(
                     f"config_override.modes.{mode} must contain an object"
                 )
+            allowed_mode_keys = {
+                1: cls._CANONICAL_MODE_KEYS_V1,
+                2: cls._CANONICAL_MODE_KEYS_V2,
+                3: cls._CANONICAL_MODE_KEYS,
+            }[schema_version]
             cls._ensure_exact_keys(
                 raw_spec,
-                allowed=cls._CANONICAL_MODE_KEYS,
+                allowed=allowed_mode_keys,
                 field_name=f"config_override.modes.{mode}",
             )
             capability = base_modes[mode].clone()
@@ -924,6 +1185,40 @@ class TaskCapabilityAdmission:
                 ):
                     if media_type not in requested:
                         setattr(capability, attribute, 0)
+            if "input_roles" in raw_spec:
+                requested_roles = _string_values(
+                    raw_spec["input_roles"],
+                    field_name=f"{prefix}.input_roles",
+                    allowed=SUPPORTED_INPUT_ROLES,
+                )
+                if not requested_roles <= capability.input_roles:
+                    raise _capability_error(
+                        f"{prefix}.input_roles cannot expand the model"
+                    )
+                capability.input_roles &= requested_roles
+                capability.temporal_controls &= capability.input_roles
+            if "temporal_controls" in raw_spec:
+                requested_controls = _string_values(
+                    raw_spec["temporal_controls"],
+                    field_name=f"{prefix}.temporal_controls",
+                    allowed=SUPPORTED_TEMPORAL_CONTROLS,
+                )
+                if not requested_controls <= capability.temporal_controls:
+                    raise _capability_error(
+                        f"{prefix}.temporal_controls cannot expand the model"
+                    )
+                capability.temporal_controls &= requested_controls
+            if "structured_inputs" in raw_spec:
+                requested_structured_inputs = _string_values(
+                    raw_spec["structured_inputs"],
+                    field_name=f"{prefix}.structured_inputs",
+                    allowed=SUPPORTED_STRUCTURED_INPUTS,
+                )
+                if not requested_structured_inputs <= capability.structured_inputs:
+                    raise _capability_error(
+                        f"{prefix}.structured_inputs cannot expand the model"
+                    )
+                capability.structured_inputs &= requested_structured_inputs
             if "supports_face" in raw_spec:
                 requested_face = _boolean(
                     raw_spec["supports_face"],
@@ -934,6 +1229,10 @@ class TaskCapabilityAdmission:
                         f"{prefix}.supports_face cannot expand the model"
                     )
                 capability.supports_face = capability.supports_face and requested_face
+                if not capability.supports_face:
+                    capability.conditional_required_resource_keys.pop(
+                        "face_enabled", None
+                    )
             if "required_resource_keys" in raw_spec:
                 capability.required_resource_keys.update(
                     _resource_key_values(
@@ -941,6 +1240,17 @@ class TaskCapabilityAdmission:
                         field_name=f"{prefix}.required_resource_keys",
                     )
                 )
+            if "conditional_required_resource_keys" in raw_spec:
+                conditional = _conditional_resource_key_values(
+                    raw_spec["conditional_required_resource_keys"],
+                    field_name=(
+                        f"{prefix}.conditional_required_resource_keys"
+                    ),
+                )
+                for condition, keys in conditional.items():
+                    capability.conditional_required_resource_keys.setdefault(
+                        condition, set()
+                    ).update(keys)
             if "limits" in raw_spec:
                 raw_limits = raw_spec["limits"]
                 if not isinstance(raw_limits, dict):
@@ -1011,6 +1321,12 @@ class TaskCapabilityAdmission:
                 capability.input_media_types.discard("video")
             if capability.max_audio == 0:
                 capability.input_media_types.discard("audio")
+            capability.input_roles = {
+                role
+                for role in capability.input_roles
+                if INPUT_ROLE_MEDIA_TYPE[role] in capability.input_media_types
+            }
+            capability.temporal_controls &= capability.input_roles
             cls._validate_mode_capability(mode, capability)
             result[mode] = capability
         return result
@@ -1059,6 +1375,9 @@ class TaskCapabilityAdmission:
             ("durations", "durations"),
             ("output_counts", "output_counts"),
             ("input_media_types", "input_media_types"),
+            ("input_roles", "input_roles"),
+            ("temporal_controls", "temporal_controls"),
+            ("structured_inputs", "structured_inputs"),
         ):
             values = getattr(constraints, name)
             if values is not None:
@@ -1092,13 +1411,27 @@ class TaskCapabilityAdmission:
             }
         if constraints.supports_face is not None:
             result.supports_face = result.supports_face and constraints.supports_face
+            if not result.supports_face:
+                result.conditional_required_resource_keys.pop(
+                    "face_enabled", None
+                )
         result.required_resource_keys.update(constraints.required_resource_keys)
+        for condition, keys in constraints.conditional_required_resource_keys.items():
+            result.conditional_required_resource_keys.setdefault(
+                condition, set()
+            ).update(keys)
         if result.max_images == 0:
             result.input_media_types.discard("image")
         if result.max_videos == 0:
             result.input_media_types.discard("video")
         if result.max_audio == 0:
             result.input_media_types.discard("audio")
+        result.input_roles = {
+            role
+            for role in result.input_roles
+            if INPUT_ROLE_MEDIA_TYPE[role] in result.input_media_types
+        }
+        result.temporal_controls &= result.input_roles
         return result
 
     @classmethod
@@ -1113,19 +1446,30 @@ class TaskCapabilityAdmission:
     ) -> dict[str, Any]:
         if not isinstance(capability_map, dict):
             raise _capability_error("capabilities must contain an object")
+        document_schema_version = 1
+        generation = capability_map.get("generation")
+        if (
+            isinstance(generation, dict)
+            and generation.get("schema_version") in SUPPORTED_SCHEMA_VERSIONS
+        ):
+            document_schema_version = generation["schema_version"]
         if not capability_map:
             if require_usable:
                 raise _capability_error("at least one capability mode is required")
-            return cls._document({})
+            return cls._document({}, schema_version=document_schema_version)
         modes = cls._catalog_modes(capability_map, strict=strict_catalog)
         override = config_override or {}
         if not isinstance(override, dict):
             raise _capability_error("company model override must contain an object")
         if override:
             if strict_override or (
-                override.get("schema_version") == SCHEMA_VERSION
+                override.get("schema_version") in SUPPORTED_SCHEMA_VERSIONS
                 and isinstance(override.get("modes"), dict)
             ):
+                document_schema_version = max(
+                    document_schema_version,
+                    int(override.get("schema_version", 1)),
+                )
                 modes = cls._apply_canonical_override(modes, override)
             else:
                 restricted: dict[str, _ModeCapability] = {}
@@ -1146,7 +1490,9 @@ class TaskCapabilityAdmission:
                 modes = restricted
         if require_usable and not modes:
             raise _capability_error("at least one usable capability mode is required")
-        return cls._document(modes)
+        return cls._document(
+            modes, schema_version=document_schema_version
+        )
 
     @classmethod
     def validate_catalog(
@@ -1182,6 +1528,106 @@ class TaskCapabilityAdmission:
             require_usable=True,
         )
 
+    @classmethod
+    def validate_full_restriction(
+        cls,
+        *,
+        ceiling: dict[str, Any],
+        candidate: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate one complete sellable document against a physical ceiling.
+
+        This deliberately does not use company sparse-override semantics.
+        Omitting or clearing a requirement in a complete candidate is a real
+        expansion and must not be silently inherited from the ceiling.
+        """
+
+        ceiling_modes = cls._canonical_catalog({"generation": ceiling})
+        candidate_modes = cls._canonical_catalog({"generation": candidate})
+        if ceiling_modes is None or candidate_modes is None:
+            raise _capability_error(
+                "full capability restriction requires canonical documents"
+            )
+        unknown_modes = set(candidate_modes) - set(ceiling_modes)
+        if unknown_modes:
+            raise _capability_error(
+                "candidate cannot add modes: "
+                + ", ".join(sorted(unknown_modes))
+            )
+
+        for mode, restricted in candidate_modes.items():
+            physical = ceiling_modes[mode]
+            prefix = f"candidate.modes.{mode}"
+            if not restricted.input_media_types <= physical.input_media_types:
+                raise _capability_error(
+                    f"{prefix}.input_media_types cannot expand the ceiling"
+                )
+            if not restricted.input_roles <= physical.input_roles:
+                raise _capability_error(
+                    f"{prefix}.input_roles cannot expand the ceiling"
+                )
+            if not restricted.temporal_controls <= physical.temporal_controls:
+                raise _capability_error(
+                    f"{prefix}.temporal_controls cannot expand the ceiling"
+                )
+            if not restricted.structured_inputs <= physical.structured_inputs:
+                raise _capability_error(
+                    f"{prefix}.structured_inputs cannot expand the ceiling"
+                )
+            if restricted.supports_face and not physical.supports_face:
+                raise _capability_error(
+                    f"{prefix}.supports_face cannot expand the ceiling"
+                )
+            for field_name in (
+                "max_prompt_length",
+                "max_images",
+                "max_videos",
+                "max_audio",
+            ):
+                if getattr(restricted, field_name) > getattr(physical, field_name):
+                    raise _capability_error(
+                        f"{prefix}.{field_name} cannot expand the ceiling"
+                    )
+            for field_name in (
+                "durations",
+                "aspect_ratios",
+                "resolutions",
+                "output_counts",
+            ):
+                if not getattr(restricted, field_name) <= getattr(
+                    physical, field_name
+                ):
+                    raise _capability_error(
+                        f"{prefix}.{field_name} cannot expand the ceiling"
+                    )
+
+            if not physical.required_resource_keys <= restricted.required_resource_keys:
+                raise _capability_error(
+                    f"{prefix}.required_resource_keys cannot remove requirements"
+                )
+            if restricted.supports_face:
+                physical_face_keys = physical.required_resource_keys | set(
+                    physical.conditional_required_resource_keys.get(
+                        "face_enabled", set()
+                    )
+                )
+                restricted_face_keys = restricted.required_resource_keys | set(
+                    restricted.conditional_required_resource_keys.get(
+                        "face_enabled", set()
+                    )
+                )
+                if not physical_face_keys <= restricted_face_keys:
+                    raise _capability_error(
+                        f"{prefix}.conditional_required_resource_keys cannot "
+                        "remove face requirements"
+                    )
+
+        schema_version = int(candidate.get("schema_version", 1))
+        return cls._document(
+            candidate_modes,
+            schema_version=schema_version,
+        )
+
     @staticmethod
     def _positive_request_int(
         request_payload: dict[str, Any],
@@ -1202,6 +1648,40 @@ class TaskCapabilityAdmission:
             )
         return value
 
+    @staticmethod
+    def resolved_required_resource_keys(
+        *, effective_mode: dict[str, Any], request_payload: dict[str, Any]
+    ) -> list[str]:
+        """Resolve request-conditional resources from a validated mode contract.
+
+        Capability schema v1 has no conditional map and therefore remains
+        equivalent to its historical unconditional behavior.
+        """
+
+        required = set(effective_mode.get("required_resource_keys", []))
+        conditional = effective_mode.get(
+            "conditional_required_resource_keys", {}
+        )
+        if not isinstance(conditional, dict):
+            raise _capability_error(
+                "conditional_required_resource_keys must contain an object"
+            )
+        for condition, keys in conditional.items():
+            if condition not in SUPPORTED_RESOURCE_CONDITIONS:
+                raise _capability_error(
+                    "conditional_required_resource_keys contains an unsupported condition"
+                )
+            if request_payload.get(condition, False) is True:
+                required.update(
+                    _resource_key_values(
+                        keys,
+                        field_name=(
+                            f"conditional_required_resource_keys.{condition}"
+                        ),
+                    )
+                )
+        return sorted(required)
+
     @classmethod
     def _validate_request(
         cls,
@@ -1219,6 +1699,41 @@ class TaskCapabilityAdmission:
         metadata = request_payload.get("metadata", {})
         if not isinstance(metadata, dict):
             raise ConflictError("request_payload.metadata must be an object")
+        director_shot_package = request_payload.get("director_shot_package")
+        director_temporal_binding = request_payload.get(
+            "director_temporal_binding"
+        )
+        if director_shot_package is not None:
+            if not isinstance(director_shot_package, dict):
+                raise ConflictError(
+                    "request_payload.director_shot_package must be an object"
+                )
+            shot_token = (
+                "director_shot_v2"
+                if director_shot_package.get("schema_version") == 2
+                else "director_shot_v1"
+            )
+            if shot_token not in set(effective.get("structured_inputs", [])):
+                raise ConflictError(
+                    f"{shot_token} is not allowed by the model capability"
+                )
+        if director_temporal_binding is not None:
+            if not isinstance(director_temporal_binding, dict):
+                raise ConflictError(
+                    "request_payload.director_temporal_binding must be an object"
+                )
+            if director_shot_package is None:
+                raise ConflictError(
+                    "director_temporal_binding requires director_shot_package"
+                )
+            if (
+                director_temporal_binding.get("schema_version") == 2
+                and "director_motion_v1"
+                not in set(effective.get("structured_inputs", []))
+            ):
+                raise ConflictError(
+                    "director_motion_v1 is not allowed by the model capability"
+                )
         prompt = request_payload.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
             raise ConflictError("prompt must be a non-empty string")
@@ -1235,11 +1750,24 @@ class TaskCapabilityAdmission:
             resolution
         ) is None:
             raise ConflictError("resolution is invalid")
-        duration = cls._positive_request_int(
-            request_payload,
-            "duration_seconds",
-            default=5,
-            maximum=MAX_DURATION_SECONDS,
+        duration = (
+            cls._positive_request_int(
+                request_payload,
+                "duration_seconds",
+                default=1,
+                maximum=MAX_DURATION_SECONDS,
+            )
+            if "duration_seconds" in request_payload
+            else (
+                None
+                if mode in {"text_to_image", "image_to_image"}
+                else cls._positive_request_int(
+                    request_payload,
+                    "duration_seconds",
+                    default=5,
+                    maximum=MAX_DURATION_SECONDS,
+                )
+            )
         )
         output_count = cls._positive_request_int(
             request_payload,
@@ -1256,7 +1784,7 @@ class TaskCapabilityAdmission:
             raise ConflictError("aspect_ratio is not allowed by the model capability")
         if resolution not in limits["resolutions"]:
             raise ConflictError("resolution is not allowed by the model capability")
-        if duration not in limits["duration_seconds"]:
+        if duration is not None and duration not in limits["duration_seconds"]:
             raise ConflictError(
                 "duration_seconds is not allowed by the model capability"
             )
@@ -1271,6 +1799,11 @@ class TaskCapabilityAdmission:
                 f"request_payload.assets supports at most {MAX_TOTAL_ASSETS} items"
             )
         counts = {"image": 0, "video": 0, "audio": 0}
+        role_counts: dict[str, int] = {}
+        role_aware_assets = 0
+        unscoped_assets = 0
+        allowed_roles = set(effective.get("input_roles", []))
+        temporal_controls = set(effective.get("temporal_controls", []))
         for asset in raw_assets:
             if not isinstance(asset, dict):
                 raise ConflictError("Input asset reference is invalid")
@@ -1278,6 +1811,42 @@ class TaskCapabilityAdmission:
             if media_type not in counts:
                 raise ConflictError("Input asset media_type is invalid")
             counts[media_type] += 1
+            role = asset.get("role")
+            if role is not None:
+                role_aware_assets += 1
+                if role not in SUPPORTED_INPUT_ROLES:
+                    raise ConflictError("Input asset role is invalid")
+                if INPUT_ROLE_MEDIA_TYPE[role] != media_type:
+                    raise ConflictError("Input asset role does not match media_type")
+                if role not in allowed_roles:
+                    raise ConflictError(
+                        "Input asset role is not allowed by the model capability"
+                    )
+                if (
+                    role in SUPPORTED_TEMPORAL_CONTROLS
+                    and role not in temporal_controls
+                ):
+                    raise ConflictError(
+                        "Temporal input role is not allowed by the model capability"
+                    )
+                role_counts[role] = role_counts.get(role, 0) + 1
+            else:
+                unscoped_assets += 1
+        if role_aware_assets and unscoped_assets:
+            raise ConflictError(
+                "Input assets cannot mix explicit roles with unscoped media"
+            )
+        for singular_role in (
+            "first_frame",
+            "last_frame",
+            "reference_video",
+            "director_previs",
+            "driving_audio",
+        ):
+            if role_counts.get(singular_role, 0) > 1:
+                raise ConflictError(
+                    f"Input role {singular_role} may be used at most once"
+                )
         for media_type, maximum in (
             ("image", limits["max_images"]),
             ("video", limits["max_videos"]),
@@ -1291,8 +1860,8 @@ class TaskCapabilityAdmission:
                 raise ConflictError(
                     f"{media_type} input count exceeds the model capability"
                 )
-        if mode == "image_to_video" and counts["image"] == 0:
-            raise ConflictError("image_to_video requires at least one image input")
+        if mode in {"image_to_image", "image_to_video"} and counts["image"] == 0:
+            raise ConflictError(f"{mode} requires at least one image input")
         if mode == "video_to_video" and counts["video"] == 0:
             raise ConflictError("video_to_video requires at least one video input")
 
@@ -1325,6 +1894,6 @@ class TaskCapabilityAdmission:
             effective=mode_config,
         )
         return {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": document["schema_version"],
             "modes": {raw_mode: mode_config},
         }

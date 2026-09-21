@@ -228,10 +228,11 @@ type PlatformCapabilityLimits struct {
 }
 
 type PlatformModeCapability struct {
-	InputMediaTypes      []string                 `json:"input_media_types"`
-	SupportsFace         bool                     `json:"supports_face"`
-	RequiredResourceKeys []string                 `json:"required_resource_keys"`
-	Limits               PlatformCapabilityLimits `json:"limits"`
+	InputMediaTypes                 []string                 `json:"input_media_types"`
+	SupportsFace                    bool                     `json:"supports_face"`
+	RequiredResourceKeys            []string                 `json:"required_resource_keys"`
+	ConditionalRequiredResourceKeys map[string][]string      `json:"conditional_required_resource_keys,omitempty"`
+	Limits                          PlatformCapabilityLimits `json:"limits"`
 }
 
 type PlatformGenerationCapabilities struct {

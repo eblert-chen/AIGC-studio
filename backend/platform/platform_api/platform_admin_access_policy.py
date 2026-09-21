@@ -46,6 +46,56 @@ PLATFORM_ADMIN_ROUTE_POLICIES = (
     ),
     _policy(
         "POST",
+        "/api/v1/platform-admin/models/{model_id}/relay-capability/sync",
+        "platform.models.manage",
+    ),
+    _policy(
+        "GET",
+        "/api/v1/platform-admin/models/{model_id}/relay-capability-history",
+        "platform.models.read",
+    ),
+    _policy(
+        "POST",
+        "/api/v1/platform-admin/relay-models/reconcile",
+        "platform.models.manage",
+    ),
+    _policy(
+        "GET",
+        "/api/v1/platform-admin/model-commercial-releases",
+        "platform.models.read",
+    ),
+    _policy(
+        "PUT",
+        "/api/v1/platform-admin/models/{model_id}/commercial-release-plan",
+        "platform.models.manage",
+    ),
+    _policy(
+        "POST",
+        "/api/v1/platform-admin/model-commercial-releases/reconcile",
+        "platform.models.manage",
+    ),
+    _policy(
+        "GET",
+        "/api/v1/platform-admin/personal-model-grants",
+        "platform.models.read",
+    ),
+    _policy(
+        "POST",
+        "/api/v1/platform-admin/personal-model-grants/batch/preview",
+        "platform.models.manage",
+    ),
+    _policy(
+        "POST",
+        "/api/v1/platform-admin/personal-model-grants/batch/execute",
+        "platform.models.manage",
+    ),
+    _policy(
+        "PUT",
+        "/api/v1/platform-admin/personal-model-grants/{model_id}",
+        "platform.models.manage",
+    ),
+    _policy(
+        "POST",
         "/api/v1/platform-admin/models/{model_id}/publish",
         "platform.models.manage",
     ),
@@ -92,6 +142,16 @@ PLATFORM_ADMIN_ROUTE_POLICIES = (
         "/api/v1/platform-admin/companies/{company_id}/recharges",
         "platform.finance.read",
     ),
+    _policy(
+        "GET",
+        "/api/v1/platform-admin/users/{user_id}/points-grants",
+        "platform.finance.read",
+    ),
+    _policy(
+        "POST",
+        "/api/v1/platform-admin/users/{user_id}/points-grants",
+        "platform.finance.manage",
+    ),
     _policy("GET", "/api/v1/platform-admin/resources", "platform.resources.read"),
     _policy("POST", "/api/v1/platform-admin/resources", "platform.resources.manage"),
     _policy(
@@ -119,6 +179,11 @@ PLATFORM_ADMIN_ROUTE_POLICIES = (
     _policy("GET", "/api/v1/platform-admin/audit-logs", "platform.audit.read"),
     _policy(
         "GET",
+        "/api/v1/platform-admin/task-content",
+        "platform.task_content.read",
+    ),
+    _policy(
+        "GET",
         "/api/v1/platform-admin/analytics/operating-series",
         "platform.analytics.read",
     ),
@@ -144,6 +209,12 @@ PLATFORM_ADMIN_ROUTE_POLICIES = (
     ),
     _policy(
         "POST",
+        "/api/v1/platform-admin/relay/channels/{channel_id}/operations/"
+        "{operation_id}/reconcile-no-creation",
+        "platform.relay_health.manage",
+    ),
+    _policy(
+        "POST",
         "/api/v1/platform-admin/relay/channels/{channel_id}/test",
         "platform.relay_health.manage",
     ),
@@ -158,6 +229,11 @@ PLATFORM_ADMIN_ROUTE_POLICIES = (
         "platform.relay_health.manage",
     ),
     _policy(
+        "POST",
+        "/api/v1/platform-admin/relay/provider-onboarding/open",
+        "platform.relay_health.manage",
+    ),
+    _policy(
         "GET",
         "/api/v1/platform-admin/relay/submission-unknown",
         "platform.relay_health.read",
@@ -165,6 +241,16 @@ PLATFORM_ADMIN_ROUTE_POLICIES = (
     _policy(
         "GET",
         "/api/v1/platform-admin/relay/submission-unknown/{job_id}",
+        "platform.relay_health.read",
+    ),
+    _policy(
+        "GET",
+        "/api/v1/platform-admin/relay/provider-result-reconciliation",
+        "platform.relay_health.read",
+    ),
+    _policy(
+        "GET",
+        "/api/v1/platform-admin/relay/provider-result-reconciliation/{job_id}",
         "platform.relay_health.read",
     ),
     _policy(

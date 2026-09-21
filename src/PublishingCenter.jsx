@@ -12,7 +12,6 @@ import {
   PaperPlaneTilt,
   PlugsConnected,
   SpinnerGap,
-  TrashSimple,
   VideoCamera,
   WarningCircle,
   X,
@@ -30,20 +29,46 @@ import {
   publicationArtifactId,
   publicationJobArtifactId,
   publicationStatus,
-  PUBLICATION_STATUS_FILTERS,
+  PUBLICATION_STATUS_FILTER_GROUPS,
 } from "./publishing.js";
+import {
+  findVerifiedOAuthConnection,
+  oauthFailureMessage,
+  publishingBlockerSummary,
+  publishingConnectionStatusLabel,
+  publishingPermissionGuidance,
+  publishingProviderLabel,
+  safePublishingMessage,
+} from "./publishingPresentation.js";
 
 const BUSY_LABELS = {
   approve: "正在批准",
   cancel: "正在取消",
-  retry: "正在重试",
+  retry: "正在恢复队列",
   detail: "正在读取",
 };
 
-// Mock publisher creation is a development-only backend probe. Vite replaces
-// these constants at build time, allowing the production bundle to remove the
-// entry point and its provider=mock submission path entirely.
-const DEVELOPMENT_MOCK_PUBLISHING = import.meta.env.DEV && !import.meta.env.PROD;
+const PUBLISHING_REQUIREMENTS = [
+  {
+    key: "artifact",
+    Icon: ImageSquare,
+    title: "使用已保存作品",
+    detail: "这里只能选择已经保存且可发布的作品；提交时会再次检查文件是否可用。",
+  },
+  {
+    key: "approval",
+    Icon: CheckCircle,
+    title: "人工批准",
+    detail: "任务提交后先进入待审核状态；批准前不会触发任何外部发布。",
+  },
+  {
+    key: "unknown",
+    Icon: MagnifyingGlass,
+    title: "核对未知结果",
+    detail: "渠道结果未知时禁止重试。必须先查看渠道后台，再由有权成员确认最终结果。",
+  },
+];
+
 const PUBLICATION_ARTWORK_PAGE_SIZE = 24;
 
 const DIALOG_FOCUSABLE_SELECTOR = [
@@ -126,9 +151,9 @@ function readablePublishingError(error) {
   if (error instanceof PlatformApiError) {
     if (error.status === 403) return "当前账号没有权限，或公司尚未开通自动发布。";
     if (error.status === 409) return "任务状态已经变化，请刷新后再操作。";
-    return error.message;
+    return safePublishingMessage(error.message);
   }
-  return error?.message || "发布服务请求失败，请稍后重试。";
+  return safePublishingMessage(error?.message, "发布服务请求失败，请稍后重试。");
 }
 
 function shortDate(value, timeZone) {
@@ -174,7 +199,7 @@ function StatusBadge({ value }) {
 
 function EmptyState({ icon: Icon, title, detail, error = false }) {
   return (
-    <div className={`publication-empty ${error ? "is-error" : ""}`} role={error ? "alert" : undefined}>
+    <div className={`artifact-empty publication-empty ${error ? "is-error" : ""}`} role={error ? "alert" : undefined}>
       <Icon size={28} aria-hidden="true" />
       <strong>{title}</strong>
       <span>{detail}</span>
@@ -220,13 +245,13 @@ function ArtworkChoice({
               muted
               playsInline
               preload="metadata"
-              aria-label="可发布视频作品安全预览"
+              aria-label="预览可发布视频作品"
               onError={onPreviewError}
             />
           ) : previewUrl || (demoMode && artwork.preview_url) ? (
             <img
               src={previewUrl || artwork.preview_url}
-              alt={demoMode ? "测试发布作品预览" : "可发布作品安全预览"}
+              alt={demoMode ? "测试发布作品预览" : "可发布作品预览"}
               onError={previewUrl ? onPreviewError : undefined}
             />
           ) : (
@@ -234,7 +259,7 @@ function ArtworkChoice({
           )}
         </span>
         <span>
-          <strong>{artwork.request_payload?.prompt || artwork.model_display_name || "已归档作品"}</strong>
+          <strong>{artwork.request_payload?.prompt || artwork.model_display_name || "已保存作品"}</strong>
           <small>{artwork.media_type === "image" ? "图片" : "视频"}，作品 {shortId(artifactId)}</small>
         </span>
         <CheckCircle size={20} weight={selected ? "fill" : "regular"} aria-hidden="true" />
@@ -304,7 +329,7 @@ function PublicationComposer({
     if (!requestedArtifactId) {
       if (hasExternalInitialSelection) {
         setArtifactId("");
-        setError("未指定要发布的归档作品，请从作品页重新发起发布。");
+        setError("未指定要发布的作品，请从作品页重新发起发布。");
         return;
       }
       setArtifactId((current) => current || publicationArtifactId(artworks[0]));
@@ -324,7 +349,7 @@ function PublicationComposer({
     );
     if (!matchedArtwork) {
       setArtifactId("");
-      setError("指定作品未在当前可发布作品中找到，请重新选择已完成并归档的作品。");
+      setError("指定作品未在当前可发布作品中找到，请重新选择一件已完成并保存的作品。");
       return;
     }
 
@@ -359,10 +384,7 @@ function PublicationComposer({
   const submit = async (event) => {
     event.preventDefault();
     setError("");
-    if (demoMode) {
-      setError("这是测试发布界面，不会创建发布任务或调用外部平台。");
-      return;
-    }
+    if (demoMode) return;
     if (!artifactId || !connectionId || !caption.trim() || !scheduledLocal) {
       setError("请选择作品和发布账号，并填写文案与发布时间。");
       return;
@@ -410,9 +432,9 @@ function PublicationComposer({
       <section ref={dialogRef} className="publication-dialog" role="dialog" aria-modal="true" aria-labelledby="publication-composer-title" tabIndex={-1}>
         <header>
           <div>
-            <span>{demoMode ? "测试发布" : "待审核发布"}</span>
+            <span>{demoMode ? "发布安排预览" : "待审核发布"}</span>
             <h2 id="publication-composer-title">安排作品发布</h2>
-            <p>提交后先进入人工审核，批准后才会进入定时队列。</p>
+            <p>{demoMode ? "演示模式仅展示安排步骤，不会创建任务或请求外部平台。" : "提交后先进入人工审核，批准后才会进入定时队列。"}</p>
           </div>
           <button type="button" className="icon-button" aria-label="关闭发布编辑器" onClick={onClose} data-dialog-initial-focus><X size={20} /></button>
         </header>
@@ -462,7 +484,7 @@ function PublicationComposer({
               <select value={connectionId} onChange={(event) => setConnectionId(event.target.value)} disabled={demoMode || connections.length === 0} required>
                 <option value="">选择已连接账号</option>
                 {connections.map((connection) => (
-                  <option key={connection.id} value={connection.id}>{connection.display_name || connection.external_account_id || connection.provider}</option>
+                  <option key={connection.id} value={connection.id}>{connection.display_name || connection.external_account_id || publishingProviderLabel(connection.provider)}</option>
                 ))}
               </select>
               <small>{demoMode ? "测试发布不使用真实账号" : "账号凭据只保存在发布服务端"}</small>
@@ -491,11 +513,13 @@ function PublicationComposer({
           </div>
           {error && <p className="publication-form-error" role="alert"><WarningCircle size={17} /> {error}</p>}
           <footer>
-            <button type="button" onClick={onClose}>返回</button>
-            <button className="is-primary" type="submit" disabled={submitting || (!demoMode && (!artifactId || !connections.length))}>
-              {submitting ? <SpinnerGap className="spin" size={17} /> : <PaperPlaneTilt size={17} weight="fill" />}
-              {demoMode ? "测试发布不提交" : submitting ? "正在提交" : "提交待审核"}
-            </button>
+            <button type="button" onClick={onClose}>{demoMode ? "关闭预览" : "返回"}</button>
+            {!demoMode && (
+              <button className="is-primary" type="submit" disabled={submitting || !artifactId || !connections.length}>
+                {submitting ? <SpinnerGap className="spin" size={17} /> : <PaperPlaneTilt size={17} weight="fill" />}
+                {submitting ? "正在提交" : "提交待审核"}
+              </button>
+            )}
           </footer>
         </form>
       </section>
@@ -522,10 +546,10 @@ function JobDetails({ job, loading, onClose, connectionsById }) {
             <p className="publication-details-caption">{job.caption || "发布文案未记录"}</p>
             <dl>
               <div><dt>任务 ID</dt><dd>{job.id}</dd></div>
-              <div><dt>发布账号</dt><dd>{connection?.display_name || job.connection_id}</dd></div>
+              <div><dt>发布账号</dt><dd>{connection?.display_name || "发布账号记录不可用"}</dd></div>
               <div><dt>作品 ID</dt><dd>{publicationJobArtifactId(job)}</dd></div>
               <div><dt>计划时间</dt><dd>{job.scheduled_at ? `${shortDate(job.scheduled_at, job.timezone)} (${job.timezone})` : "审核通过后尽快发布"}</dd></div>
-              <div><dt>失败原因</dt><dd>{job.error_message || job.failure_reason || job.last_error || "无"}</dd></div>
+              <div><dt>失败原因</dt><dd>{safePublishingMessage(job.error_message || job.failure_reason || job.last_error, "渠道未返回失败说明")}</dd></div>
               <div><dt>外部作品号</dt><dd>{job.external_post_id || job.external_publication_id || job.provider_publication_id || "未返回"}</dd></div>
             </dl>
             {job.status === "submission_unknown" && (
@@ -543,7 +567,6 @@ function ReconcileDialog({ job, submitting, onClose, onSubmit }) {
   const [outcome, setOutcome] = useState("published");
   const [externalPostId, setExternalPostId] = useState("");
   const [externalPostUrl, setExternalPostUrl] = useState("");
-  const [errorCode, setErrorCode] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [formError, setFormError] = useState("");
   const dialogRef = useAccessibleDialog(Boolean(job), onClose);
@@ -553,7 +576,6 @@ function ReconcileDialog({ job, submitting, onClose, onSubmit }) {
     setOutcome("published");
     setExternalPostId("");
     setExternalPostUrl("");
-    setErrorCode("");
     setErrorMessage("");
     setFormError("");
   }, [job?.id]);
@@ -564,7 +586,7 @@ function ReconcileDialog({ job, submitting, onClose, onSubmit }) {
     event.preventDefault();
     setFormError("");
     if (outcome === "published" && !externalPostId.trim()) {
-      setFormError("核销为已发布时，必须填写渠道后台返回的作品号。");
+      setFormError("确认为已发布时，必须填写渠道后台返回的作品号。");
       return;
     }
     try {
@@ -572,7 +594,6 @@ function ReconcileDialog({ job, submitting, onClose, onSubmit }) {
         outcome,
         externalPostId,
         externalPostUrl,
-        errorCode,
         errorMessage,
       });
     } catch (error) {
@@ -584,11 +605,11 @@ function ReconcileDialog({ job, submitting, onClose, onSubmit }) {
     <div className="publication-dialog-backdrop" role="presentation">
       <section ref={dialogRef} className="publication-reconcile" role="dialog" aria-modal="true" aria-labelledby="publication-reconcile-title" tabIndex={-1}>
         <header>
-          <div><span>结果未知任务</span><h2 id="publication-reconcile-title">人工核销</h2></div>
-          <button type="button" className="icon-button" aria-label="关闭人工核销" onClick={onClose} data-dialog-initial-focus><X size={20} /></button>
+          <div><span>结果未知任务</span><h2 id="publication-reconcile-title">核对并确认渠道结果</h2></div>
+          <button type="button" className="icon-button" aria-label="关闭渠道结果核对" onClick={onClose} data-dialog-initial-focus><X size={20} /></button>
         </header>
         <form onSubmit={submit}>
-          <p className="publication-reconcile-warning"><WarningCircle size={19} /> <span><strong>必须先去渠道后台核对，避免重复发布</strong><small>只有确认渠道最终结果后才能核销。结果未知任务不允许直接重试。</small></span></p>
+          <p className="publication-reconcile-warning"><WarningCircle size={19} /> <span><strong>必须先去渠道后台核对，避免重复发布</strong><small>只有确认渠道最终结果后才能记录结论。结果未知任务不允许直接重试。</small></span></p>
           <label>
             <span>渠道最终结果</span>
             <select value={outcome} onChange={(event) => setOutcome(event.target.value)}>
@@ -603,7 +624,6 @@ function ReconcileDialog({ job, submitting, onClose, onSubmit }) {
             </div>
           ) : (
             <div className="publication-reconcile-fields">
-              <label><span>失败代码（可选）</span><input value={errorCode} onChange={(event) => setErrorCode(event.target.value)} maxLength={120} placeholder="例如 CHANNEL_CONFIRMED_MISSING" /></label>
               <label><span>核对说明（可选）</span><textarea value={errorMessage} onChange={(event) => setErrorMessage(event.target.value)} maxLength={1000} rows={3} placeholder="记录渠道后台的核对结果" /></label>
             </div>
           )}
@@ -612,7 +632,7 @@ function ReconcileDialog({ job, submitting, onClose, onSubmit }) {
             <button type="button" onClick={onClose}>返回任务</button>
             <button className="is-primary" type="submit" disabled={submitting}>
               {submitting ? <SpinnerGap className="spin" size={17} /> : <CheckCircle size={17} />}
-              {submitting ? "正在核销" : "确认人工核销"}
+              {submitting ? "正在确认结果" : "确认渠道结果"}
             </button>
           </footer>
         </form>
@@ -633,6 +653,10 @@ export function PublishingCenter({
   canManageJobs = false,
   autoPublishingEnabled = false,
   publishingEntitlementResolved = false,
+  accountSideEffectsEnabled = false,
+  jobSideEffectsEnabled = false,
+  publishingReadinessError = "",
+  publishingBlockingReasons = [],
   onSessionError,
   initialArtifactId = "",
   initialArtwork = null,
@@ -665,9 +689,11 @@ export function PublishingCenter({
   const [submitting, setSubmitting] = useState(false);
   const [busyKey, setBusyKey] = useState("");
   const [notice, setNotice] = useState("");
-  const [testConnectionOpen, setTestConnectionOpen] = useState(false);
-  const [testConnectionName, setTestConnectionName] = useState("");
-  const [pendingRemovalId, setPendingRemovalId] = useState("");
+  const [oauthReturnState, setOauthReturnState] = useState({
+    state: "idle",
+    message: "",
+  });
+  const [pendingDisableId, setPendingDisableId] = useState("");
   const [detailJob, setDetailJob] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [reconcileTarget, setReconcileTarget] = useState(null);
@@ -682,11 +708,23 @@ export function PublishingCenter({
   const composerArtworksRequestGenerationRef = useRef(0);
   const detailRequestGenerationRef = useRef(0);
   const detailControllerRef = useRef(null);
-  const externalPublishingEnabled = demoMode || (
-    publishingEntitlementResolved && autoPublishingEnabled
+  const accountPublishingEnabled = demoMode || (
+    publishingEntitlementResolved && accountSideEffectsEnabled
+  );
+  const jobPublishingEnabled = demoMode || (
+    publishingEntitlementResolved && jobSideEffectsEnabled
   );
   const autoPublishingDisabled = !demoMode && (
     publishingEntitlementResolved && !autoPublishingEnabled
+  );
+  const publishingSideEffectsUnavailable = !demoMode
+    && publishingEntitlementResolved
+    && autoPublishingEnabled
+    && !accountPublishingEnabled
+    && !jobPublishingEnabled;
+  const publishingBlockersText = useMemo(
+    () => publishingBlockerSummary(publishingBlockingReasons),
+    [publishingBlockingReasons],
   );
 
   const handleError = useCallback((error, setError) => {
@@ -699,14 +737,17 @@ export function PublishingCenter({
     if (demoMode || !canReadAccounts) {
       setConnections([]);
       setConnectionsLoading(false);
-      return;
+      return [];
     }
     try {
       const response = await client.listPublisherConnections({}, { signal });
-      setConnections(collectionItems(response));
+      const nextConnections = collectionItems(response);
+      setConnections(nextConnections);
       setConnectionsError("");
+      return nextConnections;
     } catch (error) {
       handleError(error, setConnectionsError);
+      return null;
     } finally {
       if (!signal?.aborted) setConnectionsLoading(false);
     }
@@ -802,8 +843,7 @@ export function PublishingCenter({
     if (
       demoMode
       || !canReadAccounts
-      || !canManageAccounts
-      || !externalPublishingEnabled
+      || !accountPublishingEnabled
     ) {
       setOauthProviders([]);
       setOauthProvidersLoading(false);
@@ -823,29 +863,65 @@ export function PublishingCenter({
       });
     return () => controller.abort();
   }, [
-    canManageAccounts,
     canReadAccounts,
     client,
     demoMode,
-    externalPublishingEnabled,
+    accountPublishingEnabled,
     handleError,
   ]);
 
   useEffect(() => {
-    if (demoMode || typeof window === "undefined") return;
+    if (demoMode || typeof window === "undefined") return undefined;
     const url = new URL(window.location.href);
     const result = url.searchParams.get("publishing_oauth");
-    if (!result) return;
-    setNotice(
-      result === "connected"
-        ? "发布账号已安全连接。"
-        : "发布账号连接未完成，请重新发起授权。",
-    );
-    url.searchParams.delete("publishing_oauth");
-    url.searchParams.delete("provider");
-    url.searchParams.delete("reason");
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-  }, [demoMode]);
+    if (!result) return undefined;
+    const provider = url.searchParams.get("provider") || "";
+    const reason = url.searchParams.get("reason") || "";
+    const clearOAuthParameters = () => {
+      url.searchParams.delete("publishing_oauth");
+      url.searchParams.delete("provider");
+      url.searchParams.delete("reason");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    };
+
+    if (result !== "connected") {
+      clearOAuthParameters();
+      setOauthReturnState({ state: "failed", message: oauthFailureMessage(reason) });
+      return undefined;
+    }
+
+    const providerLabel = publishingProviderLabel(provider);
+    if (!canReadAccounts) {
+      clearOAuthParameters();
+      setOauthReturnState({
+        state: "failed",
+        message: `授权已返回，但当前账号无法读取连接状态。${publishingPermissionGuidance("publish.accounts.read")}`,
+      });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setConnectionsLoading(true);
+    setOauthReturnState({
+      state: "confirming",
+      message: `${providerLabel}授权已返回，正在向服务端确认连接状态。`,
+    });
+    refreshConnections({ signal: controller.signal }).then((nextConnections) => {
+      if (controller.signal.aborted) return;
+      clearOAuthParameters();
+      const verifiedConnection = findVerifiedOAuthConnection(nextConnections, provider);
+      setOauthReturnState(verifiedConnection
+        ? {
+            state: "confirmed",
+            message: `${providerLabel}账号已由服务端确认并可用于发布。`,
+          }
+        : {
+            state: "failed",
+            message: `服务端尚未确认${providerLabel}账号连接，请重新发起授权。`,
+          });
+    });
+    return () => controller.abort();
+  }, [canReadAccounts, demoMode, refreshConnections]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -876,10 +952,9 @@ export function PublishingCenter({
   }, [canReadJobs, demoMode, refreshJobs]);
 
   useEffect(() => {
-    if (externalPublishingEnabled) return;
+    if (jobPublishingEnabled) return;
     setComposerOpen(false);
-    setTestConnectionOpen(false);
-  }, [externalPublishingEnabled]);
+  }, [jobPublishingEnabled]);
 
   const connectionsById = useMemo(
     () => new Map(connections.map((connection) => [connection.id, connection])),
@@ -891,8 +966,8 @@ export function PublishingCenter({
   );
 
   const createJob = async (payload) => {
-    if (!externalPublishingEnabled) {
-      throw new Error("公司已停用自动发布，仅保留历史与安全处置");
+    if (!jobPublishingEnabled) {
+      throw new Error("服务端未开放新的发布任务，仅保留历史与安全处置");
     }
     setSubmitting(true);
     submissionKeyRef.current ||= createIdempotencyKey();
@@ -911,8 +986,8 @@ export function PublishingCenter({
   };
 
   const mutateJob = async (job, action) => {
-    if (["approve", "retry"].includes(action) && !externalPublishingEnabled) {
-      setNotice("公司已停用自动发布，仅保留历史与安全处置");
+    if (["approve", "retry"].includes(action) && !jobPublishingEnabled) {
+      setNotice("服务端未开放批准或重试，仅保留历史与安全处置");
       return;
     }
     const id = job.id || job.job_id;
@@ -970,36 +1045,8 @@ export function PublishingCenter({
     setBusyKey("");
   };
 
-  const createTestConnection = async (event) => {
-    event.preventDefault();
-    if (!DEVELOPMENT_MOCK_PUBLISHING) {
-      setNotice("生产环境禁止创建 Mock 发布连接。");
-      return;
-    }
-    if (!externalPublishingEnabled) {
-      setNotice("公司已停用自动发布，仅保留历史与安全处置");
-      return;
-    }
-    if (demoMode) {
-      setNotice("测试发布不会创建本地假连接。请连接开发环境客户平台后再试。");
-      return;
-    }
-    setBusyKey("connection:create");
-    try {
-      await client.createPublisherConnection({ provider: "mock", displayName: testConnectionName.trim() });
-      setTestConnectionName("");
-      setTestConnectionOpen(false);
-      setNotice("测试连接已创建。它不会代表真实平台 OAuth 授权。");
-      await refreshConnections();
-    } catch (error) {
-      handleError(error, setConnectionsError);
-    } finally {
-      setBusyKey("");
-    }
-  };
-
   const startOAuthConnection = async (provider) => {
-    if (!externalPublishingEnabled || demoMode) return;
+    if (!accountPublishingEnabled || demoMode) return;
     const providerKey = String(provider || "").trim();
     setBusyKey(`connection:oauth:${providerKey}`);
     setOauthProvidersError("");
@@ -1028,7 +1075,7 @@ export function PublishingCenter({
     try {
       await client.reconcilePublicationJob(id, payload);
       setReconcileTarget(null);
-      setNotice(payload.outcome === "published" ? "任务已人工核销为发布成功。" : "任务已人工核销为发布失败。");
+      setNotice(payload.outcome === "published" ? "渠道结果已确认为发布成功。" : "渠道结果已确认为未发布，任务已记录为失败。");
       await refreshJobs();
     } catch (error) {
       if (error instanceof PlatformApiError && error.status === 401) onSessionError?.(error);
@@ -1038,16 +1085,16 @@ export function PublishingCenter({
     }
   };
 
-  const removeConnection = async (connection) => {
-    if (pendingRemovalId !== connection.id) {
-      setPendingRemovalId(connection.id);
+  const disableConnection = async (connection) => {
+    if (pendingDisableId !== connection.id) {
+      setPendingDisableId(connection.id);
       return;
     }
     setBusyKey(`connection:delete:${connection.id}`);
     try {
       await client.deletePublisherConnection(connection.id);
-      setPendingRemovalId("");
-      setNotice("发布连接已移除，历史发布任务仍会保留。");
+      setPendingDisableId("");
+      setNotice("发布连接已停用；历史发布任务和安全处置仍会保留。");
       await refreshConnections();
     } catch (error) {
       handleError(error, setConnectionsError);
@@ -1081,7 +1128,7 @@ export function PublishingCenter({
     if (handledOpenComposerRequestRef.current === requestKey) return;
     handledOpenComposerRequestRef.current = requestKey;
 
-    if (!externalPublishingEnabled || !canManageJobs || !canReadJobs || !canReadAccounts) {
+    if (!jobPublishingEnabled || !canReadJobs || !canReadAccounts) {
       setNotice("无法打开发布编辑器：当前账号缺少发布权限，或公司尚未启用自动发布。");
       return;
     }
@@ -1099,11 +1146,10 @@ export function PublishingCenter({
     setComposerOpen(true);
     setNotice("");
   }, [
-    canManageJobs,
     canReadAccounts,
     canReadJobs,
     demoMode,
-    externalPublishingEnabled,
+    jobPublishingEnabled,
     initialArtifactId,
     initialArtwork,
     openComposerRequest,
@@ -1111,19 +1157,26 @@ export function PublishingCenter({
   ]);
 
   return (
-    <section className="secondary-view publication-center">
+    <section className="secondary-view publication-center" aria-labelledby="publication-title">
       <div className="publication-heading">
         <div>
-          <span className="view-kicker">作品分发</span>
-          <h1>发布</h1>
-          <p>从长期归档作品创建发布计划。任务必须经过人工批准，账号凭据不会进入浏览器。</p>
+          <h1 id="publication-title">发布</h1>
+          <p>选择已保存的作品，安排发布时间并提交审核；审核通过后才会发布到已连接的账号。</p>
         </div>
         <div className="publication-heading-actions">
           <span className={`publication-mode ${demoMode ? "is-test" : ""}`}>
             {demoMode ? <Flask size={16} /> : <PlugsConnected size={16} />}
-            {demoMode ? "测试发布" : autoPublishingDisabled ? "历史与安全处置" : publishingEntitlementResolved ? "正式发布流程" : "正在核对授权"}
+            {demoMode
+              ? "演示模式"
+              : publishingReadinessError
+                ? "发布暂不可用"
+                : autoPublishingDisabled || publishingSideEffectsUnavailable
+                  ? "仅查看历史"
+                  : publishingEntitlementResolved
+                    ? "可以新建发布"
+                    : "正在检查发布条件"}
           </span>
-          <button className="publication-primary-button" type="button" onClick={openManualComposer} disabled={!externalPublishingEnabled || (!demoMode && (!canManageJobs || !canReadJobs || !canReadAccounts))} title={autoPublishingDisabled ? "公司已停用自动发布" : undefined}>
+          <button className="publication-primary-button" type="button" onClick={openManualComposer} disabled={!jobPublishingEnabled || (!demoMode && (!canReadJobs || !canReadAccounts))} title={autoPublishingDisabled ? "公司已停用自动发布" : undefined}>
             <PaperPlaneTilt size={17} weight="fill" /> 新建发布
           </button>
         </div>
@@ -1138,34 +1191,87 @@ export function PublishingCenter({
       {autoPublishingDisabled && (
         <div className="publication-disabled-banner" role="note">
           <WarningCircle size={20} aria-hidden="true" />
-          <span><strong>公司已停用自动发布，仅保留历史与安全处置</strong><small>你仍可查看历史；有管理权限时可取消尚未提交的任务，或核销结果未知任务。新建、批准、重试和新增连接均已停用。</small></span>
+          <span><strong>公司已停用自动发布</strong><small>你仍可查看历史；有管理权限时可取消尚未提交的任务，或核对结果未知的任务。当前不能新建、批准、重新排队或连接新账号。</small></span>
         </div>
+      )}
+      {!demoMode && publishingReadinessError && (
+        <div className="publication-disabled-banner" role="alert">
+          <WarningCircle size={20} aria-hidden="true" />
+          <span><strong>暂时无法确认发布条件</strong><small>{safePublishingMessage(publishingReadinessError, "请稍后刷新再试。")} 新建与连接操作已关闭，现有记录仍可查看和安全处置。</small></span>
+        </div>
+      )}
+      {publishingSideEffectsUnavailable && !publishingReadinessError && (
+        <div className="publication-disabled-banner" role="note">
+          <WarningCircle size={20} aria-hidden="true" />
+          <span><strong>当前不能新建发布</strong><small>现有记录仍可查看；有权限的成员仍可停用连接、取消待发布任务和确认渠道结果。{publishingBlockersText ? ` 原因：${publishingBlockersText}。` : " 请联系公司管理员检查发布权限。"}</small></span>
+        </div>
+      )}
+      {oauthReturnState.state !== "idle" && (
+        <p
+          className="publication-notice"
+          role={oauthReturnState.state === "failed" ? "alert" : "status"}
+          aria-live="polite"
+        >
+          {oauthReturnState.state === "confirming"
+            ? <SpinnerGap className="spin" size={18} aria-hidden="true" />
+            : oauthReturnState.state === "confirmed"
+              ? <CheckCircle size={18} weight="fill" aria-hidden="true" />
+              : <WarningCircle size={18} aria-hidden="true" />}
+          {oauthReturnState.message}
+        </p>
       )}
       {notice && <p className="publication-notice" role="status"><CheckCircle size={18} weight="fill" /> {notice}</p>}
 
       <div className="publication-layout">
-        <section className="publication-jobs" aria-labelledby="publication-jobs-title">
+        <section className="publication-artwork-select publication-handoff-index" aria-labelledby="publication-handoff-title">
           <header>
-            <div><h2 id="publication-jobs-title">发布任务</h2><span>{demoMode ? "测试流程无真实任务" : `${jobsTotal} 条`}</span></div>
+            <div>
+              <h2 id="publication-handoff-title">发布前要求</h2>
+              <span>新建发布时会逐项检查</span>
+            </div>
+          </header>
+          <div className="publication-job-list">
+            {PUBLISHING_REQUIREMENTS.map(({ key, Icon, title, detail }) => (
+              <article className="publication-job publication-handoff-rule" key={key}>
+                <header>
+                  <span className="publication-job-icon"><Icon size={20} weight="duotone" aria-hidden="true" /></span>
+                  <span className="publication-job-title">
+                    <strong>{title}</strong>
+                    <small>{detail}</small>
+                  </span>
+                </header>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="publication-jobs" aria-labelledby="publication-jobs-title" aria-busy={canReadJobs && jobsLoading}>
+          <header>
+            <div><h2 id="publication-jobs-title">发布安排</h2><span>{demoMode ? "预览不产生任务" : `${jobsTotal} 条`}</span></div>
             <label>
-              <span>状态筛选</span>
+              <span>查看范围</span>
               <select value={statusFilter} onChange={(event) => {
                 setStatusFilter(event.target.value);
                 setJobsPage(1);
               }} disabled={demoMode || !canReadJobs}>
-                {PUBLICATION_STATUS_FILTERS.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}
+                <option value="">全部任务</option>
+                {PUBLICATION_STATUS_FILTER_GROUPS.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </optgroup>
+                ))}
               </select>
             </label>
           </header>
 
-          {!demoMode && !canReadJobs && <EmptyState icon={WarningCircle} title="没有查看发布任务的权限" detail="请让公司老板开启 publish.jobs.read。" error />}
+          {!demoMode && !canReadJobs && <EmptyState icon={WarningCircle} title="没有查看发布任务的权限" detail={publishingPermissionGuidance("publish.jobs.read")} error />}
           {canReadJobs && jobsLoading && <LoadingRows label="正在读取发布任务" />}
           {canReadJobs && !jobsLoading && jobsError && <EmptyState icon={WarningCircle} title="发布任务读取失败" detail={jobsError} error />}
           {(demoMode || (canReadJobs && !jobsLoading && !jobsError && jobs.length === 0)) && (
             <EmptyState
               icon={PaperPlaneTilt}
-              title={demoMode ? "测试发布没有伪造任务" : "当前还没有发布任务"}
-              detail={demoMode ? "打开“新建发布”可以查看完整编辑流程，但不会提交。" : autoPublishingDisabled ? "公司已停用自动发布，目前只保留历史记录与安全处置。" : "选择一件已归档作品，安排发布时间并提交审核。"}
+              title={demoMode ? "演示模式暂无发布任务" : "当前还没有发布任务"}
+              detail={demoMode ? "打开“新建发布”可以查看安排步骤；预览不会提交。" : autoPublishingDisabled ? "公司已停用自动发布，目前只保留历史记录。" : "选择一件已保存的作品，安排发布时间并提交审核。"}
             />
           )}
           {canReadJobs && !jobsLoading && !jobsError && jobs.length > 0 && (
@@ -1183,10 +1289,10 @@ export function PublishingCenter({
                       <span className="publication-job-icon"><PaperPlaneTilt size={20} weight="duotone" /></span>
                       <span className="publication-job-title">
                         <strong>{job.title || artwork?.request_payload?.prompt || `发布任务 ${shortId(id)}`}</strong>
-                        <small>{connection?.display_name || job.provider || `账号 ${shortId(job.connection_id)}`}，计划 {job.scheduled_at ? shortDate(job.scheduled_at, job.timezone) : "审核后尽快"}</small>
+                        <small>{connection?.display_name || publishingProviderLabel(job.provider, oauthProviders) || `账号 ${shortId(job.connection_id)}`}，计划 {job.scheduled_at ? shortDate(job.scheduled_at, job.timezone) : "审核后尽快"}</small>
                       </span>
                       <span className="publication-job-badges">
-                        {isMockJob && <span className="publication-mock-badge"><Flask size={13} /> Mock 测试</span>}
+                        {isMockJob && <span className="publication-mock-badge"><Flask size={13} /> 测试账号</span>}
                         <StatusBadge value={job.status} />
                       </span>
                     </header>
@@ -1197,10 +1303,10 @@ export function PublishingCenter({
                         {busyKey === `detail:${id}` ? <SpinnerGap className="spin" size={16} /> : <ClipboardText size={16} />}
                         {busyKey === `detail:${id}` ? BUSY_LABELS.detail : "查看详情"}
                       </button>
-                      {externalPublishingEnabled && canManageJobs && available.approve && <button className="is-positive" type="button" onClick={() => mutateJob(job, "approve")} disabled={activeBusy}>{busyKey === `approve:${id}` ? <SpinnerGap className="spin" size={16} /> : <CheckCircle size={16} />} {busyKey === `approve:${id}` ? BUSY_LABELS.approve : "批准发布"}</button>}
-                      {externalPublishingEnabled && canManageJobs && available.retry && <button type="button" onClick={() => mutateJob(job, "retry")} disabled={activeBusy}>{busyKey === `retry:${id}` ? <SpinnerGap className="spin" size={16} /> : <ArrowClockwise size={16} />} {busyKey === `retry:${id}` ? BUSY_LABELS.retry : "重试"}</button>}
-                      {canManageJobs && job.status === "submission_unknown" && <button className="is-reconcile" type="button" onClick={() => setReconcileTarget(job)} disabled={activeBusy}><MagnifyingGlass size={16} /> 人工核销</button>}
-                      {canManageJobs && available.cancel && <button className="is-danger" type="button" onClick={() => mutateJob(job, "cancel")} disabled={activeBusy}>{busyKey === `cancel:${id}` ? <SpinnerGap className="spin" size={16} /> : <X size={16} />} {busyKey === `cancel:${id}` ? BUSY_LABELS.cancel : "取消"}</button>}
+                      {jobPublishingEnabled && available.approve && <button className="is-positive" type="button" onClick={() => mutateJob(job, "approve")} disabled={activeBusy}>{busyKey === `approve:${id}` ? <SpinnerGap className="spin" size={16} /> : <CheckCircle size={16} />} {busyKey === `approve:${id}` ? BUSY_LABELS.approve : "批准发布"}</button>}
+                      {jobPublishingEnabled && available.retry && <button type="button" onClick={() => mutateJob(job, "retry")} disabled={activeBusy}>{busyKey === `retry:${id}` ? <SpinnerGap className="spin" size={16} /> : <ArrowClockwise size={16} />} {busyKey === `retry:${id}` ? BUSY_LABELS.retry : "重新进入发布队列"}</button>}
+                      {canManageJobs && job.status === "submission_unknown" && <button className="is-reconcile" type="button" onClick={() => setReconcileTarget(job)} disabled={activeBusy}><MagnifyingGlass size={16} /> 核对并确认渠道结果</button>}
+                      {canManageJobs && available.cancel && <button className="is-danger" type="button" onClick={() => mutateJob(job, "cancel")} disabled={activeBusy}>{busyKey === `cancel:${id}` ? <SpinnerGap className="spin" size={16} /> : <X size={16} />} {busyKey === `cancel:${id}` ? BUSY_LABELS.cancel : "取消待发布任务"}</button>}
                     </footer>
                   </article>
                 );
@@ -1216,25 +1322,17 @@ export function PublishingCenter({
           )}
         </section>
 
-        <aside className="publication-connections" aria-labelledby="publication-connections-title">
+        <aside className="publication-connections" aria-labelledby="publication-connections-title" aria-busy={canReadAccounts && connectionsLoading}>
           <header>
             <div><h2 id="publication-connections-title">发布账号</h2><span>{demoMode ? "测试" : `${connections.length} 个`}</span></div>
-            {DEVELOPMENT_MOCK_PUBLISHING && externalPublishingEnabled && canManageAccounts && (
-              <button type="button" onClick={() => setTestConnectionOpen((value) => !value)} disabled={demoMode} title={demoMode ? "测试发布不创建本地假账号" : "只供开发测试后端使用"}>
-                <Flask size={16} /> 添加开发 Mock 连接
-              </button>
-            )}
           </header>
-          <p className="publication-account-note"><LinkSimple size={17} /> 正式账号通过服务端 OAuth 授权；访问令牌只保存在适配器的加密密钥存储中，不会进入浏览器。</p>
-          {DEVELOPMENT_MOCK_PUBLISHING && (
-            <p className="publication-account-note is-development"><Flask size={17} /> 仅限开发环境：Mock 连接不代表真实平台授权。</p>
-          )}
-          {!demoMode && canReadAccounts && canManageAccounts && externalPublishingEnabled && (
+          <p className="publication-account-note"><LinkSimple size={17} /> 账号连接由平台安全处理，登录信息不会显示在这里。</p>
+          {!demoMode && canReadAccounts && accountPublishingEnabled && (
             <div className="publication-oauth-providers" aria-label="可连接的发布平台">
               {oauthProvidersLoading && <span><SpinnerGap className="spin" size={16} /> 正在读取可连接平台</span>}
               {!oauthProvidersLoading && oauthProvidersError && <span className="is-error"><WarningCircle size={16} /> {oauthProvidersError}</span>}
               {!oauthProvidersLoading && !oauthProvidersError && oauthProviders.length === 0 && (
-                <span>服务端尚未配置支持 OAuth 的正式发布平台。</span>
+                <span>当前没有可连接的发布平台，请联系公司管理员。</span>
               )}
               {!oauthProvidersLoading && !oauthProvidersError && oauthProviders.map((provider) => (
                 <button
@@ -1244,32 +1342,26 @@ export function PublishingCenter({
                   disabled={Boolean(busyKey)}
                 >
                   {busyKey === `connection:oauth:${provider.provider}` ? <SpinnerGap className="spin" size={16} /> : <LinkSimple size={16} />}
-                  连接 {provider.display_name}
+                  连接 {publishingProviderLabel(provider.provider, oauthProviders)}
                 </button>
               ))}
             </div>
           )}
-          {DEVELOPMENT_MOCK_PUBLISHING && externalPublishingEnabled && testConnectionOpen && !demoMode && (
-            <form className="publication-test-connection-form" onSubmit={createTestConnection}>
-              <label><span>测试账号名称</span><input value={testConnectionName} onChange={(event) => setTestConnectionName(event.target.value)} maxLength={120} required placeholder="例如：抖音测试号" /></label>
-              <button type="submit" disabled={busyKey === "connection:create"}>{busyKey === "connection:create" ? <SpinnerGap className="spin" size={16} /> : <Flask size={16} />} 创建 Mock 连接</button>
-            </form>
-          )}
-          {!demoMode && !canReadAccounts && <EmptyState icon={WarningCircle} title="没有查看发布账号的权限" detail="请让公司老板开启 publish.accounts.read。" error />}
+          {!demoMode && !canReadAccounts && <EmptyState icon={WarningCircle} title="没有查看发布账号的权限" detail={publishingPermissionGuidance("publish.accounts.read")} error />}
           {canReadAccounts && connectionsLoading && <LoadingRows label="正在读取发布账号" />}
           {canReadAccounts && !connectionsLoading && connectionsError && <EmptyState icon={WarningCircle} title="发布账号读取失败" detail={connectionsError} error />}
           {(demoMode || (canReadAccounts && !connectionsLoading && !connectionsError && connections.length === 0)) && (
-            <EmptyState icon={PlugsConnected} title={demoMode ? "测试发布没有真实账号" : "尚未连接发布账号"} detail={demoMode ? "演示模式不会伪造 OAuth 状态。" : "生产账号接入必须走服务端 OAuth 和加密凭据存储。"} />
+            <EmptyState icon={PlugsConnected} title={demoMode ? "演示模式未连接发布账号" : "尚未连接发布账号"} detail={demoMode ? "这里不会使用真实账号。" : "连接一个发布账号后，才能安排作品发布。"} />
           )}
           {canReadAccounts && !connectionsLoading && !connectionsError && connections.length > 0 && (
             <div className="publication-connection-list">
               {connections.map((connection) => {
-                const pending = pendingRemovalId === connection.id;
+                const pending = pendingDisableId === connection.id;
                 return (
                   <article key={connection.id}>
                     <span><PlugsConnected size={21} weight="duotone" /></span>
-                    <div><strong>{connection.display_name || connection.external_account_id || "发布账号"}</strong><small>{connection.provider}，{connection.status || "状态未记录"}</small></div>
-                    {canManageAccounts && <button className={pending ? "is-confirm" : ""} type="button" onClick={() => removeConnection(connection)} disabled={busyKey === `connection:delete:${connection.id}`}>{busyKey === `connection:delete:${connection.id}` ? <SpinnerGap className="spin" size={16} /> : <TrashSimple size={16} />} {pending ? "确认移除" : "移除"}</button>}
+                    <div><strong>{connection.display_name || connection.external_account_id || "发布账号"}</strong><small>{publishingProviderLabel(connection.provider, oauthProviders)}，{publishingConnectionStatusLabel(connection.status)}</small></div>
+                    {canManageAccounts && <button className={pending ? "is-confirm" : ""} type="button" onClick={() => disableConnection(connection)} disabled={busyKey === `connection:delete:${connection.id}`}>{busyKey === `connection:delete:${connection.id}` ? <SpinnerGap className="spin" size={16} /> : <X size={16} />} {pending ? "确认停用" : "停用连接"}</button>}
                   </article>
                 );
               })}

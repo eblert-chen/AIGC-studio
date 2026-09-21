@@ -5,6 +5,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import create_engine, inspect, text
@@ -34,6 +35,7 @@ LEDGER_TRIGGER_NAMES = {
     "trg_ledger_entries_no_update",
     "trg_ledger_entries_no_delete",
 }
+LEGACY_LEDGER_V2_WRITE_GUARD = "trg_legacy_ledger_block_v2_insert"
 
 
 def _config(project_root: Path, database_path: Path) -> Config:
@@ -185,6 +187,42 @@ def _insert_grant(
         )
 
 
+def _insert_v2_grant(
+    engine,
+    *,
+    grant_id: str,
+    model_id: str,
+    second_cents: int | None = None,
+    item_cents: int | None = None,
+    second_points: int | None = None,
+    item_points: int | None = None,
+) -> None:
+    now = datetime(2026, 8, 4, 12, 1, tzinfo=timezone.utc)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO company_model_grants "
+                "(id, company_id, model_id, enabled, "
+                "price_per_second_cents, price_per_item_cents, "
+                "price_per_second_points, price_per_item_points, "
+                "config_override, created_at, updated_at) VALUES "
+                "(:id, 'billing-migration-company', :model_id, 1, "
+                ":second_cents, :item_cents, :second_points, :item_points, "
+                "'{}', :created_at, :updated_at)"
+            ),
+            {
+                "id": grant_id,
+                "model_id": model_id,
+                "second_cents": second_cents,
+                "item_cents": item_cents,
+                "second_points": second_points,
+                "item_points": item_points,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+
+
 def _insert_ledger(engine, ledger_id: str, note: str) -> None:
     with engine.begin() as connection:
         connection.execute(
@@ -316,7 +354,7 @@ def test_0013_billing_invariants_upgrade_downgrade_and_reupgrade(
 
     command.upgrade(config, "head")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == "0040_showcase_management"
+    assert _revision(engine) == ScriptDirectory.from_config(config).get_current_head()
     model_columns = {
         column["name"]
         for column in inspect(engine).get_columns("model_definitions")
@@ -331,17 +369,36 @@ def test_0013_billing_invariants_upgrade_downgrade_and_reupgrade(
     }
     assert "relay_error_snapshot" in task_columns
     assert "ck_grant_exactly_one_price" in _grant_constraint_names(engine)
-    assert _trigger_names(engine) == LEDGER_TRIGGER_NAMES
+    assert _trigger_names(engine) == LEDGER_TRIGGER_NAMES | {
+        LEGACY_LEDGER_V2_WRITE_GUARD
+    }
     assert "ix_ledger_kind_created" in _ledger_index_names(engine)
     _assert_money_columns_are_bigint(engine)
 
+    # Billing v2 deliberately permits an all-null, unpriced catalog grant while
+    # it is awaiting an explicit price. It must still reject ambiguous pricing.
+    _insert_grant(
+        engine,
+        grant_id="unpriced-after-v2",
+        model_id="model-after-rebuild",
+        second_price=None,
+        item_price=None,
+    )
     with pytest.raises(IntegrityError, match="ck_grant_exactly_one_price"):
-        _insert_grant(
+        _insert_v2_grant(
             engine,
-            grant_id="invalid-after-rebuild",
-            model_id="model-after-rebuild",
-            second_price=None,
-            item_price=None,
+            grant_id="invalid-two-prices-after-v2",
+            model_id="model-two-prices",
+            second_cents=25,
+            item_cents=125,
+        )
+    with pytest.raises(IntegrityError, match="ck_grant_exactly_one_price"):
+        _insert_v2_grant(
+            engine,
+            grant_id="invalid-mixed-units-after-v2",
+            model_id="model-no-price",
+            second_cents=25,
+            second_points=3,
         )
     _assert_raw_ledger_mutation_is_rejected(engine, "ledger-after-downgrade")
     engine.dispose()

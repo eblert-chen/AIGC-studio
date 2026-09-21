@@ -32,7 +32,8 @@ type passkeyFinishRequest struct {
 }
 
 type passkeyVerifyBeginRequest struct {
-	Scope string `json:"scope"`
+	Scope   string                        `json:"scope"`
+	Binding *service.SecurityProofBinding `json:"binding,omitempty"`
 }
 
 func parsePasskeyFinishRequest(c *gin.Context) (*passkeyFinishRequest, error) {
@@ -510,6 +511,10 @@ func PasskeyVerifyBegin(c *gin.Context) {
 		common.ApiError(c, errors.New("不支持的安全验证范围"))
 		return
 	}
+	if err := validateSecurityProofRequestBinding(request.Scope, request.Binding); err != nil {
+		common.ApiError(c, errors.New("安全验证请求绑定无效"))
+		return
+	}
 
 	credential, err := model.GetPasskeyByUserID(user.Id)
 	if err != nil {
@@ -538,11 +543,12 @@ func PasskeyVerifyBegin(c *gin.Context) {
 		common.ApiError(c, errors.New("当前认证方式不支持安全验证"))
 		return
 	}
-	flowToken, expiresAt, err := passkeysvc.CreateSessionDataFlow(
+	flowToken, expiresAt, err := passkeysvc.CreateSessionDataFlowWithBinding(
 		model.AuthFlowPurposePasskeyStepUp,
 		user.Id,
 		identity.SessionID,
 		request.Scope,
+		request.Binding,
 		sessionData,
 	)
 	if err != nil {
@@ -610,7 +616,7 @@ func PasskeyVerifyFinish(c *gin.Context) {
 		common.ApiError(c, errors.New("当前认证方式不支持安全验证"))
 		return
 	}
-	sessionData, scope, err := passkeysvc.PopSessionDataFlow(
+	sessionData, scope, bindingRaw, err := passkeysvc.PopSessionDataFlowWithBinding(
 		request.FlowToken,
 		model.AuthFlowPurposePasskeyStepUp,
 		user.Id,
@@ -618,6 +624,18 @@ func PasskeyVerifyFinish(c *gin.Context) {
 	)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	var binding *service.SecurityProofBinding
+	if len(bindingRaw) != 0 {
+		binding = &service.SecurityProofBinding{}
+		if err := common.Unmarshal(bindingRaw, binding); err != nil {
+			common.ApiError(c, errors.New("Passkey 安全验证请求绑定无效"))
+			return
+		}
+	}
+	if err := validateSecurityProofRequestBinding(scope, binding); err != nil {
+		common.ApiError(c, errors.New("Passkey 安全验证请求绑定无效"))
 		return
 	}
 
@@ -633,7 +651,7 @@ func PasskeyVerifyFinish(c *gin.Context) {
 		return
 	}
 
-	proofToken, proofExpiresAt, err := service.IssueSecurityProof(identity, secureVerificationMethodPasskey, []string{scope})
+	proofToken, proofExpiresAt, err := issueSecurityProofForRequest(identity, secureVerificationMethodPasskey, scope, binding)
 	if err != nil {
 		common.ApiError(c, err)
 		return

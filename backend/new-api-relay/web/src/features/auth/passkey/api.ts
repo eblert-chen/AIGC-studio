@@ -20,6 +20,7 @@ import { api } from '@/lib/api'
 
 import type {
   SecurityProof,
+  SecurityProofBinding,
   SecurityProofScope,
 } from '../secure-verification/types'
 import type { ApiResponse, PasskeyOptionsPayload, PasskeyStatus } from './types'
@@ -28,8 +29,12 @@ function proofHeaders(proofToken?: string): Record<string, string> | undefined {
   return proofToken ? { 'X-Security-Proof': proofToken } : undefined
 }
 
-export async function getPasskeyStatus(): Promise<ApiResponse<PasskeyStatus>> {
-  const res = await api.get<ApiResponse<PasskeyStatus>>('/api/user/passkey')
+export async function getPasskeyStatus(
+  signal?: AbortSignal
+): Promise<ApiResponse<PasskeyStatus>> {
+  const res = await api.get<ApiResponse<PasskeyStatus>>('/api/user/passkey', {
+    signal,
+  })
   return res.data
 }
 
@@ -90,22 +95,27 @@ export async function finishPasskeyLogin(
 }
 
 export async function beginPasskeyVerification(
-  scope: SecurityProofScope
+  scope: SecurityProofScope,
+  binding?: SecurityProofBinding,
+  signal?: AbortSignal
 ): Promise<ApiResponse<PasskeyOptionsPayload>> {
   const res = await api.post<ApiResponse<PasskeyOptionsPayload>>(
     '/api/user/passkey/verify/begin',
-    { scope }
+    { scope, binding },
+    { signal }
   )
   return res.data
 }
 
 export async function finishPasskeyVerification(
   flowToken: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  signal?: AbortSignal
 ): Promise<ApiResponse<SecurityProof>> {
   const res = await api.post<ApiResponse<SecurityProof>>(
     '/api/user/passkey/verify/finish',
-    { flow_token: flowToken, credential: payload }
+    { flow_token: flowToken, credential: payload },
+    { signal }
   )
   return res.data
 }

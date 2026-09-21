@@ -46,6 +46,42 @@ def _as_utc(value: datetime) -> datetime:
 
 class PublishingService:
     @staticmethod
+    def entitlement_state(
+        session: Session, *, company_id: str
+    ) -> tuple[bool, list[str]]:
+        """Describe the live feature gate without blocking history access."""
+
+        resource = session.scalar(
+            select(ResourceDefinition).where(
+                ResourceDefinition.key == AUTO_PUBLISH_RESOURCE_KEY,
+                ResourceDefinition.kind == ResourceKind.FEATURE,
+            )
+        )
+        if resource is None:
+            return False, ["feature_not_configured"]
+        if not resource.active:
+            return False, ["feature_retired"]
+        grant = session.scalar(
+            select(CompanyResourceGrant).where(
+                CompanyResourceGrant.company_id == company_id,
+                CompanyResourceGrant.resource_id == resource.id,
+            )
+        )
+        if grant is None:
+            return False, ["company_grant_missing"]
+        if not grant.enabled:
+            return False, ["company_grant_disabled"]
+        now = utcnow()
+        if (
+            grant.effective_at is not None
+            and _as_utc(grant.effective_at) > now
+        ):
+            return False, ["company_grant_not_yet_effective"]
+        if grant.expires_at is not None and _as_utc(grant.expires_at) <= now:
+            return False, ["company_grant_expired"]
+        return True, []
+
+    @staticmethod
     def require_entitlement(
         session: Session, *, company_id: str
     ) -> CompanyResourceGrant:

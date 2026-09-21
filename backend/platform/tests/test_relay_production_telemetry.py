@@ -116,6 +116,21 @@ def _task_stage_payload(
     }
 
 
+def _bound_provider_identity(*, route_id: int = 17) -> dict:
+    return {
+        "identity_status": "bound",
+        "provider_name": "google_gemini",
+        "provider_account_id": "google-account-a",
+        "provider_channel_id": 990001,
+        "provider_route_id": route_id,
+        "provider_key_index": 0,
+        "provider_key_fingerprint": "a" * 64,
+        "provider_credential_version": "11111111-1111-4111-8111-111111111111",
+        "route_key": "official-primary",
+        "routing_release_sha256": "sha256:" + ("b" * 64),
+    }
+
+
 def _snapshot_payload(*, observed_at: datetime) -> dict:
     return {
         "schema_version": 1,
@@ -238,6 +253,57 @@ def test_task_stage_is_signed_bound_append_only_and_idempotent(app, client):
         with pytest.raises(RuntimeError, match="immutable"):
             session.flush()
         session.rollback()
+
+
+def test_v2_task_stage_pins_account_and_rejects_key_rotation_for_same_task(
+    app, client
+):
+    now = datetime.now(timezone.utc)
+    company, task = _seed_bound_task(app, now=now)
+    payload = {
+        **_task_stage_payload(company, task, occurred_at=now),
+        "schema_version": 2,
+        **_bound_provider_identity(),
+    }
+    body = _json_bytes(payload)
+    event_id = str(uuid4())
+    created = client.post(
+        "/internal/relay/task-stages",
+        content=body,
+        headers=_signed_headers(body, event_id=event_id),
+    )
+    assert created.status_code == 201, created.text
+
+    with app.state.session_factory() as session:
+        entry = session.get(RelayTaskStageEvent, event_id)
+        stored_task = session.get(GenerationTask, task.id)
+        assert entry is not None
+        assert entry.provider_account_id == "google-account-a"
+        assert entry.provider_key_fingerprint == "a" * 64
+        assert stored_task.provider_route_evidence_sha256 is not None
+        assert stored_task.provider_route_evidence["provider_account_id"] == (
+            "google-account-a"
+        )
+
+    rotated = {
+        **payload,
+        "occurred_at": (now - timedelta(seconds=30)).isoformat(),
+        "provider_key_fingerprint": "c" * 64,
+        "provider_credential_version": "22222222-2222-4222-8222-222222222222",
+    }
+    rotated_body = _json_bytes(rotated)
+    rejected = client.post(
+        "/internal/relay/task-stages",
+        content=rotated_body,
+        headers=_signed_headers(rotated_body),
+    )
+    assert rejected.status_code == 409, rejected.text
+    with app.state.session_factory() as session:
+        assert session.query(RelayTaskStageEvent).count() == 1
+        stored_task = session.get(GenerationTask, task.id)
+        assert stored_task.provider_route_evidence["provider_key_fingerprint"] == (
+            "a" * 64
+        )
 
 
 def test_task_stage_rejects_unbound_relay_job(app, client):

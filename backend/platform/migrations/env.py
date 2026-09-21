@@ -56,6 +56,22 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
+        sqlite_trigger_backed_check_constraints = {
+            "ck_channel_cost_provider_identity_complete",
+            "ck_channel_cost_provider_identity_status",
+            "ck_channel_cost_schema",
+            "ck_model_commercial_execution_receipt_complete",
+            "ck_model_commercial_execution_receipt_sha",
+            "ck_model_commercial_execution_route_sha",
+            "ck_model_commercial_plan_route_identity_complete",
+            "ck_model_commercial_plan_route_identity_sha",
+            "ck_relay_task_stage_provider_identity_complete",
+            "ck_relay_task_stage_provider_identity_status",
+            "ck_relay_task_stage_unassigned_route",
+            "ck_task_provider_route_evidence_complete",
+            "ck_task_provider_route_evidence_sha",
+        }
+
         def include_object(
             object_,
             name,
@@ -63,7 +79,7 @@ def run_migrations_online() -> None:
             reflected,
             compare_to,
         ) -> bool:
-            del name, compare_to
+            del compare_to
             if (
                 connection.dialect.name == "sqlite"
                 and type_ == "foreign_key_constraint"
@@ -77,6 +93,18 @@ def run_migrations_online() -> None:
                 # an insert-time trigger. Rebuilding the immutable legacy
                 # ledger table would discard dialect-specific evidence checks
                 # and append-only guards. PostgreSQL retains the real FK.
+                return False
+            if (
+                connection.dialect.name == "sqlite"
+                and type_ == "check_constraint"
+                and not reflected
+                and name in sqlite_trigger_backed_check_constraints
+            ):
+                # Revision 0051 enforces these checks with INSERT/UPDATE
+                # triggers on SQLite. Rebuilding the immutable task, cost, and
+                # release tables merely to materialize equivalent CHECK clauses
+                # would temporarily invalidate cross-table append-only triggers.
+                # PostgreSQL keeps the matching native CHECK constraints.
                 return False
             return True
 

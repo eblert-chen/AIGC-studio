@@ -6,14 +6,15 @@
  * independent surfaces are not restyled by accident.
  *
  * Size contract: compact 32px, default 40px, touch/primary 44px.
- * Shape contract: controls use 6px corners; pills remain semantic exceptions.
+ * Shape contract: interactive controls use a purposeful 10px corner. Pills,
+ * tables, and structural dividers remain explicit semantic exceptions.
  */
 
 :is(.app-shell, .control-shell, .ops-console) {
   --control-size-compact: var(--control-sm, 32px);
   --control-size-default: var(--control-md, 40px);
   --control-size-touch: var(--control-lg, 44px);
-  --control-corner: var(--radius-control, 6px);
+  --control-corner: var(--radius-control, 10px);
   --control-font-size: var(--text-control, 0.875rem);
   --control-label-size: var(--text-caption, 0.75rem);
   --control-table-size: var(--text-body-sm, 0.8125rem);
@@ -25,14 +26,17 @@
   --control-surface-hover: var(--surface-hover, #f7f9f8);
   --control-text: var(--control-ink, var(--text, #171a18));
   --control-text-secondary: var(--text-soft, var(--secondary-ink, #4d5550));
-  --control-text-muted: var(--text-muted, var(--quiet, #68716b));
-  --control-accent: var(--accent, #26784a);
-  --control-accent-hover: var(--accent-strong, #1f693f);
+  --control-text-muted: var(--text-muted, var(--quiet, #656b74));
+  --control-accent: var(--accent, #0d47d9);
+  --control-accent-hover: var(--accent-strong, #0837b1);
   --control-accent-ink: var(--accent-ink, #fff);
-  --control-accent-soft: var(--accent-soft, #eaf4ee);
+  --control-accent-soft: var(--accent-soft, #edf2ff);
+  --control-signal: var(--signal, #ce360a);
+  --control-signal-hover: var(--signal-strong, #a92a06);
+  --control-signal-soft: var(--signal-soft, #fff0e9);
   --control-danger: var(--danger, #c6423c);
   --control-danger-soft: var(--danger-soft, #fff3f2);
-  --control-focus-ring: var(--focus-ring, var(--accent, #26784a));
+  --control-focus-ring: var(--focus-ring, var(--accent, #0d47d9));
   --control-disabled-opacity: 0.48;
 }
 
@@ -44,13 +48,13 @@
   --control-text: var(--ops-ink, #16251f);
   --control-text-secondary: var(--ops-ink-soft, #364842);
   --control-text-muted: var(--ops-muted, #5f6d68);
-  --control-accent: var(--ops-accent, #087766);
-  --control-accent-hover: var(--ops-accent-dark, #066858);
+  --control-accent: var(--ops-accent, #0d47d9);
+  --control-accent-hover: var(--ops-accent-dark, #0837b1);
   --control-accent-ink: #fff;
-  --control-accent-soft: var(--ops-accent-soft, #e8f5f2);
+  --control-accent-soft: var(--ops-accent-soft, #edf2ff);
   --control-danger: var(--ops-red, #bd3333);
   --control-danger-soft: var(--ops-red-soft, #fff2f1);
-  --control-focus-ring: var(--ops-focus-ring, var(--ops-accent, #087766));
+  --control-focus-ring: var(--ops-focus-ring, var(--ops-accent, #0d47d9));
 }
 
 .demo-account-switcher .demo-account-origin {
@@ -69,10 +73,6 @@
 }
 
 /* Native form controls */
-
-:is(.app-shell, .control-shell, .ops-console) .skin-switcher select {
-  min-height: var(--control-size-compact);
-}
 
 :is(.app-shell, .control-shell, .ops-console)
   :is(input, select, textarea) {
@@ -175,7 +175,7 @@
 }
 
 :is(.app-shell, .control-shell, .ops-console)
-  :is(.demo-account-switcher, .skin-switcher) {
+  .demo-account-switcher {
   display: inline-flex;
   min-width: 0;
   min-height: var(--control-size-default);
@@ -190,21 +190,21 @@
 }
 
 :is(.app-shell, .control-shell, .ops-console)
-  :is(.demo-account-switcher, .skin-switcher):hover,
+  .demo-account-switcher:hover,
 :is(.app-shell, .control-shell, .ops-console)
-  :is(.demo-account-switcher, .skin-switcher):focus-within {
+  .demo-account-switcher:focus-within {
   border-color: var(--control-border-color);
   background: var(--control-surface-hover);
 }
 
 :is(.app-shell, .control-shell, .ops-console)
-  :is(.demo-account-switcher, .skin-switcher) > svg {
+  .demo-account-switcher > svg {
   flex: 0 0 auto;
   color: var(--control-accent);
 }
 
 :is(.app-shell, .control-shell, .ops-console)
-  :is(.demo-account-switcher, .skin-switcher) select {
+  .demo-account-switcher select {
   width: auto;
   min-width: 0;
   max-width: 176px;
@@ -217,6 +217,247 @@
   background: transparent;
   font-size: var(--control-label-size);
   font-weight: var(--control-strong-weight);
+}
+
+/* Shared light-skin chooser ------------------------------------------------
+ * The browser-native option popup cannot carry the product's interaction or
+ * material language. This menu button is shared by Studio, Company,
+ * Operations, account preferences, and eligible authentication surfaces. */
+
+.skin-switcher {
+  position: relative;
+  display: inline-flex;
+  min-width: 86px;
+  min-height: var(--control-size-default, var(--control-md, 40px));
+  flex: 0 0 auto;
+  align-items: stretch;
+}
+
+.skin-switcher-trigger {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-size-default, var(--control-md, 40px));
+  grid-template-columns: auto minmax(0, auto) auto;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 8px 0 7px;
+  border: 1px solid var(--control-border-subtle, var(--line, #dedfdc));
+  border-radius: var(--control-corner, var(--radius-control, 10px));
+  color: var(--control-text, var(--text, #171a20));
+  background: var(--control-surface, var(--surface, #fff));
+  font: inherit;
+  font-size: var(--control-label-size, var(--text-caption, 12px));
+  font-weight: var(--control-strong-weight, var(--weight-semibold, 600));
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast, 100ms) ease,
+    background-color var(--duration-fast, 100ms) ease;
+}
+
+.skin-switcher-trigger:hover {
+  border-color: var(--control-border-color, var(--line-strong, #c9cbc7));
+  background: var(--control-surface-hover, var(--surface-hover, #ecefed));
+}
+
+.skin-switcher[data-open="true"] .skin-switcher-trigger {
+  border-color: var(--control-accent, var(--accent, #0d47d9));
+  background: var(--control-accent-soft, var(--accent-soft, #edf2ff));
+}
+
+.skin-switcher-trigger:focus-visible,
+.skin-switcher-option:focus-visible {
+  outline: 2px solid var(--control-focus-ring, var(--focus-ring, #0d47d9));
+  outline-offset: 2px;
+}
+
+.skin-switcher-current {
+  min-width: 2em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skin-switcher-caret {
+  flex: 0 0 auto;
+  color: var(--control-text-muted, var(--text-muted, #656b74));
+  transition: transform var(--duration-base, 160ms) var(--ease-out, ease-out);
+}
+
+.skin-switcher[data-open="true"] .skin-switcher-caret {
+  transform: rotate(180deg);
+}
+
+.skin-switcher-sample {
+  --skin-sample-bg: var(--skin-paper-bg, #f6f6f2);
+  --skin-sample-surface: var(--skin-paper-surface, #fff);
+  --skin-sample-line: var(--skin-paper-line, #c9cbc7);
+  position: relative;
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--skin-sample-line);
+  border-radius: 1px;
+  background: var(--skin-sample-bg);
+}
+
+.skin-switcher-sample > span {
+  position: absolute;
+  inset: 4px 3px 3px;
+  background: var(--skin-sample-surface);
+  box-shadow: inset 0 0 0 1px var(--skin-sample-line);
+}
+
+.skin-switcher-sample > span::before,
+.skin-switcher-sample > span::after {
+  position: absolute;
+  right: 3px;
+  left: 4px;
+  height: 1px;
+  content: "";
+  background: color-mix(in srgb, var(--skin-sample-line) 78%, var(--text, #171a20));
+}
+
+.skin-switcher-sample > span::before { top: 4px; }
+.skin-switcher-sample > span::after { top: 7px; right: 6px; }
+
+.skin-switcher-sample[data-skin-sample="mist"] {
+  --skin-sample-bg: var(--skin-mist-bg, #eef0f2);
+  --skin-sample-surface: var(--skin-mist-surface, #fbfcfc);
+  --skin-sample-line: var(--skin-mist-line, #bac0c6);
+}
+
+.skin-switcher-sample[data-skin-sample="warm"] {
+  --skin-sample-bg: var(--skin-warm-bg, #f4f0e8);
+  --skin-sample-surface: var(--skin-warm-surface, #fffdf9);
+  --skin-sample-line: var(--skin-warm-line, #c8bdad);
+}
+
+.skin-switcher-sample.is-large {
+  width: 38px;
+  height: 32px;
+}
+
+.skin-switcher-sample.is-large > span {
+  inset: 6px 6px 5px;
+}
+
+.skin-switcher-sample.is-large > span::before { top: 6px; }
+.skin-switcher-sample.is-large > span::after { top: 10px; right: 9px; }
+
+.skin-switcher-menu {
+  position: fixed;
+  z-index: 1000;
+  box-sizing: border-box;
+  padding: 8px;
+  border-radius: var(--radius-md, 4px);
+  color: var(--text, #171a20);
+  background: var(--surface-elevated, var(--surface, #fff));
+  box-shadow: var(--shadow-menu, 0 16px 40px rgba(17, 22, 31, 0.14));
+  font-family: var(--font-sans, sans-serif);
+  animation: skin-switcher-menu-enter var(--duration-base, 160ms) var(--ease-out, ease-out) both;
+}
+
+.skin-switcher-menu-heading {
+  display: flex;
+  min-height: 42px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px 10px;
+  border-block-end: 1px solid var(--line, #dedfdc);
+}
+
+.skin-switcher-menu-heading strong {
+  font-size: 13px;
+  font-weight: var(--weight-bold, 700);
+  letter-spacing: -0.01em;
+}
+
+.skin-switcher-menu-heading span {
+  color: var(--text-muted, #656b74);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.skin-switcher-options {
+  display: grid;
+  gap: 2px;
+  padding-block-start: 5px;
+}
+
+.skin-switcher-option {
+  display: grid;
+  width: 100%;
+  min-height: 52px;
+  grid-template-columns: 38px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm, 2px);
+  color: var(--text, #171a20);
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.skin-switcher-option:hover,
+.skin-switcher-option:focus-visible {
+  background: var(--surface-hover, #ecefed);
+}
+
+.skin-switcher-option[aria-checked="true"] {
+  color: var(--accent-strong, #0837b1);
+  background: var(--accent-soft, #edf2ff);
+}
+
+.skin-switcher-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.skin-switcher-option-copy strong {
+  font-size: 13px;
+  font-weight: var(--weight-semibold, 600);
+  line-height: 1.25;
+}
+
+.skin-switcher-option-copy small {
+  color: var(--text-muted, #656b74);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.skin-switcher-option-check {
+  visibility: hidden;
+  color: var(--accent, #0d47d9);
+}
+
+.skin-switcher-option[aria-checked="true"] .skin-switcher-option-check {
+  visibility: visible;
+}
+
+@keyframes skin-switcher-menu-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skin-switcher-caret { transition: none; }
+  .skin-switcher-menu { animation: none; }
 }
 
 :is(.app-shell, .control-shell, .ops-console)
@@ -268,7 +509,6 @@
     .creation-pagination button,
     .creation-task-preview-load,
     .creation-task-open,
-    .composer-settings-button,
     .task-action,
     .text-button,
     .download-button,
@@ -294,17 +534,6 @@
     border-color 120ms ease,
     background-color 120ms ease,
     transform 80ms ease;
-}
-
-/* This control has two icons and a visible label, so it must never collapse
- * into the square icon-button contract used by adjacent toolbar actions. */
-
-:is(.app-shell, .control-shell, .ops-console) .composer-settings-button {
-  flex: 0 0 auto;
-  width: auto;
-  min-width: max-content;
-  padding-inline: 10px;
-  white-space: nowrap;
 }
 
 @media (max-width: 620px) {
@@ -402,6 +631,31 @@
   background-color: var(--control-accent-hover);
 }
 
+/* Creation and publishing are deliberate production side effects. Signal
+ * orange owns those actions while navigation and selected state use violet.
+ * Company and Operations primary actions retain their selection contract. */
+.app-shell
+  :is(
+    .generate-button,
+    .publication-center .publication-primary-button,
+    .publication-center form > footer button.is-primary
+  ) {
+  border-color: var(--control-signal);
+  color: #fff;
+  background-color: var(--control-signal);
+}
+
+.app-shell
+  :is(
+    .generate-button,
+    .publication-center .publication-primary-button,
+    .publication-center form > footer button.is-primary
+  ):hover:not(:disabled) {
+  border-color: var(--control-signal-hover);
+  color: #fff;
+  background-color: var(--control-signal-hover);
+}
+
 :is(.app-shell, .control-shell, .ops-console)
   :is(
     button.is-danger,
@@ -482,7 +736,7 @@
       .surface-switch,
       .surface-switch button,
       .skin-switcher,
-      .skin-switcher select,
+      .skin-switcher-trigger,
       .icon-button,
       .user-button
     ) {
@@ -528,8 +782,6 @@
       .community-card-overlay button,
       .composer-media-tabs button,
       .composer-mode-rail button,
-      .composer-settings-button,
-      .composer-add-media,
       .community-composer .generate-button,
       .community-composer select
     ) {
@@ -611,23 +863,21 @@
   }
 
   .app-shell[data-theme] > .topbar .skin-switcher {
-    width: 54px;
-    min-width: 54px;
+    width: var(--control-size-touch);
+    min-width: var(--control-size-touch);
     height: var(--control-size-touch);
-    flex: 0 0 54px;
-    gap: 0;
+    flex: 0 0 var(--control-size-touch);
+  }
+
+  .app-shell[data-theme] > .topbar .skin-switcher-trigger {
+    width: var(--control-size-touch);
+    min-width: var(--control-size-touch);
     padding: 0;
   }
 
-  .app-shell[data-theme] > .topbar .skin-switcher svg {
+  .app-shell[data-theme] > .topbar .skin-switcher-current,
+  .app-shell[data-theme] > .topbar .skin-switcher-caret {
     display: none;
-  }
-
-  .app-shell[data-theme] > .topbar .skin-switcher select {
-    width: 52px;
-    min-width: 52px;
-    max-width: 52px;
-    padding-inline: 2px;
   }
 }
 

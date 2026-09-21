@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"gorm.io/gorm"
 
 	"github.com/bytedance/gopkg/util/gopool"
 )
@@ -51,14 +52,21 @@ func CodexCredentialAutoRefreshEnabled() (bool, error) {
 // a protected process rejects active Codex channels instead of risking loss of
 // the only new refresh token during a lifecycle fence transition.
 func ValidateCodexCredentialAutoRefreshLifecycle(enabled, protected bool) error {
+	return ValidateCodexCredentialAutoRefreshLifecycleWithDB(model.DB, enabled, protected)
+}
+
+func ValidateCodexCredentialAutoRefreshLifecycleWithDB(db *gorm.DB, enabled, protected bool) error {
 	if !protected {
 		return nil
 	}
 	if enabled {
 		return errors.New("protected Relay requires Codex credential auto-refresh to be disabled")
 	}
+	if db == nil {
+		return errors.New("protected Relay could not inspect Codex channel lifecycle state")
+	}
 	var channelCount int64
-	err := model.DB.Model(&model.Channel{}).
+	err := db.Model(&model.Channel{}).
 		Where("type = ? AND status IN ?", constant.ChannelTypeCodex, []int{common.ChannelStatusEnabled, common.ChannelStatusAutoDisabled}).
 		Count(&channelCount).Error
 	if err != nil {

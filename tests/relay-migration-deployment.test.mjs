@@ -91,10 +91,33 @@ test("makes new-api the only ordinary Platform Relay data plane", () => {
     /RELAY_OPERATIONS_BASE_URL:\s*\$\{PLATFORM_RELAY_OPERATIONS_BASE_URL:-http:\/\/relay-new-api:3000\}/,
   );
   assert.match(envExample, /^PLATFORM_RELAY_OPERATIONS_BASE_URL=http:\/\/relay-new-api:3000$/m);
-  assert.equal(
-    [...compose.matchAll(/environment:\s*\*platform-environment/g)].length,
-    5,
-    "every long-running Platform process must share the same Relay selector",
+  assert.match(
+    compose,
+    /^x-platform-api-environment:\s*&platform-api-environment\r?\n\s+<<:\s*\*platform-environment$/m,
+    "the API-only environment must inherit the shared Relay selector",
+  );
+  assert.match(
+    serviceBlock("platform-api"),
+    /environment:\s*\*platform-api-environment/,
+    "the API must use its browser-aware environment derived from the shared Relay selector",
+  );
+  for (const service of [
+    "platform-dispatcher",
+    "platform-relay-sync",
+    "platform-relay-catalog-sync",
+    "platform-timeout-worker",
+    "platform-publishing-worker",
+  ]) {
+    assert.match(
+      serviceBlock(service),
+      /environment:\s*\*platform-environment/,
+      `${service} must use the shared Relay selector`,
+    );
+  }
+  assert.match(
+    serviceBlock("platform-download-gateway-registration-worker"),
+    /environment:\s*\r?\n\s+<<:\s*\*platform-environment/,
+    "the download registration worker must inherit the shared Relay selector before narrowing its own settings",
   );
   assert.match(
     serviceBlock("platform-api"),
@@ -133,6 +156,7 @@ test("makes the new-api Relay the default isolated data plane", () => {
     "platform-api",
     "platform-dispatcher",
     "platform-relay-sync",
+    "platform-relay-catalog-sync",
     "platform-timeout-worker",
     "platform-publishing-worker",
     "platform-download-gateway-registration-worker",
@@ -222,8 +246,9 @@ test("wires signed new-api telemetry through the example, Compose, and deploymen
   );
   assert.match(deploymentRunbook, /RELAY_PLATFORM_TASK_STAGE_URL=https:\/\//);
   assert.match(deploymentRunbook, /RELAY_PLATFORM_OPERATIONS_SNAPSHOT_URL=https:\/\//);
-  assert.match(deploymentRunbook, /0040_showcase_management/);
-  assert.match(deploymentRunbook, /0039_new_api_relay_defaults/);
+  assert.match(deploymentRunbook, /0045_system_audit_actor/);
+  assert.match(deploymentRunbook, /0044_account_product_partition/);
+  assert.match(deploymentRunbook, /0041_model_capability_releases/);
   assert.match(deploymentRunbook, /0038_download_evidence_checks/);
   assert.doesNotMatch(
     deploymentRunbook,

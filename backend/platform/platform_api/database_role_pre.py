@@ -1,7 +1,7 @@
 """One-shot protected PostgreSQL role and ownership predecessor.
 
 The command is intentionally separate from Alembic and every long-lived
-Platform process.  It snapshots its nine owner-only sources once, verifies the
+Platform process.  It snapshots every owner-only source once, verifies the
 global networkless isolation receipt, seals the committed CA bytes in memory,
 and only then opens PostgreSQL.  All failures are deliberately value-free.
 """
@@ -146,6 +146,12 @@ _PASSWORD_SOURCES = tuple(
             "PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE",
             "platform_relay_sync_password",
             "platform.relay_sync",
+        ),
+        (
+            "relay-catalog-sync",
+            "PLATFORM_RELAY_CATALOG_SYNC_DATABASE_PASSWORD_FILE",
+            "platform_relay_catalog_sync_password",
+            "platform.relay_catalog_sync",
         ),
         (
             "timeout-worker",

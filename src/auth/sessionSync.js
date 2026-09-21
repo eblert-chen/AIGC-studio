@@ -6,6 +6,7 @@ const SAFE_EVENT_TYPES = new Set([
   "deactivated",
   "invalidated",
   "logout",
+  "product_context_changed",
   "revoke_all",
   "session_revoked",
 ]);

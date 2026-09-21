@@ -47,6 +47,7 @@ type relayDatabaseRoleAttestation struct {
 	CreateDatabase              bool   `gorm:"column:create_database"`
 	CreateRole                  bool   `gorm:"column:create_role"`
 	Replication                 bool   `gorm:"column:replication"`
+	Inherits                    bool   `gorm:"column:inherits"`
 	CanLogin                    bool   `gorm:"column:can_login"`
 	SafeSearchPath              bool   `gorm:"column:safe_search_path"`
 	CanCreateDatabase           bool   `gorm:"column:can_create_database"`
@@ -80,8 +81,9 @@ SELECT
   role.rolsuper AS superuser,
   role.rolbypassrls AS bypass_rls,
   role.rolcreatedb AS create_database,
-  role.rolcreaterole AS create_role,
+	role.rolcreaterole AS create_role,
 	role.rolreplication AS replication,
+	role.rolinherit AS inherits,
 	role.rolcanlogin AS can_login,
 	current_setting('search_path') = 'public' AND
 	current_schema() = 'public' AND
@@ -1393,12 +1395,32 @@ func GetRelayRuntimeDatabaseRoleStatus(db *gorm.DB) (RelayRuntimeDatabaseRoleSta
 	if !status.Required {
 		return status, nil
 	}
-	if err := VerifyRelayDatabaseTLS(db); err != nil {
-		return status, err
-	}
 	if db == nil || db.Dialector.Name() != "postgres" {
 		status.State = "unavailable"
 		return status, errors.New("production Relay runtime requires PostgreSQL")
+	}
+	connectionStatus := status
+	err := db.Connection(func(connection *gorm.DB) error {
+		var connectionErr error
+		connectionStatus, connectionErr = getRelayRuntimeDatabaseRoleStatusOnConnection(relayPinnedConnectionSession(connection))
+		return connectionErr
+	})
+	return connectionStatus, err
+}
+
+// relayPinnedConnectionSession preserves GORM's dedicated sql.Conn while
+// restoring normal statement isolation. GORM's Connection callback exposes a
+// clone=0 DB; reusing it directly lets Raw/Scan retain Model, Dest, and Table
+// state across otherwise independent catalog queries. In particular, that
+// stale table name can make Migrator.HasTable inspect the wrong relation.
+func relayPinnedConnectionSession(connection *gorm.DB) *gorm.DB {
+	return connection.Session(&gorm.Session{NewDB: true})
+}
+
+func getRelayRuntimeDatabaseRoleStatusOnConnection(db *gorm.DB) (RelayRuntimeDatabaseRoleStatus, error) {
+	status := RelayRuntimeDatabaseRoleStatus{Required: true, State: "healthy"}
+	if err := VerifyRelayDatabaseTLS(db); err != nil {
+		return status, err
 	}
 	expected := strings.TrimSpace(os.Getenv(relayRuntimeDatabaseRoleEnvironment))
 	ownerRole := strings.TrimSpace(os.Getenv(relaySchemaOwnerRoleEnvironment))
@@ -1423,7 +1445,7 @@ func GetRelayRuntimeDatabaseRoleStatus(db *gorm.DB) (RelayRuntimeDatabaseRoleSta
 	}
 	status.Role = value.CurrentUser
 	if value.SessionUser != expected || value.CurrentUser != expected || !value.CanLogin || !value.SafeSearchPath || value.Superuser || value.BypassRLS ||
-		value.CreateDatabase || value.CreateRole || value.Replication || value.CanCreateDatabase ||
+		value.CreateDatabase || value.CreateRole || value.Replication || value.Inherits || value.CanCreateDatabase ||
 		value.CanCreatePublicSchema || value.CanCreateTemporary ||
 		value.OwnsApplicationObject || value.CanAssumeDangerousRole || value.CanTruncateApplicationTable {
 		status.State = "unavailable"
@@ -1438,7 +1460,10 @@ func GetRelayRuntimeDatabaseRoleStatus(db *gorm.DB) (RelayRuntimeDatabaseRoleSta
 		status.State = "unavailable"
 		return status, errors.New("Relay runtime database role owns a forbidden database object")
 	}
-	if err := verifyRelayDatabaseRoleTopology(db, ownerRole, migrationRole, expected); err != nil {
+	// This exported one-shot verifier remains the full/offline gate. Serving
+	// readiness uses RelayRuntimeDatabaseRoleProof instead; do not weaken this
+	// path to the live-only topology helper.
+	if err := verifyRelayDatabaseRoleTopologyAfterExactSurface(db, ownerRole, migrationRole, expected); err != nil {
 		status.State = "unavailable"
 		return status, err
 	}
@@ -1457,7 +1482,7 @@ func GetRelayRuntimeDatabaseRoleStatus(db *gorm.DB) (RelayRuntimeDatabaseRoleSta
 		status.State = "unavailable"
 		return status, err
 	}
-	if err := verifyRelayRuntimeDatabasePrivilegeManifest(db, expected, schemaStatus.CurrentVersion); err != nil {
+	if err := verifyRelayRuntimeDatabasePrivilegeManifestOptimized(db, expected, schemaStatus.CurrentVersion); err != nil {
 		status.State = "unavailable"
 		return status, err
 	}
@@ -1465,7 +1490,7 @@ func GetRelayRuntimeDatabaseRoleStatus(db *gorm.DB) (RelayRuntimeDatabaseRoleSta
 	// The migrator deliberately accepts the exact A/B/C edge states for
 	// idempotent recovery, but a serving runtime must observe only deployed A:
 	// LOGIN plus the exact versioned edge privilege manifest.
-	if err := verifyRelayDownloadEdgeCurrentDatabaseRole(db, schemaStatus.CurrentVersion, true); err != nil {
+	if err := verifyRelayDownloadEdgeCurrentDatabaseRoleOptimizedAfterTopology(db, schemaStatus.CurrentVersion, true); err != nil {
 		status.State = "unavailable"
 		return status, errors.New("Relay download edge database role is not finalized")
 	}
@@ -1635,7 +1660,12 @@ WHERE session_role.rolname = session_user AND owner_role.rolname = current_user`
 	return nil
 }
 
-func verifyRelayDatabaseRoleTopology(db *gorm.DB, ownerRole string, migrationRole string, runtimeRole string) error {
+// verifyRelayDatabaseRoleLiveTopology is the bounded serving-path role proof.
+// It keeps current-database role attributes, membership, public-schema CREATE
+// topology, application ownership and fixed role settings live on every probe.
+// Cluster-wide/shared/system semantic surfaces remain in the full startup and
+// background-refresh proof below.
+func verifyRelayDatabaseRoleLiveTopology(db *gorm.DB, ownerRole string, migrationRole string, runtimeRole string) error {
 	var topology struct {
 		PublicOwnerExact       bool  `gorm:"column:public_owner_exact"`
 		OwnerCanCreate         bool  `gorm:"column:owner_can_create"`
@@ -1735,10 +1765,24 @@ WHERE owner.oid = roles.owner_oid AND migrator.oid = roles.migrator_oid`, ownerR
 	if err := verifyRelayProtectedRoleSettings(db, ownerRole, migrationRole, runtimeRole); err != nil {
 		return err
 	}
+	return nil
+}
+
+func verifyRelayDatabaseRoleTopologyAfterExactSurface(db *gorm.DB, ownerRole string, migrationRole string, runtimeRole string) error {
+	if err := verifyRelayDatabaseRoleLiveTopology(db, ownerRole, migrationRole, runtimeRole); err != nil {
+		return err
+	}
 	if err := verifyRelayProtectedRoleClusterBinding(db, ownerRole, migrationRole, runtimeRole); err != nil {
 		return err
 	}
 	if err := verifyRelayProtectedRoleParameterPrivileges(db, ownerRole, migrationRole, runtimeRole, relayDownloadEdgeDatabaseRoleName); err != nil {
+		return err
+	}
+	return nil
+}
+
+func verifyRelayDatabaseRoleTopology(db *gorm.DB, ownerRole string, migrationRole string, runtimeRole string) error {
+	if err := verifyRelayDatabaseRoleTopologyAfterExactSurface(db, ownerRole, migrationRole, runtimeRole); err != nil {
 		return err
 	}
 	return verifyRelayProtectedDatabaseSurfacePreflight(db, ownerRole, migrationRole, runtimeRole, true)

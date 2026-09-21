@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
+import pytest
+
+from platform_api.dependencies import PlatformAdminContext, require_platform_admin
 from platform_api.models import AuditLog, RelayChannelOperationJournal, User
 from platform_api.relay_client import (
     RelayChannel,
@@ -22,6 +25,43 @@ CHANNEL_REVISION = "sha256:" + "d" * 64
 CHANNEL_RESULT_REVISION = "sha256:" + "e" * 64
 TEST_OPERATION_ID = "channel-test-operation-0001"
 STATUS_OPERATION_ID = "channel-status-operation-0001"
+RECONCILE_OPERATION_ID = "channel-route-test-unknown-0001"
+
+
+def _managed_channel_with_routing(*, priority: int, weight: int) -> RelayChannel:
+    return RelayChannel(
+        id=CHANNEL_ID,
+        name="Managed provider primary",
+        type=1,
+        type_label="Official provider",
+        test_supported=True,
+        status="enabled",
+        configured_models=["video-v1"],
+        test_model="video-v1",
+        weight=weight,
+        priority=priority,
+        auto_ban=True,
+        tag="platform-provider-onboarding-v1",
+        provider_onboarding_managed=True,
+        created_at=datetime.now(timezone.utc),
+        last_tested_at=None,
+        response_time_ms=None,
+        credential=RelayChannelCredentialState(configured=True, key_count=1),
+        revision=CHANNEL_REVISION,
+    )
+
+
+def test_managed_channel_routing_bounds_match_relay_contract() -> None:
+    channel = _managed_channel_with_routing(priority=-1_000_000, weight=1)
+    assert channel.priority == -1_000_000
+    assert channel.weight == 1
+
+    with pytest.raises(ValueError):
+        _managed_channel_with_routing(priority=-1_000_001, weight=1)
+    with pytest.raises(ValueError):
+        _managed_channel_with_routing(priority=0, weight=0)
+    with pytest.raises(ValueError):
+        _managed_channel_with_routing(priority=0, weight=1_000_001)
 
 
 class FakeChannelRelay:
@@ -49,12 +89,15 @@ class FakeChannelRelay:
         self.operations: dict[str, RelayChannelOperation] = {}
         self.test_calls: list[dict] = []
         self.status_calls: list[dict] = []
+        self.reconciliation_calls: list[dict] = []
+        self.reconciliation_provider_task_conflict = False
         self.fail_after_test_commit_once = False
         self.fail_status_with_revision_conflict_once = False
         self.fail_get_channel_once = False
         self.pending_operation_reads = 0
         self.mismatched_operation_reads = 0
         self.mismatch_submitted_test_receipt_once = False
+        self.require_repost_to_complete_once = False
 
     def list_channels(self, *, page=1, page_size=50, status=None, request_id=None):
         data = [self.channel] if status in {None, self.channel.status} else []
@@ -101,6 +144,9 @@ class FakeChannelRelay:
         operation_id,
         actor,
         reason,
+        public_model_id,
+        route_id,
+        mode=None,
         request_id=None,
     ):
         self.test_calls.append(
@@ -109,9 +155,28 @@ class FakeChannelRelay:
                 "operation_id": operation_id,
                 "actor": actor,
                 "reason": reason,
+                "public_model_id": public_model_id,
+                "route_id": route_id,
+                "mode": mode,
                 "request_id": request_id,
             }
         )
+        existing = self.operations.get(operation_id)
+        if existing is not None:
+            if existing.state == "pending" and self.require_repost_to_complete_once:
+                self.require_repost_to_complete_once = False
+                now = datetime.now(timezone.utc)
+                existing = existing.model_copy(
+                    update={
+                        "state": "succeeded",
+                        "result": RelayChannelTestResult(
+                            success=True, response_time_ms=413, error_code=None
+                        ),
+                        "completed_at": now,
+                    }
+                )
+                self.operations[operation_id] = existing
+            return existing.model_copy(update={"idempotent_replay": True})
         now = datetime.now(timezone.utc)
         result = RelayChannelOperation(
             api_version="v1",
@@ -135,6 +200,10 @@ class FakeChannelRelay:
             completed_at=now,
             idempotent_replay=False,
         )
+        if self.require_repost_to_complete_once:
+            result = result.model_copy(
+                update={"state": "pending", "result": None, "completed_at": None}
+            )
         self.operations[operation_id] = result
         if self.fail_after_test_commit_once:
             self.fail_after_test_commit_once = False
@@ -240,6 +309,59 @@ class FakeChannelRelay:
         self.operations[operation_id] = result
         return result
 
+    def reconcile_channel_test_no_creation(
+        self,
+        channel_id,
+        *,
+        operation_id,
+        actor,
+        reason,
+        confirmed_no_provider_creation,
+        request_id=None,
+    ):
+        self.reconciliation_calls.append(
+            {
+                "channel_id": channel_id,
+                "operation_id": operation_id,
+                "actor": actor,
+                "reason": reason,
+                "confirmed_no_provider_creation": confirmed_no_provider_creation,
+                "request_id": request_id,
+            }
+        )
+        if self.reconciliation_provider_task_conflict:
+            raise RelayPermanentError(
+                "provider-secret-task-1 exists",
+                response_status=409,
+            )
+        now = datetime.now(timezone.utc)
+        return RelayChannelOperation(
+            api_version="v1",
+            schema_version=1,
+            object="relay.channel_control_operation",
+            operation_id=operation_id,
+            tenant_id=TENANT_ID,
+            channel_id=channel_id,
+            kind="test",
+            state="failed",
+            actor="original-platform-admin",
+            reason="Original route-bound channel test",
+            request_id="original-channel-test-request",
+            intent_sha256="c" * 64,
+            result=RelayChannelTestResult(
+                success=False,
+                response_time_ms=0,
+                error_code="CHANNEL_TEST_RECONCILED_NO_CREATION",
+            ),
+            provider_submission_state="reconciled_no_creation",
+            reconciliation_actor=actor,
+            reconciliation_reason=reason,
+            reconciled_at=now,
+            created_at=now,
+            completed_at=now,
+            idempotent_replay=False,
+        )
+
 
 def _admin(app) -> str:
     with app.state.session_factory.begin() as session:
@@ -265,6 +387,8 @@ def _test_body() -> dict:
         "operation_id": TEST_OPERATION_ID,
         "reason": "Verify the official channel before enabling traffic",
         "approved": True,
+        "public_model_id": "seedance-1.5-pro",
+        "route_id": "volcengine-seedance-primary-01",
     }
 
 
@@ -320,6 +444,8 @@ def test_platform_admin_reads_tests_and_audits_secret_free_channels(
     assert len(relay.test_calls) == 1
     assert relay.test_calls[0]["actor"] == admin_id
     assert relay.test_calls[0]["request_id"] == "platform-channel-test-request"
+    assert relay.test_calls[0]["public_model_id"] == "seedance-1.5-pro"
+    assert relay.test_calls[0]["route_id"] == "volcengine-seedance-primary-01"
 
     with app.state.session_factory() as session:
         journal = session.query(RelayChannelOperationJournal).one()
@@ -347,6 +473,374 @@ def test_platform_admin_reads_tests_and_audits_secret_free_channels(
         ).casefold()
         for forbidden in ("base_url", "settings", "header", "proxy", "secret"):
             assert forbidden not in serialized
+
+
+def test_platform_admin_binds_channel_test_mode_into_journal_and_relay_call(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+    body = {
+        **_test_body(),
+        "operation_id": "channel-test-image-mode-0001",
+        "mode": "image_to_video",
+    }
+
+    response = client.post(
+        f"/api/v1/platform-admin/relay/channels/{CHANNEL_ID}/test",
+        headers=_headers(admin_id, "platform-channel-test-image-mode"),
+        json=body,
+    )
+    assert response.status_code == 200, response.text
+    assert relay.test_calls[0]["mode"] == "image_to_video"
+    with app.state.session_factory() as session:
+        journal = session.query(RelayChannelOperationJournal).one()
+        assert journal.intent_payload["mode"] == "image_to_video"
+
+    invalid = client.post(
+        f"/api/v1/platform-admin/relay/channels/{CHANNEL_ID}/test",
+        headers=_headers(admin_id, "platform-channel-test-invalid-mode"),
+        json={**body, "operation_id": "channel-test-invalid-mode-0001", "mode": "audio_to_video"},
+    )
+    assert invalid.status_code == 422
+
+
+def test_platform_owner_reconciles_unknown_route_test_without_authorizing_retry(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+    reason = "供应商控制台与账单记录均确认未创建任何任务"
+    request_id = "platform-channel-no-creation-reconcile"
+
+    reconciled = client.post(
+        "/api/v1/platform-admin/relay/channels/"
+        f"{CHANNEL_ID}/operations/{RECONCILE_OPERATION_ID}/"
+        "reconcile-no-creation",
+        headers=_headers(admin_id, request_id),
+        json={
+            "reason": reason,
+            "confirmed_no_provider_creation": True,
+        },
+    )
+
+    assert reconciled.status_code == 200, reconciled.text
+    assert reconciled.headers["cache-control"] == "private, no-store"
+    assert reconciled.json()["state"] == "failed"
+    assert reconciled.json()["provider_submission_state"] == (
+        "reconciled_no_creation"
+    )
+    assert relay.reconciliation_calls == [
+        {
+            "channel_id": CHANNEL_ID,
+            "operation_id": RECONCILE_OPERATION_ID,
+            "actor": admin_id,
+            "reason": reason,
+            "confirmed_no_provider_creation": True,
+            "request_id": request_id,
+        }
+    ]
+
+    with app.state.session_factory() as session:
+        audits = (
+            session.query(AuditLog)
+            .filter(AuditLog.target_type == "relay_channel_operation")
+            .order_by(AuditLog.created_at, AuditLog.id)
+            .all()
+        )
+        assert [row.action for row in audits] == [
+            "relay.channel.test_reconcile_no_creation.approve",
+            "relay.channel.test_reconcile_no_creation",
+        ]
+        for row in audits:
+            assert row.actor_user_id == admin_id
+            assert row.request_id == request_id
+        assert audits[0].after_summary == {
+            "tenant_id": str(TENANT_ID),
+            "channel_id": CHANNEL_ID,
+            "operation_id": RECONCILE_OPERATION_ID,
+            "actor": admin_id,
+            "reason": reason,
+            "confirmed_no_provider_creation": True,
+            "request_id": request_id,
+        }
+        assert audits[1].after_summary["reconciliation_actor"] == admin_id
+        assert audits[1].after_summary["reconciliation_reason"] == reason
+        assert audits[1].after_summary["reconciliation_request_id"] == request_id
+
+
+def test_channel_no_creation_reconciliation_requires_literal_confirmation(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+    path = (
+        "/api/v1/platform-admin/relay/channels/"
+        f"{CHANNEL_ID}/operations/{RECONCILE_OPERATION_ID}/"
+        "reconcile-no-creation"
+    )
+
+    for body in (
+        {
+            "reason": "Provider console confirms absence",
+            "confirmed_no_provider_creation": False,
+        },
+        {"reason": "Provider console confirms absence"},
+        {
+            "reason": "Provider console confirms absence",
+            "confirmed_no_provider_creation": True,
+            "retry": True,
+        },
+        {
+            "reason": "Provider console confirms absence",
+            "confirmed_no_provider_creation": True,
+            "actor": "attacker-controlled-actor",
+        },
+        {
+            "reason": "Provider console\nconfirms absence",
+            "confirmed_no_provider_creation": True,
+        },
+    ):
+        rejected = client.post(
+            path,
+            headers=_headers(admin_id, "platform-channel-reconcile-rejected"),
+            json=body,
+        )
+        assert rejected.status_code == 422, rejected.text
+
+    assert relay.reconciliation_calls == []
+    with app.state.session_factory() as session:
+        assert (
+            session.query(AuditLog)
+            .filter(
+                AuditLog.action.like(
+                    "relay.channel.test_reconcile_no_creation%"
+                )
+            )
+            .count()
+            == 0
+        )
+
+
+def test_channel_no_creation_reconciliation_rejects_sensitive_reason_before_audit(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+    path = (
+        "/api/v1/platform-admin/relay/channels/"
+        f"{CHANNEL_ID}/operations/{RECONCILE_OPERATION_ID}/"
+        "reconcile-no-creation"
+    )
+
+    for reason in (
+        "Evidence is at https://provider.invalid/task?token=secret-value",
+        "Authorization: Bearer provider-secret-value",
+        "Provider key = provider-secret-value",
+        "Provider credential was inspected",
+        "Query contains X-Amz-Signature=provider-secret-value",
+        "确认\u202e未创建任务",
+        "确认\u200b未创建任务",
+        "确认\x1f未创建任务",
+        "确认\x85未创建任务",
+    ):
+        rejected = client.post(
+            path,
+            headers=_headers(admin_id, "platform-channel-sensitive-reason"),
+            json={
+                "reason": reason,
+                "confirmed_no_provider_creation": True,
+            },
+        )
+        assert rejected.status_code == 422, rejected.text
+
+    assert relay.reconciliation_calls == []
+    with app.state.session_factory() as session:
+        assert (
+            session.query(AuditLog)
+            .filter(
+                AuditLog.action.like(
+                    "relay.channel.test_reconcile_no_creation%"
+                )
+            )
+            .count()
+            == 0
+        )
+
+
+def test_channel_no_creation_reconciliation_keeps_provider_task_conflict_blocked(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    relay.reconciliation_provider_task_conflict = True
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+    response = client.post(
+        "/api/v1/platform-admin/relay/channels/"
+        f"{CHANNEL_ID}/operations/{RECONCILE_OPERATION_ID}/"
+        "reconcile-no-creation",
+        headers=_headers(admin_id, "platform-provider-task-conflict"),
+        json={
+            "reason": "Provider console confirms absence",
+            "confirmed_no_provider_creation": True,
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == (
+        "RELAY_CHANNEL_NO_CREATION_NOT_CONFIRMED"
+    )
+    assert "provider-secret-task-1" not in response.text
+    assert "remains blocked" in response.json()["detail"]["message"]
+    with app.state.session_factory() as session:
+        actions = [
+            row.action
+            for row in session.query(AuditLog)
+            .filter(
+                AuditLog.action.like(
+                    "relay.channel.test_reconcile_no_creation%"
+                )
+            )
+            .all()
+        ]
+        assert actions == ["relay.channel.test_reconcile_no_creation.approve"]
+
+
+def test_protected_runtime_reconciliation_rejects_delegated_admin(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    original_environment = app.state.settings.environment
+    app.state.settings.environment = "production"
+
+    def delegated_admin() -> PlatformAdminContext:
+        return PlatformAdminContext(
+            user_id="delegated-relay-admin",
+            is_platform_owner=False,
+        )
+
+    app.dependency_overrides[require_platform_admin] = delegated_admin
+    try:
+        response = client.post(
+            "/api/v1/platform-admin/relay/channels/"
+            f"{CHANNEL_ID}/operations/{RECONCILE_OPERATION_ID}/"
+            "reconcile-no-creation",
+            json={
+                "reason": "Provider console confirms absence",
+                "confirmed_no_provider_creation": True,
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(require_platform_admin, None)
+        app.state.settings.environment = original_environment
+
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["code"] == (
+        "RELAY_CHANNEL_RECONCILIATION_OWNER_REQUIRED"
+    )
+    assert relay.reconciliation_calls == []
+
+
+def test_exact_route_test_is_bound_in_platform_journal_and_forwarded_once(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+    path = f"/api/v1/platform-admin/relay/channels/{CHANNEL_ID}/test"
+    body = {
+        **_test_body(),
+        "operation_id": "channel-exact-route-test-0001",
+        "public_model_id": "seedance-1.5-pro",
+        "route_id": "volcengine-seedance-primary-01",
+    }
+
+    tested = client.post(
+        path,
+        headers=_headers(admin_id, "platform-exact-route-test"),
+        json=body,
+    )
+    assert tested.status_code == 200, tested.text
+    assert relay.test_calls == [
+        {
+            "channel_id": CHANNEL_ID,
+            "operation_id": body["operation_id"],
+            "actor": admin_id,
+            "reason": body["reason"],
+            "public_model_id": body["public_model_id"],
+            "route_id": body["route_id"],
+            "mode": None,
+            "request_id": "platform-exact-route-test",
+        }
+    ]
+
+    with app.state.session_factory() as session:
+        journal = session.query(RelayChannelOperationJournal).one()
+        assert journal.intent_payload["public_model_id"] == body["public_model_id"]
+        assert journal.intent_payload["route_id"] == body["route_id"]
+        approval = session.query(AuditLog).filter(
+            AuditLog.action == "relay.channel.test.approve"
+        ).one()
+        assert approval.after_summary["public_model_id"] == body["public_model_id"]
+        assert approval.after_summary["route_id"] == body["route_id"]
+
+    conflicting = client.post(
+        path,
+        headers=_headers(admin_id, "platform-exact-route-test-conflict"),
+        json={**body, "route_id": "volcengine-seedance-secondary-02"},
+    )
+    assert conflicting.status_code == 409, conflicting.text
+    assert len(relay.test_calls) == 1
+
+
+def test_exact_route_test_rejects_partial_or_invalid_identity(client, app) -> None:
+    relay = FakeChannelRelay()
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+    path = f"/api/v1/platform-admin/relay/channels/{CHANNEL_ID}/test"
+
+    missing_identity = _test_body()
+    missing_identity.pop("public_model_id")
+    missing_identity.pop("route_id")
+    partial_identity = _test_body()
+    partial_identity.pop("route_id")
+
+    missing = client.post(
+        path,
+        headers=_headers(admin_id, "platform-exact-route-missing"),
+        json=missing_identity,
+    )
+    partial = client.post(
+        path,
+        headers=_headers(admin_id, "platform-exact-route-partial"),
+        json=partial_identity,
+    )
+    invalid = client.post(
+        path,
+        headers=_headers(admin_id, "platform-exact-route-invalid"),
+        json={
+            **_test_body(),
+            "public_model_id": "seedance-1.5-pro",
+            "route_id": "route with spaces",
+        },
+    )
+    assert missing.status_code == 422
+    assert partial.status_code == 422
+    assert invalid.status_code == 422
+    assert relay.test_calls == []
 
 
 def test_ambiguous_channel_test_is_read_back_and_never_reposted(client, app) -> None:
@@ -416,6 +910,125 @@ def test_ambiguous_channel_test_is_read_back_and_never_reposted(client, app) -> 
         assert journal.result_audit_id == audits[1].id
 
 
+def test_channel_test_reposts_same_intent_after_lost_response_without_receipt(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    relay.fail_after_test_commit_once = True
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+    path = f"/api/v1/platform-admin/relay/channels/{CHANNEL_ID}/test"
+    body = _test_body()
+
+    first = client.post(
+        path,
+        headers=_headers(admin_id, "platform-channel-test-lost-response-first"),
+        json=body,
+    )
+    assert first.status_code == 503, first.text
+    assert first.json()["detail"]["code"] == (
+        "RELAY_CHANNEL_OPERATION_OUTCOME_UNKNOWN"
+    )
+
+    conflicting = client.post(
+        path,
+        headers=_headers(admin_id, "platform-channel-test-lost-response-conflict"),
+        json={**body, "route_id": "volcengine-seedance-secondary-02"},
+    )
+    assert conflicting.status_code == 409, conflicting.text
+    assert len(relay.test_calls) == 1
+
+    recovered = client.post(
+        path,
+        headers=_headers(admin_id, "platform-channel-test-lost-response-retry"),
+        json=body,
+    )
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["state"] == "succeeded"
+    assert recovered.json()["operation_id"] == body["operation_id"]
+    assert [call["operation_id"] for call in relay.test_calls] == [
+        body["operation_id"],
+        body["operation_id"],
+    ]
+    for field in ("channel_id", "actor", "reason", "public_model_id", "route_id"):
+        assert relay.test_calls[0][field] == relay.test_calls[1][field]
+
+    with app.state.session_factory() as session:
+        journal = session.query(RelayChannelOperationJournal).one()
+        assert journal.state == "completed"
+        assert journal.operation_id == body["operation_id"]
+        assert journal.relay_receipt["operation_id"] == body["operation_id"]
+        assert (
+            session.query(AuditLog)
+            .filter(AuditLog.action == "relay.channel.test.approve")
+            .count()
+            == 1
+        )
+        assert (
+            session.query(AuditLog)
+            .filter(AuditLog.action == "relay.channel.test")
+            .count()
+            == 1
+        )
+
+
+def test_pending_channel_test_reposts_same_intent_to_resume_sticky_polling(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    relay.require_repost_to_complete_once = True
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+    path = f"/api/v1/platform-admin/relay/channels/{CHANNEL_ID}/test"
+    body = _test_body()
+
+    pending = client.post(
+        path,
+        headers=_headers(admin_id, "platform-channel-test-pending-first"),
+        json=body,
+    )
+    assert pending.status_code == 200, pending.text
+    assert pending.json()["state"] == "pending"
+    with app.state.session_factory() as session:
+        journal = session.query(RelayChannelOperationJournal).one()
+        assert journal.state == "approved"
+        assert journal.relay_receipt["state"] == "pending"
+        assert journal.result_audit_id is None
+
+    completed = client.post(
+        path,
+        headers=_headers(admin_id, "platform-channel-test-pending-resume"),
+        json=body,
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["state"] == "succeeded"
+    assert [call["operation_id"] for call in relay.test_calls] == [
+        body["operation_id"],
+        body["operation_id"],
+    ]
+    for field in ("channel_id", "actor", "reason", "public_model_id", "route_id"):
+        assert relay.test_calls[0][field] == relay.test_calls[1][field]
+
+    with app.state.session_factory() as session:
+        journal = session.query(RelayChannelOperationJournal).one()
+        assert journal.state == "completed"
+        assert journal.relay_receipt["state"] == "succeeded"
+        assert (
+            session.query(AuditLog)
+            .filter(AuditLog.action == "relay.channel.test.approve")
+            .count()
+            == 1
+        )
+        assert (
+            session.query(AuditLog)
+            .filter(AuditLog.action == "relay.channel.test")
+            .count()
+            == 1
+        )
+
+
 def test_claimed_channel_test_receipt_mismatch_is_outcome_unknown_and_replays(
     client, app
 ) -> None:
@@ -448,7 +1061,8 @@ def test_claimed_channel_test_receipt_mismatch_is_outcome_unknown_and_replays(
     )
     assert replay.status_code == 200, replay.text
     assert replay.json()["state"] == "succeeded"
-    assert len(relay.test_calls) == 1
+    assert len(relay.test_calls) == 2
+    assert {call["operation_id"] for call in relay.test_calls} == {TEST_OPERATION_ID}
 
 
 def test_claimed_channel_test_readback_mismatch_is_outcome_unknown_and_replays(
@@ -479,7 +1093,8 @@ def test_claimed_channel_test_readback_mismatch_is_outcome_unknown_and_replays(
     )
     assert replay.status_code == 200, replay.text
     assert replay.json()["state"] == "succeeded"
-    assert len(relay.test_calls) == 1
+    assert len(relay.test_calls) == 2
+    assert {call["operation_id"] for call in relay.test_calls} == {TEST_OPERATION_ID}
 
 
 def test_claimed_channel_get_readback_mismatch_is_outcome_unknown_and_recovers(
@@ -575,6 +1190,88 @@ def test_channel_status_requires_current_revision_and_replays_receipt(
         ]
         assert audits[0].before_summary["revision"] == CHANNEL_REVISION
         assert audits[1].after_summary["result_revision"] == (CHANNEL_RESULT_REVISION)
+
+
+def test_channel_status_completed_receipt_replays_after_ordinary_channel_deleted(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+    path = f"/api/v1/platform-admin/relay/channels/{CHANNEL_ID}/status"
+
+    changed = client.post(
+        path,
+        headers=_headers(admin_id, "platform-channel-status-delete-submit"),
+        json=_status_body(),
+    )
+    assert changed.status_code == 200, changed.text
+    relay.channel = relay.channel.model_copy(update={"id": CHANNEL_ID + 1})
+
+    replay = client.post(
+        path,
+        headers=_headers(admin_id, "platform-channel-status-delete-replay"),
+        json=_status_body(),
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == changed.json()
+    assert len(relay.status_calls) == 1
+
+
+def test_channel_status_rejects_reserved_and_managed_provider_channels_before_journal(
+    client, app
+) -> None:
+    relay = FakeChannelRelay()
+    app.state.relay_operations_client = relay
+    app.state.settings.relay_tenant_id = str(TENANT_ID)
+    admin_id = _admin(app)
+
+    reserved = client.post(
+        "/api/v1/platform-admin/relay/channels/990001/status",
+        headers=_headers(admin_id, "platform-managed-channel-reserved"),
+        json=_status_body(),
+    )
+    assert reserved.status_code == 409, reserved.text
+    assert reserved.json()["detail"]["code"] == (
+        "MANAGED_PROVIDER_CHANNEL_REQUIRES_ONBOARDING_API"
+    )
+
+    relay.channel = relay.channel.model_copy(
+        update={"tag": "platform-provider-onboarding-v1"}
+    )
+    managed = client.post(
+        f"/api/v1/platform-admin/relay/channels/{CHANNEL_ID}/status",
+        headers=_headers(admin_id, "platform-managed-channel-tag"),
+        json=_status_body(),
+    )
+    assert managed.status_code == 409, managed.text
+    assert managed.json()["detail"]["code"] == (
+        "MANAGED_PROVIDER_CHANNEL_REQUIRES_ONBOARDING_API"
+    )
+
+    # The durable lifecycle marker is projected as a secret-free boolean. It
+    # remains a pre-journal fence even if the visible tag is absent or corrupt.
+    relay.channel = relay.channel.model_copy(
+        update={
+            "tag": "ordinary-looking-tag",
+            "provider_onboarding_managed": True,
+        }
+    )
+    marker_owned = client.post(
+        f"/api/v1/platform-admin/relay/channels/{CHANNEL_ID}/status",
+        headers=_headers(admin_id, "platform-managed-channel-marker"),
+        json=_status_body(),
+    )
+    assert marker_owned.status_code == 409, marker_owned.text
+    assert marker_owned.json()["detail"]["code"] == (
+        "MANAGED_PROVIDER_CHANNEL_REQUIRES_ONBOARDING_API"
+    )
+    assert relay.status_calls == []
+    assert relay.operations == {}
+    with app.state.session_factory() as session:
+        assert session.query(RelayChannelOperationJournal).count() == 0
+        assert session.query(AuditLog).count() == 0
 
 
 def test_channel_status_cas_race_returns_and_audits_failed_receipt(client, app) -> None:

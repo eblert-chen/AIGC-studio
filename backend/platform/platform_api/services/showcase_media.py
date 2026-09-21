@@ -11,6 +11,7 @@ import tempfile
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .errors import DomainError
+from .input_assets import _content_signature_matches
 
 
 _IMAGE_FORMAT_BY_CONTENT_TYPE = {
@@ -65,6 +66,14 @@ def _sanitize_image(
     content_type: str,
     max_bytes: int,
 ) -> SanitizedShowcaseMedia:
+    # Uploaded MIME labels are untrusted. Reject non-image containers before
+    # Pillow can run a plugin's parser, then restrict it to the declared format.
+    if not _content_signature_matches(source_path, content_type):
+        raise DomainError(
+            "Showcase image could not be safely decoded",
+            "invalid_showcase_image",
+            422,
+        )
     output_path = _output_path(
         {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[
             content_type
@@ -72,7 +81,9 @@ def _sanitize_image(
     )
     try:
         try:
-            with Image.open(source_path) as image:
+            with Image.open(
+                source_path, formats=[_IMAGE_FORMAT_BY_CONTENT_TYPE[content_type]]
+            ) as image:
                 if getattr(image, "n_frames", 1) != 1:
                     raise DomainError(
                         "Animated images are not supported by the public showcase",
@@ -121,7 +132,13 @@ def _sanitize_image(
                 converted.close()
         except DomainError:
             raise
-        except (Image.DecompressionBombError, UnidentifiedImageError, OSError) as exc:
+        except (
+            Image.DecompressionBombError,
+            UnidentifiedImageError,
+            OSError,
+            SyntaxError,
+            ValueError,
+        ) as exc:
             raise DomainError(
                 "Showcase image could not be safely decoded",
                 "invalid_showcase_image",

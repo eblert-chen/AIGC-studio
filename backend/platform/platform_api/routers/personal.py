@@ -3,7 +3,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,10 +29,13 @@ from ..dependencies import (
 )
 from ..models import (
     GenerationTask,
+    InputAssetStatus,
     ModelDefinition,
     PersonalWalletAccount,
+    PersonalWorkspace,
     TaskArtifact,
     TaskStatus,
+    User,
 )
 from ..relay_client import (
     RelayPermanentError,
@@ -29,13 +43,25 @@ from ..relay_client import (
     validate_bound_artifact_download,
 )
 from ..relay_backends import relay_callback_url_for_backend
-from ..schemas import ArtifactDownloadResponse, ArtifactPreviewResponse
+from ..platform_owner_identity import is_platform_owner_identity
+from ..schemas import (
+    ArtifactDownloadResponse,
+    ArtifactPreviewResponse,
+    GenerationModeReadinessResponse,
+    InputAssetAccessResponse,
+    InputAssetResponse,
+)
+from ..services.input_assets import InputAssetService
+from ..services.director_shot_packages import DirectorShotPackageService
 from ..services.personal import (
     PersonalModelService,
     PersonalTaskService,
     PersonalWorkspaceService,
 )
 from ..services.personal_billing import PersonalWalletService
+from ..services.commercial_pricing import CommercialPricingPolicy
+from ..services.account_partition import AccountPartitionService
+from ..services.errors import NotFoundError
 from ..services.personal_downloads import PersonalDownloadRecordService
 from ..services.relay_outbox import RelayOutboxService
 
@@ -79,22 +105,29 @@ class CompanySurfaceResponse(StrictModel):
 
 
 class SessionSurfacesResponse(StrictModel):
+    account_type: Literal["personal", "company", "platform_admin", "unavailable"]
     user: SessionUserResponse
-    personal: PersonalSurfaceResponse
+    personal: PersonalSurfaceResponse | None
     companies: list[CompanySurfaceResponse]
     platform_admin: bool
+    active_product_context: Literal["personal", "company", "platform"] | None
+    available_product_contexts: list[Literal["personal", "company", "platform"]]
 
 
 class PersonalMeResponse(StrictModel):
     workspace_id: str
     user: SessionUserResponse
     capabilities: PersonalCapabilities
+    billing_unit: Literal["POINT"] = "POINT"
+    billing_version: Literal[2] = 2
 
 
 class PersonalWalletResponse(StrictModel):
     workspace_id: str
     available_points: int
     reserved_points: int
+    billing_unit: Literal["POINT"] = "POINT"
+    billing_version: Literal[2] = 2
 
 
 class InternalPersonalCreditRequest(StrictModel):
@@ -114,6 +147,8 @@ class PersonalLedgerEntryResponse(StrictModel):
     task_id: str | None
     note: str
     created_at: datetime
+    billing_unit: Literal["POINT"] = "POINT"
+    billing_version: Literal[2] = 2
 
 
 class InternalPersonalCreditResponse(StrictModel):
@@ -130,7 +165,38 @@ class PersonalModelResponse(StrictModel):
     unit_price_points: int
     capability_version: int
     quote_revision: str
+    call_quota: int | None
+    concurrency_limit: int | None
     effective_capabilities: dict[str, Any]
+    readiness_checked_at: datetime
+    mode_readiness: dict[str, GenerationModeReadinessResponse]
+    billing_unit: Literal["POINT"] = "POINT"
+    billing_version: Literal[2] = 2
+
+
+class PersonalModelCatalogUnavailableReason(StrictModel):
+    code: Literal[
+        "model_unpublished",
+        "model_disabled",
+        "relay_capability_unapproved",
+        "personal_distribution_unconfigured",
+        "personal_distribution_disabled",
+        "personal_price_unavailable",
+        "personal_capability_unavailable",
+    ]
+    message: str = Field(min_length=1, max_length=200)
+
+
+class PersonalModelCatalogEntryResponse(StrictModel):
+    id: str
+    slug: str
+    display_name: str
+    billing_mode: Literal["per_second", "per_item"]
+    capability_version: int
+    available: bool
+    unavailable_reason: PersonalModelCatalogUnavailableReason | None
+    billing_unit: Literal["POINT"] = "POINT"
+    billing_version: Literal[2] = 2
 
 
 class CreatePersonalTaskRequest(StrictModel):
@@ -154,6 +220,7 @@ class PersonalTaskArtifactResponse(StrictModel):
 
 class PersonalTaskResponse(StrictModel):
     id: str
+    idempotency_key: str
     workspace_id: str
     user_id: str
     model_id: str
@@ -170,6 +237,8 @@ class PersonalTaskResponse(StrictModel):
     relay_error_snapshot: dict[str, Any] | None
     created_at: datetime
     updated_at: datetime
+    billing_unit: Literal["POINT"] = "POINT"
+    billing_version: Literal[2] = 2
 
 
 class PersonalTaskPage(StrictModel):
@@ -177,6 +246,8 @@ class PersonalTaskPage(StrictModel):
     total: int
     page: int
     page_size: int
+    billing_unit: Literal["POINT"] = "POINT"
+    billing_version: Literal[2] = 2
 
 
 class PersonalArtworkResponse(StrictModel):
@@ -201,17 +272,33 @@ class PersonalArtworkResponse(StrictModel):
     last_download_issued_at: datetime | None
     last_download_completed_at: datetime | None
     created_at: datetime
+    billing_unit: Literal["POINT"] = "POINT"
+    billing_version: Literal[2] = 2
 
 
 class PersonalArtworkPage(StrictModel):
     items: list[PersonalArtworkResponse]
     total: int
     page: int
+    billing_unit: Literal["POINT"] = "POINT"
+    billing_version: Literal[2] = 2
     page_size: int
 
 
 def _workspace(session: Session, context: UserContext):
-    return PersonalWorkspaceService.ensure(session, user_id=context.user_id)
+    active_context = context.active_product_context
+    if active_context is None:
+        user = session.get(User, context.user_id)
+        if user is not None and user.account_type.value == "personal":
+            from ..models import ProductContext
+
+            active_context = ProductContext.PERSONAL
+    return PersonalWorkspaceService.require_for_product_context(
+        session,
+        user_id=context.user_id,
+        active_product_context=active_context,
+        external_identity_id=context.external_identity_id,
+    )
 
 
 def _owned_artifact(
@@ -249,10 +336,22 @@ def _owned_artifact(
     response_model=SessionSurfacesResponse,
 )
 def session_surfaces(
+    request: Request,
     context: Annotated[UserContext, Depends(get_user_context)],
     session: Annotated[Session, Depends(get_db, scope="function")],
 ):
-    return PersonalWorkspaceService.surfaces(session, user_id=context.user_id)
+    return PersonalWorkspaceService.surfaces(
+        session,
+        user_id=context.user_id,
+        active_product_context=context.active_product_context,
+        external_identity_id=context.external_identity_id,
+        platform_owner=is_platform_owner_identity(
+            issuer=context.external_issuer,
+            subject=context.external_subject,
+            configured_issuer=request.app.state.settings.oidc_issuer,
+            configured_subjects=request.app.state.settings.platform_owner_user_ids,
+        ),
+    )
 
 
 @router.get("/api/v1/personal/me", response_model=PersonalMeResponse)
@@ -260,13 +359,23 @@ def personal_me(
     context: Annotated[UserContext, Depends(get_user_context)],
     session: Annotated[Session, Depends(get_db, scope="function")],
 ):
+    workspace = _workspace(session, context)
     surfaces = PersonalWorkspaceService.surfaces(
-        session, user_id=context.user_id
+        session,
+        user_id=context.user_id,
+        active_product_context=context.active_product_context,
+        external_identity_id=context.external_identity_id,
+        platform_owner=(
+            context.cookie_principal is not None
+            and context.cookie_principal.user.is_platform_admin
+        ),
     )
+    personal = surfaces["personal"]
+    assert personal is not None
     return {
-        "workspace_id": surfaces["personal"]["workspace_id"],
+        "workspace_id": workspace.id,
         "user": surfaces["user"],
-        "capabilities": surfaces["personal"]["capabilities"],
+        "capabilities": personal["capabilities"],
     }
 
 
@@ -284,6 +393,149 @@ def personal_wallet(
 
 
 @router.post(
+    "/api/v1/personal/assets",
+    response_model=InputAssetResponse,
+    status_code=201,
+)
+def upload_personal_input_asset(
+    request: Request,
+    context: Annotated[UserContext, Depends(get_user_context)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
+    file: Annotated[UploadFile, File(description="Private personal input media")],
+    media_type: Annotated[
+        Literal["image", "video", "audio"] | None,
+        Form(),
+    ] = None,
+    normalization_profile: Annotated[
+        Literal["director_previs_mp4_v1"] | None,
+        Form(),
+    ] = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key"),
+    ] = None,
+):
+    workspace = _workspace(session, context)
+    return InputAssetService.create_from_upload(
+        session,
+        store=request.app.state.input_asset_store,
+        company_id=None,
+        personal_workspace_id=workspace.id,
+        user_id=context.user_id,
+        upload=file,
+        requested_media_type=media_type,
+        max_bytes=request.app.state.settings.input_asset_max_bytes,
+        idempotency_key=idempotency_key,
+        normalization_profile=normalization_profile,
+    )
+
+
+@router.get(
+    "/api/v1/personal/assets",
+    response_model=list[InputAssetResponse],
+)
+def list_personal_input_assets(
+    context: Annotated[UserContext, Depends(get_user_context)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
+    status: InputAssetStatus | None = InputAssetStatus.ACTIVE,
+    media_type: Literal["image", "video", "audio"] | None = None,
+    limit: int = Query(default=200, ge=1, le=500),
+):
+    workspace = _workspace(session, context)
+    return InputAssetService.list_personal(
+        session,
+        personal_workspace_id=workspace.id,
+        status=status,
+        media_type=media_type,
+        limit=limit,
+    )
+
+
+def _personal_input_asset_access(
+    *,
+    request: Request,
+    workspace_id: str,
+    asset_id: str,
+    session: Session,
+    disposition: Literal["inline", "attachment"],
+) -> InputAssetAccessResponse:
+    asset = InputAssetService.get_personal_asset(
+        session,
+        personal_workspace_id=workspace_id,
+        asset_id=asset_id,
+    )
+    expires_seconds = request.app.state.settings.input_asset_signed_url_seconds
+    return InputAssetAccessResponse(
+        url=InputAssetService.access_url(
+            asset=asset,
+            store=request.app.state.input_asset_store,
+            signer=request.app.state.input_asset_signer,
+            expires_seconds=expires_seconds,
+            disposition=disposition,
+        ),
+        expires_seconds=expires_seconds,
+    )
+
+
+@router.get(
+    "/api/v1/personal/assets/{asset_id}/preview",
+    response_model=InputAssetAccessResponse,
+)
+def preview_personal_input_asset(
+    asset_id: str,
+    request: Request,
+    context: Annotated[UserContext, Depends(get_user_context)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
+):
+    workspace = _workspace(session, context)
+    return _personal_input_asset_access(
+        request=request,
+        workspace_id=workspace.id,
+        asset_id=asset_id,
+        session=session,
+        disposition="inline",
+    )
+
+
+@router.get(
+    "/api/v1/personal/assets/{asset_id}/download",
+    response_model=InputAssetAccessResponse,
+)
+def download_personal_input_asset(
+    asset_id: str,
+    request: Request,
+    context: Annotated[UserContext, Depends(get_user_context)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
+):
+    workspace = _workspace(session, context)
+    return _personal_input_asset_access(
+        request=request,
+        workspace_id=workspace.id,
+        asset_id=asset_id,
+        session=session,
+        disposition="attachment",
+    )
+
+
+@router.delete(
+    "/api/v1/personal/assets/{asset_id}",
+    status_code=204,
+)
+def disable_personal_input_asset(
+    asset_id: str,
+    context: Annotated[UserContext, Depends(get_user_context)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
+):
+    workspace = _workspace(session, context)
+    InputAssetService.disable_personal(
+        session,
+        personal_workspace_id=workspace.id,
+        asset_id=asset_id,
+    )
+    return Response(status_code=204)
+
+
+@router.post(
     "/internal/personal/wallets/{workspace_id}/credit",
     response_model=InternalPersonalCreditResponse,
 )
@@ -293,6 +545,20 @@ def credit_personal_wallet(
     _: Annotated[None, Depends(require_internal_service)],
     session: Annotated[Session, Depends(get_db, scope="function")],
 ):
+    workspace = session.get(PersonalWorkspace, workspace_id)
+    if workspace is None:
+        raise NotFoundError("个人空间不存在")
+    user = session.get(User, workspace.user_id)
+    if user is None:
+        raise NotFoundError("个人用户不存在")
+    if workspace.owner_self_identity_id is not None:
+        AccountPartitionService.require_owner_self_personal(
+            session,
+            user=user,
+            external_identity_id=workspace.owner_self_identity_id,
+        )
+    else:
+        AccountPartitionService.require_personal(session, user=user)
     account, entry, created = PersonalWalletService.credit(
         session,
         workspace_id=workspace_id,
@@ -308,11 +574,35 @@ def credit_personal_wallet(
     response_model=list[PersonalModelResponse],
 )
 def personal_models(
+    request: Request,
+    context: Annotated[UserContext, Depends(get_user_context)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
+):
+    workspace = _workspace(session, context)
+    return PersonalModelService.list_available(
+        session,
+        workspace_id=workspace.id,
+        require_relay_approval=(request.app.state.relay_client is not None),
+        release_evidence=request.app.state.read_customer_model_release_evidence(
+            request_id=request.state.request_id
+        ),
+    )
+
+
+@router.get(
+    "/api/v1/personal/model-catalog",
+    response_model=list[PersonalModelCatalogEntryResponse],
+)
+def personal_model_catalog(
+    request: Request,
     context: Annotated[UserContext, Depends(get_user_context)],
     session: Annotated[Session, Depends(get_db, scope="function")],
 ):
     _workspace(session, context)
-    return PersonalModelService.list_available(session)
+    return PersonalModelService.list_catalog(
+        session,
+        require_relay_approval=(request.app.state.relay_client is not None),
+    )
 
 
 @router.post(
@@ -327,6 +617,41 @@ def create_personal_task(
     session: Annotated[Session, Depends(get_db, scope="function")],
 ):
     workspace = _workspace(session, context)
+    replay_payload = DirectorShotPackageService.canonicalize_task_payload(
+        body.request_payload
+    )
+    replay_payload = InputAssetService.canonicalize_task_payload(
+        replay_payload
+    )
+    replay = PersonalTaskService.idempotent_replay(
+        session,
+        workspace_id=workspace.id,
+        user_id=context.user_id,
+        model_id=body.model_id,
+        request_payload=replay_payload,
+        idempotency_key=body.idempotency_key,
+    )
+    if replay is not None:
+        return PersonalTaskService.response_payloads(session, [replay])[0]
+    commercial_readiness = (
+        request.app.state.require_models_release_ready(
+            session, model_ids={body.model_id}, request_id=request.state.request_id,
+        ).get(body.model_id)
+        if CommercialPricingPolicy.task_needs_live_evidence(session, model_id=body.model_id)
+        else None
+    )
+    normalized_payload, input_assets = InputAssetService.normalize_task_payload(
+        session,
+        company_id=None,
+        personal_workspace_id=workspace.id,
+        request_payload=replay_payload,
+    )
+    director_shot_package = DirectorShotPackageService.require_for_task(
+        session,
+        company_id=None,
+        personal_workspace_id=workspace.id,
+        request_payload=normalized_payload,
+    )
     settings = request.app.state.settings
     relay_affinity = request.app.state.relay_backend_registry.default_affinity
     task, created = PersonalTaskService.create(
@@ -334,7 +659,7 @@ def create_personal_task(
         workspace_id=workspace.id,
         user_id=context.user_id,
         model_id=body.model_id,
-        request_payload=body.request_payload,
+        request_payload=normalized_payload,
         idempotency_key=body.idempotency_key,
         expected_capability_version=body.expected_capability_version,
         expected_quote_revision=body.expected_quote_revision,
@@ -342,11 +667,21 @@ def create_personal_task(
         require_relay_capability_revision=(request.app.state.relay_client is not None),
         relay_backend_id=relay_affinity.backend_id,
         relay_contract_revision=relay_affinity.contract_revision,
+        expected_commercial_release_snapshot=(
+            commercial_readiness.expected_snapshot
+            if commercial_readiness is not None else None
+        ),
     )
     if not created:
         return PersonalTaskService.response_payloads(session, [task])[0]
     if task.quote_points is None:
         raise RuntimeError("personal task quote was not persisted")
+    InputAssetService.link_task(session, task_id=task.id, assets=input_assets)
+    DirectorShotPackageService.link_task(
+        session,
+        task=task,
+        package=director_shot_package,
+    )
     PersonalWalletService.reserve(
         session,
         workspace_id=workspace.id,
@@ -361,8 +696,17 @@ def create_personal_task(
         session,
         task=task,
         model=model,
+        expected_commercial_release_snapshot=(
+            commercial_readiness.expected_snapshot if commercial_readiness is not None else None
+        ),
         request_id=request.state.request_id,
         resolved_assets=[],
+        director_shot=DirectorShotPackageService.relay_input(
+            director_shot_package
+        ),
+        director_motion=DirectorShotPackageService.motion_relay_input(
+            normalized_payload
+        ),
         callback_url=relay_callback_url_for_backend(
             settings.relay_callback_public_url,
             backend_id=task.relay_backend_id,

@@ -209,7 +209,7 @@ func (channel *Channel) AddAbilities(tx *gorm.DB) error {
 				Group:     group,
 				Model:     model,
 				ChannelId: channel.Id,
-				Enabled:   channel.Status == common.ChannelStatusEnabled,
+				Enabled:   channel.Status == common.ChannelStatusEnabled && !IsProviderOnboardingManagedChannel(channel),
 				Priority:  channel.Priority,
 				Weight:    uint(channel.GetWeight()),
 				Tag:       channel.Tag,
@@ -281,7 +281,7 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 				Group:     group,
 				Model:     model,
 				ChannelId: channel.Id,
-				Enabled:   channel.Status == common.ChannelStatusEnabled,
+				Enabled:   channel.Status == common.ChannelStatusEnabled && !IsProviderOnboardingManagedChannel(channel),
 				Priority:  channel.Priority,
 				Weight:    uint(channel.GetWeight()),
 				Tag:       channel.Tag,
@@ -311,10 +311,16 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 }
 
 func UpdateAbilityStatus(channelId int, status bool) error {
+	if status && IsProviderOnboardingReservedChannelID(channelId) {
+		status = false
+	}
 	return DB.Model(&Ability{}).Where("channel_id = ?", channelId).Select("enabled").Update("enabled", status).Error
 }
 
 func UpdateAbilityStatusByTag(tag string, status bool) error {
+	if status && tag == ProviderOnboardingManagedChannelTag {
+		status = false
+	}
 	return DB.Model(&Ability{}).Where("tag = ?", tag).Select("enabled").Update("enabled", status).Error
 }
 

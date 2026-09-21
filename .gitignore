@@ -5,6 +5,7 @@ dist/
 .venv/
 .venv-ci/
 __pycache__/
+*.egg-info/
 *.py[cod]
 *.db
 .pytest_cache/
@@ -54,6 +55,12 @@ tmp/
 # Visual audit screenshots are evidence; the copied build output is reproducible
 # from source and would otherwise duplicate the complete frontend asset set.
 /audit/
+/playwright-report/
+/test-results/
+/.local-backups/
+/public/director-desk/
+/vendor/storyai-3d-director-desk/public/models/ue-mannequin-retopology.glb
+/vendor/storyai-3d-director-desk/public/models/ue-mannequin-retopology.license.txt
 
 # Large generated course videos and transient test artifacts under artifacts/.
 /artifacts/learning/

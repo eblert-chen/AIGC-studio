@@ -5,24 +5,27 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
 const (
-	AccessTokenTTL        = 15 * time.Minute
-	SecurityProofTTL      = 5 * time.Minute
-	LoginSessionTTL       = 30 * 24 * time.Hour
-	RefreshReplayWindow   = 30 * time.Second
-	accessTokenUse        = "access"
-	securityProofTokenUse = "security_proof"
-	authTokenIssuer       = "new-api"
-	authTokenAudience     = "new-api-dashboard"
+	AccessTokenTTL             = 15 * time.Minute
+	SecurityProofTTL           = 5 * time.Minute
+	LoginSessionTTL            = 30 * 24 * time.Hour
+	RefreshReplayWindow        = 30 * time.Second
+	accessTokenUse             = "access"
+	securityProofTokenUse      = "security_proof"
+	securityProofReplayPurpose = "security_proof"
+	authTokenIssuer            = "new-api"
+	authTokenAudience          = "new-api-dashboard"
 )
 
 var (
@@ -30,7 +33,69 @@ var (
 	ErrAuthTokenExpired = errors.New("authentication token has expired")
 	ErrProofScope       = errors.New("security proof scope mismatch")
 	ErrProofMethod      = errors.New("security proof method mismatch")
+	ErrProofBinding     = errors.New("security proof request binding mismatch")
+	ErrProofConsumed    = errors.New("security proof has already been consumed")
 )
+
+const (
+	SecurityProofScopeProviderCredentialWrite = "provider.credential.write"
+	SecurityProofScopeProviderDisable         = "provider.lifecycle.disable"
+	SecurityProofScopeProviderResume          = "provider.lifecycle.resume"
+)
+
+var (
+	securityProofProviderPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	securityProofDigestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+)
+
+// SecurityProofBinding turns a step-up proof into authority for exactly one
+// provider-onboarding request. The digest binds the byte-identical JSON body
+// without placing credential material in the JWT.
+type SecurityProofBinding struct {
+	Action           string `json:"action"`
+	Provider         string `json:"provider"`
+	HTTPMethod       string `json:"http_method"`
+	HTTPPath         string `json:"http_path"`
+	BodySHA256       string `json:"body_sha256"`
+	ExpectedRevision string `json:"expected_revision,omitempty"`
+}
+
+func (binding SecurityProofBinding) Validate(scope string) error {
+	if binding.Action != scope || !isProviderOnboardingProofScope(scope) ||
+		!securityProofProviderPattern.MatchString(binding.Provider) ||
+		binding.HTTPMethod != "POST" ||
+		!securityProofDigestPattern.MatchString(binding.BodySHA256) ||
+		len(binding.ExpectedRevision) > 96 {
+		return ErrProofBinding
+	}
+	suffix := ""
+	switch binding.Action {
+	case SecurityProofScopeProviderCredentialWrite:
+		suffix = "credential"
+	case SecurityProofScopeProviderDisable:
+		suffix = "disable"
+	case SecurityProofScopeProviderResume:
+		suffix = "resume"
+	default:
+		return ErrProofBinding
+	}
+	expectedPath := "/api/provider-onboarding/" + binding.Provider + "/" + suffix
+	if !hmac.Equal([]byte(binding.HTTPPath), []byte(expectedPath)) {
+		return ErrProofBinding
+	}
+	return nil
+}
+
+func isProviderOnboardingProofScope(scope string) bool {
+	switch scope {
+	case SecurityProofScopeProviderCredentialWrite,
+		SecurityProofScopeProviderDisable,
+		SecurityProofScopeProviderResume:
+		return true
+	default:
+		return false
+	}
+}
 
 // AuthIdentity is the server-validated identity attached to dashboard requests.
 // Role, status and group are deliberately loaded from the user cache instead of JWT claims.
@@ -42,12 +107,13 @@ type AuthIdentity struct {
 }
 
 type authClaims struct {
-	TokenUse        string   `json:"token_use"`
-	SessionID       string   `json:"sid"`
-	UserAuthVersion int64    `json:"uv"`
-	SessionVersion  int64    `json:"sv"`
-	Method          string   `json:"method,omitempty"`
-	Scopes          []string `json:"scopes,omitempty"`
+	TokenUse        string                `json:"token_use"`
+	SessionID       string                `json:"sid"`
+	UserAuthVersion int64                 `json:"uv"`
+	SessionVersion  int64                 `json:"sv"`
+	Method          string                `json:"method,omitempty"`
+	Scopes          []string              `json:"scopes,omitempty"`
+	Binding         *SecurityProofBinding `json:"binding,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -130,6 +196,19 @@ func ParseDashboardAccessToken(raw string) (identity AuthIdentity, internal bool
 }
 
 func IssueSecurityProof(identity AuthIdentity, method string, scopes []string) (string, int64, error) {
+	return issueSecurityProof(identity, method, scopes, nil)
+}
+
+// IssueBoundSecurityProof issues a provider-onboarding proof that cannot be
+// replayed for another provider, action, path, method, revision, or body.
+func IssueBoundSecurityProof(identity AuthIdentity, method string, scope string, binding SecurityProofBinding) (string, int64, error) {
+	if err := binding.Validate(scope); err != nil {
+		return "", 0, err
+	}
+	return issueSecurityProof(identity, method, []string{scope}, &binding)
+}
+
+func issueSecurityProof(identity AuthIdentity, method string, scopes []string, binding *SecurityProofBinding) (string, int64, error) {
 	method = strings.TrimSpace(method)
 	if identity.UserID <= 0 || identity.SessionID == "" || identity.UserAuthVersion <= 0 || identity.SessionVersion <= 0 || method == "" || len(scopes) == 0 {
 		return "", 0, ErrAuthTokenInvalid
@@ -143,6 +222,7 @@ func IssueSecurityProof(identity AuthIdentity, method string, scopes []string) (
 		SessionVersion:  identity.SessionVersion,
 		Method:          method,
 		Scopes:          append([]string(nil), scopes...),
+		Binding:         binding,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    authTokenIssuer,
 			Subject:   strconv.Itoa(identity.UserID),
@@ -158,13 +238,52 @@ func IssueSecurityProof(identity AuthIdentity, method string, scopes []string) (
 }
 
 func VerifySecurityProof(raw string, identity AuthIdentity, requiredScope string, allowedMethods []string) (string, error) {
-	claims, err := parseAuthClaims(raw, securityProofTokenUse, authSigningKey(securityProofTokenUse))
+	claims, err := verifySecurityProofClaims(raw, identity, requiredScope, allowedMethods)
 	if err != nil {
 		return "", err
 	}
+	return claims.Method, nil
+}
+
+// VerifyAndConsumeBoundSecurityProof first compares every request binding
+// field and only then atomically claims the signed JWT ID in auth_flows. A
+// mismatch or expired proof is never consumed; a valid proof is one-shot even
+// across concurrent Relay processes.
+func VerifyAndConsumeBoundSecurityProof(raw string, identity AuthIdentity, requiredScope string, allowedMethods []string, expected SecurityProofBinding) (string, error) {
+	if err := expected.Validate(requiredScope); err != nil {
+		return "", err
+	}
+	claims, err := verifySecurityProofClaims(raw, identity, requiredScope, allowedMethods)
+	if err != nil {
+		return "", err
+	}
+	if claims.Binding == nil || !securityProofBindingEqual(*claims.Binding, expected) {
+		return "", ErrProofBinding
+	}
+	if claims.ExpiresAt == nil {
+		return "", ErrAuthTokenInvalid
+	}
+	if err := model.ClaimExternalAuthAssertion(
+		securityProofReplayPurpose,
+		claims.ID,
+		claims.ExpiresAt.Time,
+	); err != nil {
+		if errors.Is(err, model.ErrAuthFlowConsumed) {
+			return "", ErrProofConsumed
+		}
+		return "", fmt.Errorf("claim security proof: %w", err)
+	}
+	return claims.Method, nil
+}
+
+func verifySecurityProofClaims(raw string, identity AuthIdentity, requiredScope string, allowedMethods []string) (*authClaims, error) {
+	claims, err := parseAuthClaims(raw, securityProofTokenUse, authSigningKey(securityProofTokenUse))
+	if err != nil {
+		return nil, err
+	}
 	userID, err := strconv.Atoi(claims.Subject)
 	if err != nil || userID != identity.UserID || claims.SessionID != identity.SessionID || claims.UserAuthVersion != identity.UserAuthVersion || claims.SessionVersion != identity.SessionVersion {
-		return "", ErrAuthTokenInvalid
+		return nil, ErrAuthTokenInvalid
 	}
 	methodAllowed := len(allowedMethods) == 0
 	for _, method := range allowedMethods {
@@ -174,7 +293,7 @@ func VerifySecurityProof(raw string, identity AuthIdentity, requiredScope string
 		}
 	}
 	if !methodAllowed {
-		return "", ErrProofMethod
+		return nil, ErrProofMethod
 	}
 	if requiredScope != "" {
 		found := false
@@ -185,10 +304,19 @@ func VerifySecurityProof(raw string, identity AuthIdentity, requiredScope string
 			}
 		}
 		if !found {
-			return "", ErrProofScope
+			return nil, ErrProofScope
 		}
 	}
-	return claims.Method, nil
+	return claims, nil
+}
+
+func securityProofBindingEqual(left, right SecurityProofBinding) bool {
+	return hmac.Equal([]byte(left.Action), []byte(right.Action)) &&
+		hmac.Equal([]byte(left.Provider), []byte(right.Provider)) &&
+		hmac.Equal([]byte(left.HTTPMethod), []byte(right.HTTPMethod)) &&
+		hmac.Equal([]byte(left.HTTPPath), []byte(right.HTTPPath)) &&
+		hmac.Equal([]byte(left.BodySHA256), []byte(right.BodySHA256)) &&
+		hmac.Equal([]byte(left.ExpectedRevision), []byte(right.ExpectedRevision))
 }
 
 func parseAuthClaims(raw, expectedUse string, key []byte) (*authClaims, error) {

@@ -16,8 +16,10 @@ from platform_api.models import (
     WalletAccount,
 )
 from platform_api.services.errors import ConflictError
+from platform_api.services.task_admission import TaskCapabilityAdmission
 from platform_api.services.tasks import TaskService
 
+from .media_fixtures import valid_png_bytes
 from .test_input_assets import upload_asset
 from .test_wallet_and_tasks import seed_model
 
@@ -35,6 +37,100 @@ BASE_CAPABILITY = {
         "output_counts": [1],
     },
 }
+
+
+def _image_capability(mode: str, *, max_images: int) -> dict:
+    return {
+        "modes": [mode],
+        "input_media_types": ["image"] if max_images else [],
+        "limits": {
+            "max_images": max_images,
+            "max_videos": 0,
+            "max_audio": 0,
+            "duration_seconds": [1],
+            "aspect_ratios": ["1:1"],
+            "resolutions": ["2048x2048"],
+            "output_counts": [1],
+        },
+    }
+
+
+def test_text_to_image_omitted_duration_uses_capability_sentinel_contract():
+    capability = _image_capability("text_to_image", max_images=0)
+
+    effective = TaskCapabilityAdmission.validate(
+        capability_map={"generation": capability},
+        config_override={},
+        request_payload={
+            "mode": "text_to_image",
+            "prompt": "draw a lighthouse",
+            "aspect_ratio": "1:1",
+            "resolution": "2048x2048",
+        },
+    )
+
+    assert "text_to_image" in effective["modes"]
+    explicit_sentinel = TaskCapabilityAdmission.validate(
+        capability_map={"generation": capability},
+        config_override={},
+        request_payload={
+            "mode": "text_to_image",
+            "prompt": "draw a lighthouse",
+            "aspect_ratio": "1:1",
+            "resolution": "2048x2048",
+            "duration_seconds": 1,
+        },
+    )
+    assert "text_to_image" in explicit_sentinel["modes"]
+    with pytest.raises(ConflictError, match="duration_seconds is not allowed"):
+        TaskCapabilityAdmission.validate(
+            capability_map={"generation": capability},
+            config_override={},
+            request_payload={
+                "mode": "text_to_image",
+                "prompt": "draw a lighthouse",
+                "aspect_ratio": "1:1",
+                "resolution": "2048x2048",
+                "duration_seconds": 5,
+            },
+        )
+
+
+def test_image_to_image_requires_declared_image_input_and_at_least_one_asset():
+    capability = _image_capability("image_to_image", max_images=2)
+    request = {
+        "mode": "image_to_image",
+        "prompt": "turn this into a watercolor",
+        "aspect_ratio": "1:1",
+        "resolution": "2048x2048",
+    }
+
+    with pytest.raises(ConflictError, match="requires at least one image input"):
+        TaskCapabilityAdmission.validate(
+            capability_map={"generation": capability},
+            config_override={},
+            request_payload=request,
+        )
+
+    effective = TaskCapabilityAdmission.validate(
+        capability_map={"generation": capability},
+        config_override={},
+        request_payload={
+            **request,
+            "assets": [{"asset_id": "reference-1", "media_type": "image"}],
+        },
+    )
+    assert effective["modes"]["image_to_image"]["limits"]["max_images"] == 2
+
+
+def test_image_to_image_capability_without_image_capacity_fails_closed():
+    with pytest.raises(ConflictError, match="must allow at least one image input"):
+        TaskCapabilityAdmission.effective_capabilities(
+            capability_map={
+                "generation": _image_capability("image_to_image", max_images=0)
+            },
+            require_usable=True,
+        )
 
 
 def _seed_with_override(
@@ -89,6 +185,45 @@ def _create(client, tenant, headers, *, model_id: str, suffix: str, payload: dic
             },
         },
     )
+
+
+def test_text_to_image_outbox_materializes_declared_duration_sentinel(
+    app, client, tenant, tenant_headers
+):
+    model_id = seed_model(
+        app,
+        tenant["company_id"],
+        price_per_second_cents=None,
+        price_per_item_cents=25,
+        capability_key="generation",
+        capability_config=_image_capability("text_to_image", max_images=0),
+    )
+    _recharge(client, tenant, tenant_headers, suffix="image-duration-sentinel")
+
+    response = client.post(
+        f"/api/v1/companies/{tenant['company_id']}/tasks",
+        headers=tenant_headers,
+        json={
+            "model_id": model_id,
+            "idempotency_key": "capability-task-image-duration-sentinel",
+            "request_payload": {
+                "mode": "text_to_image",
+                "prompt": "draw a lighthouse",
+                "aspect_ratio": "1:1",
+                "resolution": "2048x2048",
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    with app.state.session_factory() as session:
+        outbox = session.scalar(
+            select(RelaySubmissionOutbox).where(
+                RelaySubmissionOutbox.task_id == response.json()["id"]
+            )
+        )
+        assert outbox is not None
+        assert outbox.relay_payload["output"]["duration_seconds"] == 1
 
 
 def _assert_rejected_before_money_or_outbox(app, company_id: str) -> None:
@@ -293,7 +428,7 @@ def test_input_asset_type_and_count_cannot_bypass_model_capability(
             client,
             tenant,
             tenant_headers,
-            content=b"\x89PNG\r\n\x1a\nsecond-private-input",
+            content=valid_png_bytes(32, 18),
             idempotency_key=f"capability-{mutation}-image-two",
         ).json()
         assets.append({"asset_id": image_two["id"], "media_type": "image"})

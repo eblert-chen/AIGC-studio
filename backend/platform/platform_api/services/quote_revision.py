@@ -28,7 +28,7 @@ def model_grant_quote_revision(
     """
 
     payload: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "company_id": grant.company_id,
         "model_id": model.id,
         "model_billing_mode": model.billing_mode,
@@ -36,6 +36,9 @@ def model_grant_quote_revision(
         "enabled": grant.enabled,
         "price_per_second_cents": grant.price_per_second_cents,
         "price_per_item_cents": grant.price_per_item_cents,
+        "price_per_second_points": grant.price_per_second_points,
+        "price_per_item_points": grant.price_per_item_points,
+        "point_price_active_version_id": grant.point_price_active_version_id,
         "config_override": grant.config_override,
         "call_quota": grant.call_quota,
         "concurrency_limit": grant.concurrency_limit,

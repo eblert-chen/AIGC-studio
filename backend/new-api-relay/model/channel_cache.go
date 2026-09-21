@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -116,10 +117,23 @@ func InitChannelCache() {
 }
 
 func SyncChannelCache(frequency int) {
+	SyncChannelCacheWithContext(context.Background(), frequency)
+}
+
+func SyncChannelCacheWithContext(ctx context.Context, frequency int) {
+	if ctx == nil || frequency <= 0 {
+		return
+	}
+	ticker := time.NewTicker(time.Duration(frequency) * time.Second)
+	defer ticker.Stop()
 	for {
-		time.Sleep(time.Duration(frequency) * time.Second)
-		common.SysLog("syncing channels from database")
-		InitChannelCache()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			common.SysLog("syncing channels from database")
+			InitChannelCache()
+		}
 	}
 }
 

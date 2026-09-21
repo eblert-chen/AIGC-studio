@@ -11,10 +11,9 @@ const sharedEnv = read("deploy/relay-secure.env.example");
 const stagingEnv = read("deploy/relay-staging.env.example");
 const productionEnv = read("deploy/relay-production.env.example");
 const runbook = read("docs/new-api-production-deployment.md");
+const relayMigration = read("docs/relay-new-api-migration.md");
 const deploymentRunbook = read("docs/deployment-runbook.md");
 const releaseReadiness = read("docs/release-readiness.md");
-const projectReadme = read("README.md");
-const relayMigrationGuide = read("docs/relay-new-api-migration.md");
 const platformIngress = read("infra/nginx/platform-api.conf");
 const gitignore = read(".gitignore");
 const relayVersion = read("backend/new-api-relay/VERSION");
@@ -33,6 +32,18 @@ const relaySchemaPostgresGate = read(
 const relaySchemaV2PostgresGate = read(
   "backend/new-api-relay/model/schema_migration_v2_postgres_test.go",
 );
+const relaySchemaV5PostgresGate = read(
+  "backend/new-api-relay/model/schema_migration_v5_postgres_test.go",
+);
+const relaySchemaV6PostgresGate = read(
+  "backend/new-api-relay/model/schema_migration_v6_postgres_test.go",
+);
+const relaySchemaV7PostgresGate = read(
+  "backend/new-api-relay/model/schema_migration_v7_postgres_test.go",
+);
+const relaySchemaV8PostgresGate = read(
+  "backend/new-api-relay/model/schema_migration_v8_postgres_test.go",
+);
 const relaySchemaArtifactGate = read(
   "backend/new-api-relay/model/schema_artifact_test.go",
 );
@@ -42,8 +53,20 @@ const relaySchemaMigrationGate = read(
 const relaySchemaV1FixturePatch = read(
   "backend/new-api-relay/scripts/fixtures/relay-schema-v1-pg16-tls-test-fixture.patch",
 );
+const relaySchemaV1ApplicationReferenceFixture = read(
+  "backend/new-api-relay/scripts/fixtures/relay-schema-v1-application-reference-test.go.fixture",
+);
 const relayDatabaseRoleAttestation = read(
   "backend/new-api-relay/model/database_role_attestation.go",
+);
+const relayRuntimeDatabaseRoleProof = read(
+  "backend/new-api-relay/model/runtime_database_role_proof.go",
+);
+const relayDownloadEdgeDatabaseRoleProof = read(
+  "backend/new-api-relay/model/download_edge_database_privilege_manifest.go",
+);
+const relayAPIReadiness = read(
+  "backend/new-api-relay/service/platform_api_readiness.go",
 );
 const relayMain = read("backend/new-api-relay/main.go");
 const relayEdgeMain = read("backend/new-api-relay/cmd/relay-download-edge/main.go");
@@ -51,6 +74,31 @@ const relayEdgeService = read("backend/new-api-relay/service/platform_download_e
 const relayDatabaseReleaseProof = read(
   "backend/new-api-relay/service/platform_database_release_proof.go",
 );
+const relaySchemaVersionMatch = relaySchemaContract.match(
+  /RelaySchemaTargetVersion\s+int64\s*=\s*([0-9]+)/,
+);
+assert.ok(relaySchemaVersionMatch, "Relay schema contract must expose a target version");
+const currentRelaySchemaVersion = Number.parseInt(relaySchemaVersionMatch[1], 10);
+const platformPrivilegeFacade = read("backend/platform/platform_api/database_privileges.py");
+const currentPlatformPolicyMatch = platformPrivilegeFacade.match(
+  /^CURRENT_PLATFORM_DATABASE_PRIVILEGE_POLICY = _policy_v([0-9]+)$/m,
+);
+assert.ok(currentPlatformPolicyMatch, "Platform privilege facade must select one current policy");
+const currentPlatformPolicyVersion = Number.parseInt(currentPlatformPolicyMatch[1], 10);
+const currentPlatformPolicy = read(
+  `backend/platform/platform_api/database_privileges_v${currentPlatformPolicyVersion}.py`,
+);
+const currentPlatformHeadMatch = currentPlatformPolicy.match(/^ALEMBIC_HEAD = "([a-z0-9_]+)"$/m);
+assert.ok(currentPlatformHeadMatch, "current Platform policy must bind one Alembic head");
+const currentPlatformHead = currentPlatformHeadMatch[1];
+const currentPlatformMigration = read(
+  `backend/platform/migrations/versions/${currentPlatformHead}.py`,
+);
+const currentPlatformPreviousMatch = currentPlatformMigration.match(
+  /^down_revision: str \| None = "([a-z0-9_]+)"$/m,
+);
+assert.ok(currentPlatformPreviousMatch, "current Platform migration must bind one direct predecessor");
+const currentPlatformPrevious = currentPlatformPreviousMatch[1];
 
 function serviceBlock(source, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -82,6 +130,30 @@ test("makes the immutable previous-candidate PostgreSQL 16 upgrade a mandatory r
     /scripts\/test-relay-schema-legacy-pg16\.ps1/,
   );
   assert.match(relayMakefile, /PowerShell is required[\s\S]+exit 1/);
+  assert.match(
+    relayLegacySchemaGate,
+    /Get-Command node -CommandType Application -ErrorAction SilentlyContinue/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /relay-candidate-baseline\.mjs[\s\S]+--check 2>&1[\s\S]+candidateBaselineCheckExitCode -ne 0/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /candidate baseline matches current Relay, Platform, and harness sources/,
+  );
+  const baselineCheckIndex = relayLegacySchemaGate.indexOf(
+    "$candidateBaselineCheckOutput",
+  );
+  const firstDockerUseIndex = relayLegacySchemaGate.indexOf(
+    "docker image inspect $CandidateImage",
+  );
+  assert.ok(baselineCheckIndex >= 0);
+  assert.ok(firstDockerUseIndex > baselineCheckIndex);
+  assert.doesNotMatch(
+    relayLegacySchemaGate,
+    /throw\s+"[^"]*\$candidateBaselineCheckOutput/,
+  );
   assert.match(relayLegacySchemaGate, new RegExp(candidateDigest));
   assert.match(
     relayLegacySchemaGate,
@@ -97,19 +169,59 @@ test("makes the immutable previous-candidate PostgreSQL 16 upgrade a mandatory r
     "qualified-postgres-image-id=",
     "relay-schema-v1-source-revision=",
     "relay-schema-v1-test-fixture-patch-sha256=",
-    "fresh-v3-row3-only-gate=PASS",
+    "relay-schema-v1-application-reference-fixture-sha256=",
+    "relay-schema-web-dist-fixture-sha256=",
+    "relay-schema-v4-image-id=",
+    "relay-schema-v4-image-repo-digest=",
+    "relay-schema-v5-image-id=",
+    "relay-schema-v5-image-repo-digest=",
+    "relay-schema-v5-source-revision=",
+    "relay-schema-v6-image-id=",
+    "relay-schema-v6-image-repo-digest=",
+    "relay-schema-v6-source-revision=",
+    "relay-schema-v6-upstream-revision=",
+    "relay-schema-v6-source-snapshot=",
+    "relay-schema-v6-source-file-count=",
+    "relay-schema-v7-source-revision=",
+    "fresh-v7-row7-only-gate=PASS",
+    "fresh-v1-row1-only-reference-gate=PASS",
     "legacy-to-v1-gate=PASS",
     "v1-compatible-no-runtime-side-effects=PASS",
     "historical-frozen-v1-to-v2-no-catalog-delta-gate=PASS",
     "v1-to-v2-no-catalog-delta-gate=PASS",
-    "v2-to-v3-one-shot-gate=PASS",
+    "current-v7-owner-mode-preflight=PASS",
+    "v2-to-v3-frozen-one-shot-gate=PASS",
     "exact-v1-to-v3-ledger-gate=PASS",
-    "post-v3-proof-root-principal-api-current-gate=PASS",
-    "max-v2-ahead-no-direct-rollback-gate=PASS",
+    "pre-v4-zero-acl-role-stub-gate=PASS",
+    "v3-to-pinned-v4-one-shot-gate=PASS",
+    "exact-v1-to-v4-ledger-gate=PASS",
+    "pinned-v4-state-ledger-catalog-acl-guards-gate=PASS",
+    "v4-to-v5-diagnostic-taxonomy-rollback-gate=PASS",
+    "pre-v5-zero-acl-role-stub-gate=PASS",
+    "v4-to-pinned-v5-one-shot-gate=PASS",
+    "exact-v1-to-v5-ledger-gate=PASS",
+    "pinned-v5-to-v6-lifecycle-rollback-gate=PASS",
+    "pre-v6-zero-acl-role-stub-gate=PASS",
+    "v5-to-pinned-v6-one-shot-gate=PASS",
+    "exact-v1-to-v6-ledger-gate=PASS",
+    "pinned-v6-to-v7-artifact-content-rollback-gate=PASS",
+    "pre-v7-zero-acl-role-stub-gate=PASS",
+    "v6-to-v7-one-shot-gate=PASS",
+    "exact-v1-to-v7-ledger-gate=PASS",
+    "post-v7-proof-root-principal-api-edge-current-gate=PASS",
+    "post-v7-route-binding-mutation-fencing-gate=PASS",
+    "max-v6-ahead-no-direct-rollback-gate=PASS",
+    "max-v5-ahead-no-direct-rollback-gate=PASS",
     "legacy-schema-upgrade-gate=PASS",
   ]) {
     assert.ok(relayLegacySchemaGate.includes(evidence), `missing legacy gate evidence ${evidence}`);
   }
+  assert.ok(
+    relayLegacySchemaGate.includes(
+      '"1|7|7|clean|1,2,3,4,5,6,7|1|1|5|5"',
+    ),
+    "the terminal protected lifecycle snapshot must retain all five service principals and tokens",
+  );
   assert.match(relayLegacySchemaGate, /immutable previous-candidate image is unavailable/);
   assert.match(
     relayLegacySchemaGate,
@@ -131,15 +243,196 @@ test("makes the immutable previous-candidate PostgreSQL 16 upgrade a mandatory r
     /TestRelaySchemaPostgresV1ToV2NoCatalogDelta/,
   );
   assert.match(relayLegacySchemaGate, /2535972505c63a059fdbe678e79577671481c358/);
+  assert.match(relayLegacySchemaGate, /f0042a96b048b501c9ac76470a234cffc0a54926/);
+  assert.match(relayLegacySchemaGate, /53a5d65cefbc4400e9e572665b227cf4a9628774aa77c814be4082f1abd7f84f/);
+  assert.match(relayLegacySchemaGate, /d5998561f1142e5189ca15f6086b42da31127ecb5d58269ac492dc4aa3f61b9a/);
+  assert.match(relayLegacySchemaGate, /v5-canary-4e1c94bc/);
+  assert.match(relayLegacySchemaGate, /576b836d26f19825532feaca1f9f7950f28affc78477d61d7b29dca474b8817f/);
+  assert.match(relayLegacySchemaGate, /v6-canary-0b0b8bf5/);
+  assert.match(relayLegacySchemaGate, /0b0b8bf597aeb9e69e89a04f9b4d7b1d712e3391/);
+  assert.match(relayLegacySchemaGate, /1ad8305e212ac45bca32d2bbcf064c20bdb4337623b952452659748b17d2e836/);
+  assert.match(relayLegacySchemaGate, /pinnedV6SourceFileCount = "2106"/);
+  assert.match(relayLegacySchemaGate, /e0edb8c300ffb44695341c84541ac0d4c86297535f0e8f7982873ac10c119a67/);
+  assert.match(relayLegacySchemaGate, /TEST_POSTGRES_LEGACY_REFERENCE_DSN=\$v1ReferenceDSN/);
   assert.match(relayLegacySchemaGate, /relay-provision-database-roles/);
   assert.match(relayLegacySchemaGate, /\/release\/new-api relay-migrate/);
-  assert.match(relayLegacySchemaGate, /3\|3\|3\|clean\|3/);
+  assert.match(
+    relayLegacySchemaGate,
+    /\$legacyRoleAdminDSN = "postgresql:\/\/postgres:[^\r\n]+sslrootcert=\/run\/relay-secrets\/current-v6-ca\.crt&search_path=public"/,
+  );
+  assert.equal(
+    (relayLegacySchemaGate.match(/sslrootcert=\/run\/relay-secrets\/current-v6-ca\.crt/g) ?? []).length,
+    3,
+  );
+  assert.equal(
+    (relayLegacySchemaGate.match(/--user 10001:10001/g) ?? []).length,
+    8,
+  );
+  assert.doesNotMatch(relayLegacySchemaGate, /RELAY_DATABASE_CA_FILE=\/tls\/ca\.crt/);
+  assert.match(
+    relayLegacySchemaGate,
+    /cp \/tls\/ca\.crt \/secrets\/current-v6-ca\.crt[\s\S]+chown 10001:10001 \/secrets\/current-v6-\*[\s\S]+chmod 0400 \/secrets\/current-v6-\*/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /\$providerKeyringJSONBase64 = \[Convert\]::ToBase64String\(\[System\.Text\.Encoding\]::UTF8\.GetBytes\(\$providerKeyringJSON\)\)/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /PROVIDER_KEYRING_BASE64=\$providerKeyringJSONBase64[\s\S]+\$PROVIDER_KEYRING_BASE64" \| base64 -d > \/secrets\/current-v6-provider-keyring\.json/,
+  );
+  assert.doesNotMatch(relayLegacySchemaGate, /PROVIDER_KEYRING=\$providerKeyringJSON/);
+  assert.match(
+    relayLegacySchemaGate,
+    /test -x \/release-current\/new-api[\s\S]+test -x \/release-v3\/new-api[\s\S]+stat -c %u:%g:%a "\$secret" \| grep -Fqx 10001:10001:400/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /\$legacyDiagnosticDSN = "postgresql:\/\/relay_schema_migrator:[^\r\n]+\/new_api\?sslmode=verify-full&sslrootcert=\/tls\/ca\.crt[^\r\n]+"[\s\S]+TEST_RELAY_SCHEMA_V5_POSTGRES_DSN=\$legacyDiagnosticDSN[\s\S]+v4-to-v5-diagnostic-rollback-preserves-exact-v4-gate=PASS/,
+  );
+  assert.doesNotMatch(
+    relayLegacySchemaGate,
+    /pg_dump[^\r\n]+--schema-only[^\r\n]+\|[\s\S]{0,300}TEST_RELAY_SCHEMA_V5_POSTGRES_DSN/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /\$currentV7RolePreOutput[\s\S]*?RELAY_DATABASE_TLS_ATTESTATION_REQUIRED=true[\s\S]*?\/release\/new-api relay-provision-database-roles/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /\$pinnedV6MigrationOutput[\s\S]*?RELAY_DATABASE_TLS_ATTESTATION_REQUIRED=true[\s\S]*?\$pinnedV6Image relay-migrate/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /\$currentV7MigrationOutput[\s\S]*?RELAY_DATABASE_TLS_ATTESTATION_REQUIRED=true[\s\S]*?\/release\/new-api relay-migrate/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /\$pinnedV3MigrationOutput[\s\S]*?RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED=true[\s\S]*?RELAY_DATABASE_TLS_ATTESTATION_REQUIRED=false[\s\S]*?SQL_DSN_FILE=\/run\/relay-secrets\/pinned-v3-migration-dsn[\s\S]*?\/release\/new-api relay-migrate/,
+  );
+  assert.equal(
+    (relayLegacySchemaGate.match(/RELAY_DATABASE_TLS_ATTESTATION_REQUIRED=false/g) ?? []).length,
+    2,
+    "only the frozen-v3 and frozen-v4 local ACL rehearsals may disable TLS attestation",
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /\$pinnedV3MigrationDSN\s*=\s*"postgresql:\/\/relay_schema_migrator:[^\r\n]+\?sslmode=require&search_path=public&options=-c%20role%3Drelay_schema_owner"/,
+  );
+  assert.doesNotMatch(
+    relayLegacySchemaGate.match(/\$pinnedV3MigrationOutput[\s\S]*?\$pinnedV3MigrationExitCode/)?.[0] ?? "",
+    /RELAY_DATABASE_CA_FILE|sslrootcert|current-v6-migration-dsn/,
+  );
+  assert.match(relayLegacySchemaGate, /pinned-v3-local-tls-require-acl-rehearsal=PASS/);
+  assert.match(
+    relayLegacySchemaGate,
+    /\$pinnedV4MigrationOutput[\s\S]*?RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED=true[\s\S]*?RELAY_DATABASE_TLS_ATTESTATION_REQUIRED=false[\s\S]*?SQL_DSN_FILE=\/run\/relay-secrets\/pinned-v4-migration-dsn[\s\S]*?\$pinnedV4Image relay-migrate/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /\$pinnedV4MigrationDSN\s*=\s*"postgresql:\/\/relay_schema_migrator:[^\r\n]+\?sslmode=require&search_path=public&options=-c%20role%3Drelay_schema_owner"/,
+  );
+  assert.doesNotMatch(
+    relayLegacySchemaGate.match(/\$pinnedV4MigrationOutput[\s\S]*?\$pinnedV4MigrationExitCode/)?.[0] ?? "",
+    /RELAY_DATABASE_CA_FILE|sslrootcert|current-v6-migration-dsn/,
+  );
+  assert.match(relayLegacySchemaGate, /pinned-v4-local-tls-require-acl-rehearsal=PASS/);
+  const postV7LifecycleStage =
+    relayLegacySchemaGate.match(/\$postV7LifecycleOutput[\s\S]*?\$postV7LifecycleExitCode/)?.[0] ?? "";
+  assert.match(postV7LifecycleStage, /TEST_POSTGRES_LIFECYCLE_ADMIN_DSN=\$legacyRoleAdminDSN/);
+  assert.match(postV7LifecycleStage, /TEST_POSTGRES_LIFECYCLE_MIGRATION_DSN=\$legacyMigrationDSN/);
+  assert.match(postV7LifecycleStage, /TEST_POSTGRES_LIFECYCLE_RUNTIME_DSN=\$legacyRuntimeDSN/);
+  assert.doesNotMatch(postV7LifecycleStage, /TEST_POSTGRES_LIFECYCLE_ADMIN_DSN=\$legacyDSN/);
+  assert.match(
+    relayLegacySchemaGate,
+    /\$pinnedV5MigrationOutput[\s\S]*?RELAY_DATABASE_TLS_ATTESTATION_REQUIRED=true[\s\S]*?RELAY_DATABASE_CA_FILE=\/run\/relay-secrets\/current-v6-ca\.crt[\s\S]*?SQL_DSN_FILE=\/run\/relay-secrets\/current-v6-migration-dsn[\s\S]*?\$pinnedV5Image relay-migrate/,
+  );
+  assert.match(relayLegacySchemaGate, /7\|7\|7\|clean\|7/);
   assert.match(relayLegacySchemaGate, /1\|3\|3\|clean\|1,2,3/);
+  assert.match(relayLegacySchemaGate, /1\|4\|4\|clean\|1,2,3,4/);
+  assert.match(relayLegacySchemaGate, /1\|5\|5\|clean\|1,2,3,4,5/);
+  assert.match(relayLegacySchemaGate, /1\|6\|6\|clean\|1,2,3,4,5,6/);
+  assert.match(relayLegacySchemaGate, /1\|7\|7\|clean\|1,2,3,4,5,6,7/);
   assert.match(relayLegacySchemaGate, /status\.classification -ne "ahead"/);
+  assert.match(
+    relayLegacySchemaGate,
+    /TestRelaySchemaV4RouteBindingGuardsConfiguredDatabases/,
+  );
   assert.match(
     relayLegacySchemaGate,
     /TestRelaySchemaPostgresProtectedLifecycleProcess/,
   );
+  assert.match(
+    relaySchemaPostgresGate,
+    /relaySchemaTestDownloadEdgeRuntimeReady[\s\S]+VerifyRelayDownloadEdgeDatabaseRole[\s\S]+\/health\/ready[\s\S]+relaySchemaTestEdgeRole/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /same-database current-v7 proof\/root\/principal\/API\/download-edge lifecycle/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /TestRelaySchemaPostgresV4ToV5DiagnosticTaxonomy/,
+  );
+  assert.match(
+    relaySchemaV5PostgresGate,
+    /TestRelaySchemaPostgresV4ToV5DiagnosticTaxonomy[\s\S]+relaySchemaV4FrozenChecksumSHA256[\s\S]+relaySchemaV5FrozenChecksumSHA256/,
+  );
+  assert.match(
+    relaySchemaV5PostgresGate,
+    /TestRelaySchemaPostgresPinnedV4ReleaseFixture[\s\S]+verifyRelayRuntimeDatabasePrivilegeManifest[\s\S]+verifyRelayDownloadEdgeCurrentDatabaseRole/,
+  );
+  assert.match(
+    relaySchemaV5PostgresGate,
+    /Model\(&PlatformGenerationProviderRoute\{\}\)[\s\S]+Update\("capability_profile_id", "tampered-partial-profile"\)/,
+  );
+  assert.match(
+    relaySchemaV5PostgresGate,
+    /Model\(&RelaySchemaMigration\{\}\)[\s\S]+Update\("name", "tampered-v4-receipt"\)/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /\$preV4RoleOutput[\s\S]+?relay-provision-database-roles[\s\S]+?\$preV4Role\.kind -ne "relay_database_role_provision"[\s\S]+?\$preV4Role\.state -ne "provisioned"[\s\S]+?pre-v4-zero-acl-role-stub-gate=PASS/,
+  );
+  assert.match(
+    relayLegacySchemaGate,
+    /\$preV5RoleOutput[\s\S]+?relay-provision-database-roles[\s\S]+?\$preV5Role\.kind -ne "relay_database_role_provision"[\s\S]+?\$preV5Role\.state -ne "provisioned"[\s\S]+?pre-v5-zero-acl-role-stub-gate=PASS/,
+  );
+  const pinnedV3MigrationIndex = relayLegacySchemaGate.indexOf("$pinnedV3MigrationOutput");
+  const preV4RoleIndex = relayLegacySchemaGate.indexOf("$preV4RoleOutput");
+  const pinnedV4MigrationIndex = relayLegacySchemaGate.indexOf("$pinnedV4MigrationOutput");
+  const pinnedV4VerifierIndex = relayLegacySchemaGate.indexOf("$pinnedV4ReleaseFixtureOutput");
+  const preV5RoleIndex = relayLegacySchemaGate.indexOf("$preV5RoleOutput");
+  const pinnedV5MigrationIndex = relayLegacySchemaGate.indexOf("$pinnedV5MigrationOutput");
+  const pinnedV5VerifierIndex = relayLegacySchemaGate.indexOf("$v5ToV6LifecycleOutput");
+  const preV6RoleIndex = relayLegacySchemaGate.indexOf("$preV6RoleOutput");
+  const pinnedV6MigrationIndex = relayLegacySchemaGate.indexOf("$pinnedV6MigrationOutput");
+  const pinnedV6VerifierIndex = relayLegacySchemaGate.indexOf("$v6ToV7ArtifactOutput");
+  const preV7RoleIndex = relayLegacySchemaGate.indexOf("$preV7RoleOutput");
+  const currentV7MigrationIndex = relayLegacySchemaGate.indexOf("$currentV7MigrationOutput");
+  const crossVersionStages = [
+    [pinnedV3MigrationIndex, "pinned-v3 migration"],
+    [preV4RoleIndex, "pre-v4 zero-ACL role-pre"],
+    [pinnedV4MigrationIndex, "pinned-v4 migration"],
+    [pinnedV4VerifierIndex, "pinned-v4 full verifier"],
+    [preV5RoleIndex, "pre-v5 zero-ACL role-pre"],
+    [pinnedV5MigrationIndex, "pinned-v5 migration"],
+    [pinnedV5VerifierIndex, "pinned-v5 rollback verifier"],
+    [preV6RoleIndex, "pre-v6 zero-ACL role-pre"],
+    [pinnedV6MigrationIndex, "pinned-v6 migration"],
+    [pinnedV6VerifierIndex, "pinned-v6 rollback verifier"],
+    [preV7RoleIndex, "pre-v7 zero-ACL role-pre"],
+    [currentV7MigrationIndex, "current-v7 migration"],
+  ];
+  for (const [index, stage] of crossVersionStages) {
+    assert.ok(index >= 0, `missing ${stage} stage`);
+  }
+  for (let index = 1; index < crossVersionStages.length; index += 1) {
+    assert.ok(
+      crossVersionStages[index][0] > crossVersionStages[index - 1][0],
+      `${crossVersionStages[index][1]} must follow ${crossVersionStages[index - 1][1]}`,
+    );
+  }
   assert.match(
     relayLegacySchemaGate,
     /1\|1\|1\|clean\|1\|1\|1\|0\|0/,
@@ -148,9 +441,18 @@ test("makes the immutable previous-candidate PostgreSQL 16 upgrade a mandatory r
     relayLegacySchemaGate,
     /pinnedV1FixturePatchSHA256 = "dd3bbe7dea195bf83222f2acb32ea0ab96208ac64d7f66dcbc2ddb5f5e3a3449"/,
   );
+  assert.match(
+    relayLegacySchemaGate,
+    /pinnedV1ApplicationReferenceFixtureSHA256 = "905ec8ac2cf0915820029292e015ca54dbe833f8b675e78d7404759080aeacfc"/,
+  );
   assert.match(relayLegacySchemaGate, /'lifecycle_root'/);
   assert.match(relayLegacySchemaGate, /'v0\.0\.0'/);
   assert.match(relayLegacySchemaGate, /'SUCCESS','100%'/);
+  assert.match(
+    relayLegacySchemaGate,
+    /VALUES \(91001,1,'sk-legacy-channel-fixture-not-real',2,'legacy-migration-channel-fixture'/,
+    "the inert legacy migration channel must stay manually disabled so runtime monitoring cannot rewrite its exact preservation digest",
+  );
   assert.match(
     relayLegacySchemaGate,
     /\$fixtureSQL \| docker exec -i \$legacyPostgres psql -v ON_ERROR_STOP=1/,
@@ -194,18 +496,36 @@ test("makes the immutable previous-candidate PostgreSQL 16 upgrade a mandatory r
   assert.match(relaySchemaV1FixturePatch, /protectedSideEffects\.RootCount/);
   assert.match(relaySchemaV1FixturePatch, /protectedSideEffects\.PrincipalTokenCount/);
   assert.doesNotMatch(relaySchemaV1FixturePatch, /web\/dist|main_root_secret_isolation\.go/);
+  assert.match(relaySchemaV1ApplicationReferenceFixture, /RunRelaySchemaMigrations/);
+  assert.match(relaySchemaV1ApplicationReferenceFixture, /require\.Len\(t, ledger, 1\)/);
+  assert.match(relaySchemaV1ApplicationReferenceFixture, /relaySchemaV1PostgresCatalogSHA256/);
+  assert.doesNotMatch(relaySchemaV1ApplicationReferenceFixture, /\.Skip|Skipf|SkipNow/);
+  assert.match(relayLegacySchemaGate, /TestRelaySchemaPostgresFreshV1ApplicationReference/);
   assert.doesNotMatch(relayLegacySchemaGate, /postgres:16-alpine|sslmode=disable/);
   assert.match(runbook, /make test-relay-schema-legacy-pg16/);
   assert.match(runbook, /not an optional developer\s+smoke test/);
   assert.match(runbook, /missing image[\s\S]+release failure/);
-  assert.match(runbook, /raw\/unversioned[\s\S]+immutable schema-v1[\s\S]+v1-to-v2[\s\S]+v2-to-v3/i);
+  assert.match(runbook, /raw\/unversioned[\s\S]+immutable schema-v1[\s\S]+v1-to-v2[\s\S]+v2-to-v3[\s\S]+v3-to-v4[\s\S]+v4-to-v5[\s\S]+v5-to-v6/i);
+  assert.match(
+    runbook,
+    /pinned-v1 application-catalog reference[\s\S]+only the frozen v1[\s\S]+application catalog[\s\S]+does not claim old-v1 binary runtime or system[\s\S]+attestation[\s\S]+real `\/health\/ready` process acceptance/i,
+  );
+  assert.match(
+    deploymentRunbook,
+    /pinned-v1 application-catalog[\s\S]+只证明冻结的 v1 application catalog[\s\S]+不代表旧 v1 runtime 或 system-catalog acceptance/i,
+  );
+  assert.match(
+    deploymentRunbook,
+    /fresh-v1-row1-only[\s\S]+application-reference[\s\S]+post-v7[\s\S]+proof\/root\/principal\/API\/download-edge/i,
+  );
   assert.match(runbook, /absent test event or `skip` as failure/);
 });
 
-test("preserves frozen Relay schema v2 and versions the credential-order correction as v3", () => {
-  assert.match(relaySchemaContract, /RelaySchemaTargetVersion\s+int64\s*=\s*3/);
+test("preserves historical Relay schemas and binds the current provider-cost release", () => {
+  assert.match(relaySchemaContract, new RegExp(`RelaySchemaTargetVersion\\s+int64\\s*=\\s*${currentRelaySchemaVersion}`));
   assert.match(relaySchemaContract, /RelaySchemaMinVersion\s+int64\s*=\s*1/);
-  assert.match(relaySchemaContract, /RelaySchemaMaxVersion\s+int64\s*=\s*3/);
+  assert.match(relaySchemaContract, new RegExp(`RelaySchemaMaxVersion\\s+int64\\s*=\\s*${currentRelaySchemaVersion}`));
+  assert.equal(currentRelaySchemaVersion, 8, "update the v8 release assertions for a newer schema instead of silently accepting it");
   assert.match(
     relaySchemaContract,
     /relaySchemaV1FrozenChecksumSHA256\s*=\s*"sha256:369af2b5c47652ae9e03a2f79ba64f56c3b517deb7f4c8f933ce3957082698a7"/,
@@ -226,6 +546,71 @@ test("preserves frozen Relay schema v2 and versions the credential-order correct
     relaySchemaContract,
     /relaySchemaV3FrozenChecksumSHA256\s*=\s*"sha256:0295d36ca5032088cc2e0b3b7f935aaeb24c3c5847a6b0a92a4dc3099d58e553"/,
   );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV4SourceArtifactSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV4ModelArtifactSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV4FrozenChecksumSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.doesNotMatch(relaySchemaContract, /relaySchemaV4[^\n]*pending/);
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV5SourceArtifactSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV5ModelArtifactSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV5FrozenChecksumSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.doesNotMatch(relaySchemaContract, /relaySchemaV5[^\n]*pending/);
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV6SourceArtifactSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV6ModelArtifactSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV6FrozenChecksumSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.doesNotMatch(relaySchemaContract, /relaySchemaV6[^\n]*pending/);
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV7SourceArtifactSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV7ModelArtifactSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV7FrozenChecksumSHA256\s*=\s*"sha256:da3ddb86260818f894b13fc6b3ad34031b6089dddb83954172984d07e451c4c3"/,
+  );
+  assert.doesNotMatch(relaySchemaContract, /relaySchemaV7[^\n]*pending/);
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV8SourceArtifactSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV8ModelArtifactSHA256\s*=\s*"sha256:[0-9a-f]{64}"/,
+  );
+  assert.match(
+    relaySchemaContract,
+    /relaySchemaV8FrozenChecksumSHA256\s*=\s*"sha256:1def22667e226cf8dfbd467e18445874dcce6959a8b9e74b43623e14bbc31de7"/,
+  );
+  assert.doesNotMatch(relaySchemaContract, /relaySchemaV8[^\n]*pending/);
   const catalogDigest =
     "sha256:0ebe3f289439193f207f087452c289504fdd231759ac2b3d0159f8cc61d6cb6d";
   assert.match(
@@ -240,11 +625,74 @@ test("preserves frozen Relay schema v2 and versions the credential-order correct
     relaySchemaIntegrity,
     new RegExp(`relaySchemaV3PostgresCatalogSHA256 = "${catalogDigest}"`),
   );
+  assert.match(
+    relaySchemaIntegrity,
+    /relaySchemaV4PostgresCatalogSHA256 = "sha256:[0-9a-f]{64}"/,
+  );
+  assert.doesNotMatch(relaySchemaIntegrity, /relaySchemaV4PostgresCatalogSHA256 = "sha256:pending"/);
+  assert.match(
+    relaySchemaIntegrity,
+    /relaySchemaV5PostgresCatalogSHA256 = "sha256:[0-9a-f]{64}"/,
+  );
+  assert.doesNotMatch(relaySchemaIntegrity, /relaySchemaV5PostgresCatalogSHA256 = "sha256:pending"/);
+  assert.match(
+    relaySchemaIntegrity,
+    /relaySchemaV6PostgresCatalogSHA256 = "sha256:[0-9a-f]{64}"/,
+  );
+  assert.doesNotMatch(relaySchemaIntegrity, /relaySchemaV6PostgresCatalogSHA256 = "sha256:pending"/);
+  assert.match(
+    relaySchemaIntegrity,
+    /relaySchemaV7PostgresCatalogSHA256 = "sha256:af1377416cb2788093391a03491d2bb380fc4b81db5f08d0d628f3f8a2abef01"/,
+  );
+  assert.doesNotMatch(relaySchemaIntegrity, /relaySchemaV7PostgresCatalogSHA256 = "sha256:pending"/);
+  assert.match(
+    relaySchemaIntegrity,
+    /relaySchemaV8PostgresCatalogSHA256 = "sha256:6374866475d3b9c404592c39ef5ad8be1b63066308b502e5362dbc47e469823c"/,
+  );
+  assert.doesNotMatch(relaySchemaIntegrity, /relaySchemaV8PostgresCatalogSHA256 = "sha256:pending"/);
+
+  for (const evidence of [
+    /TEST_RELAY_SCHEMA_V5_RELEASE_DSN/,
+    /relaySchemaV5FrozenChecksumSHA256/,
+    /relaySchemaV6FrozenChecksumSHA256/,
+    /relaySchemaV5PostgresCatalogSHA256/,
+    /relaySchemaV6PostgresCatalogSHA256/,
+    /submission_unknown/,
+    /reconciled_no_creation/,
+  ]) {
+    assert.match(relaySchemaV6PostgresGate, evidence);
+  }
+  for (const evidence of [
+    /TEST_RELAY_SCHEMA_V6_RELEASE_DSN/,
+    /relaySchemaV6FrozenChecksumSHA256/,
+    /relaySchemaV7FrozenChecksumSHA256/,
+    /relaySchemaV6PostgresCatalogSHA256/,
+    /relaySchemaV7PostgresCatalogSHA256/,
+    /relaySchemaV7RequirePNGCompletion/,
+    /image\/jpeg/,
+    /unchangedObjectOIDsBefore/,
+    /ledgerBefore/,
+  ]) {
+    assert.match(relaySchemaV7PostgresGate, evidence);
+  }
+  for (const evidence of [
+    /TEST_RELAY_SCHEMA_V7_TO_V8_DSN/,
+    /definitions\[:7\]/,
+    /relaySchemaV7FrozenVersion/,
+    /relaySchemaV8FrozenChecksumSHA256/,
+    /relaySchemaV7PostgresCatalogSHA256/,
+    /relaySchemaV8PostgresCatalogSHA256/,
+    /rollback v8 probe/,
+    /v8 must not rewrite the frozen v7 ledger/,
+    /PlatformProviderCostAllocationEvidence/,
+  ]) {
+    assert.match(relaySchemaV8PostgresGate, evidence);
+  }
 
   for (const evidence of [
     /Equal\(t, int64\(0\), result\.FromVersion\)/,
     /Equal\(t, RelaySchemaTargetVersion, result\.Status\.BaselineVersion\)/,
-    /Len\(t, freshLedger, 1, "fresh v3 must not fabricate unexecuted historical ledger events"\)/,
+    /Len\(t, freshLedger, 1, "fresh target must not fabricate unexecuted historical ledger events"\)/,
     /Equal\(t, RelaySchemaTargetVersion, freshLedger\[0\]\.Version\)/,
   ]) {
     assert.match(relaySchemaPostgresGate, evidence);
@@ -276,7 +724,11 @@ test("preserves frozen Relay schema v2 and versions the credential-order correct
   }
   assert.match(
     relaySchemaMigrationGate,
-    /TestRelaySchemaV3TopLevelMigrationNeverExecutesLiveV1[\s\S]+liveV1Sentinel[\s\S]+fresh v3 bootstrap[\s\S]+exact v1 through v3 bridge/,
+    /TestRelaySchemaV5TopLevelMigrationNeverExecutesLiveV1[\s\S]+liveV1Sentinel[\s\S]+fresh v5 bootstrap[\s\S]+exact v1 through v5 bridge/,
+  );
+  assert.match(
+    relaySchemaV5PostgresGate,
+    /exact database produced by the pinned immutable v4 binary[\s\S]+rollback-only transaction[\s\S]+migrateRelaySchemaV5ChannelTestDiagnosticTaxonomy/,
   );
 
   assert.match(
@@ -284,23 +736,69 @@ test("preserves frozen Relay schema v2 and versions the credential-order correct
     /GetRelayRuntimeDatabaseRoleStatus[\s\S]+RequireRelaySchemaCurrent\(db\)/,
   );
   assert.match(
-    relayMain,
-    /RelayDatabaseRoleAttestationRequired\(\)[\s\S]+RequireRelaySchemaCurrent\(model\.DB\)[\s\S]+else if[\s\S]+RequireRelaySchemaCompatible\(model\.DB\)/,
+    relayRuntimeDatabaseRoleProof,
+    /func AttestRelayRuntimeDatabaseRoleWithContext[\s\S]+verifyRelayProtectedDatabaseSurfacePreflight\(pinned[\s\S]+RequireRelaySchemaCurrent\(pinned\)[\s\S]+verifyRelayDatabaseRoleTopologyAfterExactSurface\(pinned/,
   );
-  for (const source of [relayEdgeMain, relayEdgeService]) {
-    assert.match(
-      source,
-      /protected[\s\S]+RequireRelaySchemaCurrent\(model\.DB\)[\s\S]+RequireRelaySchemaCompatible\(model\.DB\)/i,
-    );
-  }
+  const runtimeLiveProof = relayRuntimeDatabaseRoleProof.slice(
+    relayRuntimeDatabaseRoleProof.indexOf("func VerifyRelayRuntimeDatabaseRoleProof"),
+  );
+  assert.match(
+    runtimeLiveProof,
+    /verifyRelayDownloadEdgeSchemaReleaseProof\(pinned[\s\S]+verifyRelayDatabaseRoleLiveTopology\(pinned[\s\S]+verifyRelayRuntimeDatabasePrivilegeManifestOptimized\(pinned/,
+  );
+  assert.doesNotMatch(
+    runtimeLiveProof,
+    /RequireRelaySchemaCurrent|verifyRelayProtectedDatabaseSurfacePreflight|verifyRelayDatabaseRoleTopology\(pinned/,
+  );
+  assert.match(
+    relayAPIReadiness,
+    /platformRelayAPICatalogRefreshAfter[\s\S]+platformRelayAPICatalogMaximumAge[\s\S]+platformRelayAPICatalogRefreshTimeout/,
+  );
+  assert.match(
+    relayAPIReadiness,
+    /func \(readiness \*PlatformRelayAPIReadiness\) Verify\(ctx context\.Context\)[\s\S]+verifyPlatformRelayAPIDatabaseRoleProof\(requestDB, proof\)[\s\S]+proofStillValid\(proof\)/,
+  );
+  assert.match(
+    relayMain,
+    /AttestRelayRuntimeDatabaseRole\(model\.DB\)[\s\S]+NewProtectedPlatformRelayAPIReadiness[\s\S]+InstallProtectedPlatformRelayAPIReadiness[\s\S]+RequireRelaySchemaCompatible\(model\.DB\)/,
+  );
+  assert.match(
+    relayEdgeMain,
+    /if protected \{[\s\S]+AttestRelayDownloadEdgeDatabaseRole\(model\.DB\)[\s\S]+else \{[\s\S]+RequireRelaySchemaCompatible\(model\.DB\)/,
+  );
+  const edgeLiveProof = relayDownloadEdgeDatabaseRoleProof.slice(
+    relayDownloadEdgeDatabaseRoleProof.indexOf("func VerifyRelayDownloadEdgeDatabaseRoleProof"),
+    relayDownloadEdgeDatabaseRoleProof.indexOf("func verifyRelayDownloadEdgeDatabaseRoleForVersion(")
+  );
+  assert.match(
+    edgeLiveProof,
+    /verifyRelayDownloadEdgeSchemaReleaseProof\(pinned[\s\S]+verifyRelayDownloadEdgeDatabaseRoleForVersionLive\(pinned/,
+  );
+  assert.doesNotMatch(
+    edgeLiveProof,
+    /RequireRelaySchemaCurrent|verifyRelayProtectedDatabaseExactSurfaceFromEnvironment|verifyRelayDatabaseRoleTopology\(pinned/,
+  );
+  assert.match(
+    relayEdgeService,
+    /requestDB := model\.DB\.WithContext\(request\.Context\(\)\)[\s\S]+RequireRelaySchemaCompatible\(requestDB\)[\s\S]+verifyPlatformDownloadEdgeDatabaseRoleProof\(requestDB, protectedProof\)/,
+  );
   const verifyProofFunction = relayDatabaseReleaseProof.match(
     /func VerifyPlatformRelayDatabaseReleaseProof\([\s\S]+?\n\}/,
   )?.[0];
   assert.ok(verifyProofFunction, "missing database-proof verifier");
-  const proofCurrentConsumers = verifyProofFunction.match(
+  assert.match(verifyProofFunction, /attestPlatformRelayDatabaseReleaseProof\(db, consumer\)/);
+  const proofAttestationFunction = relayDatabaseReleaseProof.slice(
+    relayDatabaseReleaseProof.indexOf("func attestPlatformRelayDatabaseReleaseProofInternal("),
+    relayDatabaseReleaseProof.indexOf("func attestPlatformRelayDatabaseReleaseProof(\n"),
+  );
+  assert.ok(
+    proofAttestationFunction.startsWith("func attestPlatformRelayDatabaseReleaseProofInternal("),
+    "missing database-proof attestation implementation",
+  );
+  const proofCurrentConsumers = proofAttestationFunction.match(
     /switch consumer \{[\s\S]+?Relay database release proof requires the current schema/,
   )?.[0];
-  assert.ok(proofCurrentConsumers, "missing database-proof Current-v3 consumer gate");
+  assert.ok(proofCurrentConsumers, "missing database-proof current-schema consumer gate");
   for (const consumer of ["Post", "Principal", "API", "RootBootstrap", "Edge"]) {
     assert.match(proofCurrentConsumers, new RegExp(`Consumer${consumer}`));
   }
@@ -310,21 +808,52 @@ test("preserves frozen Relay schema v2 and versions the credential-order correct
     /root database release proof requires the current schema[\s\S]+principal rotation database release proof requires the current schema/,
   );
 
-  for (const document of [runbook, deploymentRunbook, releaseReadiness]) {
+  for (const document of [runbook, relayMigration, deploymentRunbook, releaseReadiness]) {
     assert.match(document, /no-catalog-delta/i);
     assert.match(document, /root[\s\S]+principal[\s\S]+API/i);
   }
-  for (const document of [
-    projectReadme,
+  for (const document of [runbook, relayMigration, deploymentRunbook, releaseReadiness]) {
+    assert.match(document, new RegExp(`target=${currentRelaySchemaVersion},min=1,max=${currentRelaySchemaVersion}`));
+    assert.match(document, new RegExp(`fresh[- ]v${currentRelaySchemaVersion}[\\s\\S]+\\[${currentRelaySchemaVersion}\\]`, "i"));
+    assert.match(document, /\[1,2,3,4,5,6,7,8\]/);
+    assert.match(document, /max(?:=7|-v7)[\s\S]+ahead/i);
+    assert.match(document, /pinned v3/i);
+    assert.match(document, /pinned-v4/i);
+    assert.match(document, /pinned-v5/i);
+    assert.match(document, /pinned[- ]v6/i);
+    assert.match(document, /current[- ]v8/i);
+    assert.match(document, /TEST_RELAY_SCHEMA_V7_TO_V8_DSN/);
+    assert.match(document, /PG16-constructed-v7→v8-gate=PASS \(9\.021s\)/);
+    assert.match(document, /PG16\+TLS\+pgAudit-full-qualification-gate=NOT_RUN/i);
+    assert.match(document, /v8[\s\S]{0,240}(?:NOT_RUN|未运行|not been run|尚未完成生产资格)/i);
+    assert.match(document, /BLOCKED \/ NO-GO/);
+    assert.doesNotMatch(document, /v7-to-v8[^\n`]*=PASS/i);
+  }
+  assert.match(runbook, /pinned-v4 digest is only an immutable binary behavior fixture/i);
+  assert.match(runbook, /gate-owned exact-v3 synthetic/i);
+  assert.match(runbook, /pinned-v5 digest is likewise an immutable binary behavior fixture/i);
+  assert.match(
     runbook,
-    deploymentRunbook,
-    releaseReadiness,
-    relayMigrationGuide,
-  ]) {
-    assert.match(document, /target=3,min=1,max=3/);
-    assert.match(document, /fresh v3[\s\S]+\[3\]/i);
-    assert.match(document, /\[1,2,3\]/);
-    assert.match(document, /max(?:[=-]|-v)2[\s\S]+ahead/i);
+    /no pinned image may connect to a business\/live database or act as an operational migration source/i,
+  );
+  for (const document of [relayMigration, deploymentRunbook, releaseReadiness]) {
+    assert.match(document, /pinned-v4[\s\S]{0,120}immutable binary\s+behavior fixture/i);
+    assert.match(document, /门禁[\s\S]{0,160}exact-v3/i);
+    assert.match(document, /不得[\s\S]{0,160}业务\/live 数据库/i);
+    assert.match(document, /不是[\s\S]{0,160}迁移源/i);
+  }
+  assert.match(runbook, /pinned-v4-state-ledger-catalog-acl-guards-gate=PASS/);
+  assert.match(deploymentRunbook, /pinned-v4-state-ledger-catalog-acl-guards-gate=PASS/);
+  for (const document of [runbook, relayMigration, deploymentRunbook, releaseReadiness]) {
+    assert.match(document, /pre-v4-zero-acl-role-stub-gate=PASS/);
+    assert.match(document, /pre-v5-zero-acl-role-stub-gate=PASS/);
+    assert.match(document, /pre-v6-zero-acl-role-stub-gate=PASS/);
+    assert.match(document, /pre-v7-zero-acl-role-stub-gate=PASS/);
+    assert.match(
+      document,
+      /pinned-v3 migration[\s\S]+pre-v4 zero-ACL role-pre[\s\S]+pinned-v4 migration[\s\S]+pinned-v4 full verifier[\s\S]+pre-v5 zero-ACL role-pre[\s\S]+pinned-v5 migration[\s\S]+pinned-v5 rollback verifier[\s\S]+pre-v6 zero-ACL role-pre[\s\S]+pinned-v6 migration[\s\S]+pinned-v6 rollback verifier[\s\S]+pre-v7 zero-ACL role-pre[\s\S]+historical-v7 migration/i,
+    );
+    assert.match(document, /role-pre[^\n]+does not perform schema migration/i);
   }
   assert.match(deploymentRunbook, /0012_generation_contract_v1/);
   assert.match(releaseReadiness, /schema_version=1/);
@@ -350,7 +879,10 @@ test("pins a non-empty Relay release version and rejects invalid image builds", 
       `${name} image must reject an empty or malformed VERSION before go build`,
     );
   }
-  assert.match(relayDockerfile, /ARG RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256=unknown/);
+  assert.match(relayDockerfile, /^ARG RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256\r?$/m);
+  assert.doesNotMatch(relayDockerfile, /ARG RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256=unknown/);
+  assert.match(relayDockerfile, /grep -Eq '\^sha256:\[0-9a-f\]\{64\}\$'/);
+  assert.match(relayDockerfile, /go run \.\/cmd\/relay-source-snapshot/);
   assert.match(relayDockerfile, /platformRelayCompiledRouteAcceptanceKeysSHA256/);
   assert.match(sharedEnv, /^NEW_API_RELAY_ROUTE_ACCEPTANCE_PUBLIC_KEYS_JSON=\{\}$/m);
   assert.match(sharedEnv, /^NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256=sha256:0{64}$/m);
@@ -492,6 +1024,7 @@ test("validates the global new-api secret set before any protected consumer", ()
     "platform-api-runtime-secrets.json",
     "platform-dispatcher-runtime-secrets.json",
     "platform-relay-sync-runtime-secrets.json",
+    "platform-relay-catalog-sync-runtime-secrets.json",
     "platform-timeout-worker-runtime-secrets.json",
     "platform-publishing-worker-runtime-secrets.json",
     "platform-download-gateway-registration-worker-runtime-secrets.json",
@@ -511,6 +1044,7 @@ test("validates the global new-api secret set before any protected consumer", ()
     ["platform-api", "platform-api"],
     ["platform-dispatcher", "platform-dispatcher"],
     ["platform-relay-sync", "platform-relay-sync"],
+    ["platform-relay-catalog-sync", "platform-relay-catalog-sync"],
     ["platform-timeout-worker", "platform-timeout-worker"],
     ["platform-publishing-worker", "platform-publishing-worker"],
     [
@@ -548,7 +1082,10 @@ test("validates the global new-api secret set before any protected consumer", ()
     assert.ok(init.includes(`relay-new-api-secret-isolation-${receipt}:/run/relay-secret-isolation/${receipt}`));
   }
   assert.match(runbook, /relay-new-api-volume-init[\s\S]+relay-new-api-secret-isolation[\s\S]+relay-new-api-db-role-pre/);
-  assert.match(runbook, /kind=relay_secret_isolation[\s\S]+state=validated[\s\S]+consumers=14/);
+  assert.match(
+    runbook,
+    new RegExp(`kind=relay_secret_isolation[\\s\\S]+state=validated[\\s\\S]+consumers=${consumers.size}`),
+  );
   assert.match(
     runbook,
     /canonical and bare service-token forms[\s\S]+encoded and decoded edge keys[\s\S]+decoded\s+database passwords/,
@@ -907,6 +1444,13 @@ test("keeps a complete fail-closed example inventory for both environments", () 
     assert.equal(adminOrigin.hash, "");
   }
   assert.match(sharedEnv, /^NEW_API_RELAY_IMAGE_DIGEST=sha256:0{64}$/m);
+  assert.match(sharedEnv, /^PLATFORM_API_GATEWAY_IMAGE_REPOSITORY=nginx$/m);
+  assert.match(sharedEnv, /^PLATFORM_API_GATEWAY_IMAGE_DIGEST=sha256:0{64}$/m);
+  assert.match(
+    serviceBlock(secure, "api-gateway"),
+    /image:\s*\$\{PLATFORM_API_GATEWAY_IMAGE_REPOSITORY:\?[^\r\n]+\}@\$\{PLATFORM_API_GATEWAY_IMAGE_DIGEST:\?[^\r\n]+\}/,
+  );
+  assert.doesNotMatch(serviceBlock(secure, "api-gateway"), /image:\s*nginx:[^\s]+/);
   assert.match(sharedEnv, /^NEW_API_RELAY_MODEL_ROUTES_JSON=\{\}$/m);
   assert.match(sharedEnv, /^NEW_API_RELAY_PROVIDER_CONTRACT_RATES_JSON=\[\]$/m);
   assert.match(sharedEnv, /replace EVERY[\s\S]+intentionally rejected/);
@@ -917,10 +1461,27 @@ test("defines distinct staging/production overlays and the current Platform migr
   assert.match(production, /deployment-environment:\s*production/);
   assert.match(stagingEnv, /^RELAY_DEPLOYMENT_ENV=staging$/m);
   assert.match(productionEnv, /^RELAY_DEPLOYMENT_ENV=production$/m);
-  assert.match(runbook, /0040_showcase_management/);
-  assert.match(runbook, /0039_new_api_relay_defaults/);
+  assert.match(runbook, new RegExp("current Platform source head is `" + currentPlatformHead + "`"));
+  assert.match(runbook, new RegExp("direct predecessor is `" + currentPlatformPrevious + "`"));
+  assert.match(runbook, new RegExp(`current Platform database\\s+privilege policy is v${currentPlatformPolicyVersion}`));
+  assert.match(runbook, /catalog is `UNQUALIFIED`/);
+  assert.match(runbook, /v12\/0047 and\s+v13\/0048 catalogs are also unqualified/);
+  assert.match(runbook, /Protected release remains `BLOCKED \/ NO-GO`/);
+  assert.match(runbook, /historical qualification evidence only:[\s\S]{0,100}neither qualifies the current chain nor\s+authorizes production/);
+  assert.doesNotMatch(runbook, /current Platform database privilege policy is v10/);
+  assert.match(runbook, /0045_system_audit_actor/);
+  assert.match(runbook, /0044_account_product_partition/);
+  assert.match(runbook, /0041_model_capability_releases/);
   assert.match(runbook, /0038_download_evidence_checks/);
   assert.match(runbook, /Never translate a successful Compose render[\s\S]+real-provider\/OBS PASS/);
+});
+
+test("payment implementation does not claim a live PSP, trusted statements, or deployed billing operations", () => {
+  assert.match(runbook, /Payment orders, refunds\/disputes[\s\S]{0,200}implemented software, not a live payment\s+integration/);
+  assert.match(runbook, /No real PSP, trusted statement source, production-resident billing worker,\s+or customer notification channel is connected/);
+  assert.match(runbook, /SOURCE_AUTHENTICITY_UNVERIFIED/);
+  assert.match(runbook, /payment-finance-closure\.md/);
+  assert.match(runbook, /refuses legacy settlement rows\s+without bound originals or automatic orders without a Mandate before DDL/);
 });
 
 test("pins protected Platform task affinity to new-api without ambient legacy credentials", () => {

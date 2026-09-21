@@ -38,11 +38,15 @@ type PlatformChannelCostEvent struct {
 	OccurredAt        time.Time `json:"occurred_at" gorm:"not null;index"`
 	ExternalReference string    `json:"external_reference" gorm:"type:varchar(240);not null"`
 	CompanyID         string    `json:"company_id" gorm:"type:varchar(64);index"`
-	TaskID            string    `json:"task_id" gorm:"type:varchar(64);index"`
-	RelayJobID        string    `json:"relay_job_id" gorm:"type:varchar(36);index"`
-	Note              string    `json:"note" gorm:"type:varchar(240);not null"`
-	EvidenceSource    string    `json:"evidence_source" gorm:"type:varchar(32);not null"`
-	EvidenceReference string    `json:"evidence_reference" gorm:"type:varchar(240);not null"`
+	// PersonalWorkspaceID is a v7 column. -:migration prevents historical
+	// v1-v6 AutoMigrate snapshots from silently absorbing the new catalog
+	// field; the explicit v7 migration owns its column, index and constraint.
+	PersonalWorkspaceID string `json:"personal_workspace_id" gorm:"type:varchar(64);-:migration"`
+	TaskID              string `json:"task_id" gorm:"type:varchar(64);index"`
+	RelayJobID          string `json:"relay_job_id" gorm:"type:varchar(36);index"`
+	Note                string `json:"note" gorm:"type:varchar(240);not null"`
+	EvidenceSource      string `json:"evidence_source" gorm:"type:varchar(32);not null"`
+	EvidenceReference   string `json:"evidence_reference" gorm:"type:varchar(240);not null"`
 	// This evidence is optional for provider_reported/operator_adjustment.
 	// PostgreSQL character(64) blank-pads an empty string, which changes the
 	// persisted payload when it is read back for signed delivery. varchar(64)
@@ -78,44 +82,55 @@ type PlatformChannelCostReconciliationSummary struct {
 }
 
 func CreatePlatformChannelCostEvent(event *PlatformChannelCostEvent) (bool, error) {
-	if err := validatePlatformChannelCostEvent(event); err != nil {
-		return false, err
-	}
 	created := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		now, err := GetDBTimeTx(tx)
-		if err != nil {
-			return err
-		}
-		event.OccurredAt = event.OccurredAt.UTC()
-		event.CreatedAt = now
-		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(event)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			var existing PlatformChannelCostEvent
-			if err := tx.Where("idempotency_key = ? OR id = ?", event.IdempotencyKey, event.ID).First(&existing).Error; err != nil {
-				return err
-			}
-			if !platformChannelCostEventsEqual(existing, *event) {
-				return ErrPlatformChannelCostEventCollision
-			}
-			*event = existing
-			return nil
-		}
-
-		created = true
-		_, err = CreatePlatformRelayExternalDeliveryTx(
-			tx,
-			PlatformRelayDeliveryKindChannelCost,
-			event.ID,
-			"relay-channel-cost-"+event.ID,
-			DefaultPlatformRelayDeliveryMaxAttempts,
-		)
+		var err error
+		created, err = CreatePlatformChannelCostEventTx(tx, event)
 		return err
 	})
 	return created, err
+}
+
+// CreatePlatformChannelCostEventTx inserts or verifies one immutable cost fact
+// inside the caller's transaction. Reconciliation uses this form so the cost
+// event, its delivery, and the token-fenced queue completion commit together.
+func CreatePlatformChannelCostEventTx(tx *gorm.DB, event *PlatformChannelCostEvent) (bool, error) {
+	if tx == nil {
+		return false, fmt.Errorf("channel cost transaction is required")
+	}
+	if err := validatePlatformChannelCostEvent(event); err != nil {
+		return false, err
+	}
+	now, err := GetDBTimeTx(tx)
+	if err != nil {
+		return false, err
+	}
+	event.OccurredAt = event.OccurredAt.UTC()
+	event.CreatedAt = now
+	result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(event)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		var existing PlatformChannelCostEvent
+		if err := tx.Where("idempotency_key = ? OR id = ?", event.IdempotencyKey, event.ID).First(&existing).Error; err != nil {
+			return false, err
+		}
+		if !platformChannelCostEventsEqual(existing, *event) {
+			return false, ErrPlatformChannelCostEventCollision
+		}
+		*event = existing
+		return false, nil
+	}
+
+	_, err = CreatePlatformRelayExternalDeliveryTx(
+		tx,
+		PlatformRelayDeliveryKindChannelCost,
+		event.ID,
+		"relay-channel-cost-"+event.ID,
+		DefaultPlatformRelayDeliveryMaxAttempts,
+	)
+	return err == nil, err
 }
 
 func GetPlatformChannelCostEvent(eventID string) (*PlatformChannelCostEvent, error) {
@@ -128,24 +143,31 @@ func GetPlatformChannelCostEvent(eventID string) (*PlatformChannelCostEvent, err
 // cost event as reconciled. A missing event, a queued delivery, and a dead
 // letter all remain visibly incomplete; zero amount is complete once delivered.
 func GetPlatformChannelCostReconciliationSummary() (PlatformChannelCostReconciliationSummary, error) {
+	return GetPlatformChannelCostReconciliationSummaryWithDB(DB)
+}
+
+func GetPlatformChannelCostReconciliationSummaryWithDB(db *gorm.DB) (PlatformChannelCostReconciliationSummary, error) {
 	var summary PlatformChannelCostReconciliationSummary
-	successfulJobs := DB.Model(&PlatformProviderTerminalOutcome{}).
+	if db == nil {
+		return summary, fmt.Errorf("channel cost reconciliation database is unavailable")
+	}
+	successfulJobs := db.Model(&PlatformProviderTerminalOutcome{}).
 		Where("outcome = ? AND relay_job_id <> ?", PlatformProviderOutcomeSucceeded, "")
 	if err := successfulJobs.Distinct("relay_job_id").Count(&summary.SuccessfulRelayJobs).Error; err != nil {
 		return summary, err
 	}
-	if err := DB.Model(&PlatformChannelCostEvent{}).
+	if err := db.Model(&PlatformChannelCostEvent{}).
 		Where("relay_job_id <> ?", "").
 		Distinct("relay_job_id").
 		Count(&summary.ExplicitCostRelayJobs).Error; err != nil {
 		return summary, err
 	}
 
-	deliveredJobs := DB.Table("platform_channel_cost_events AS costs").
+	deliveredJobs := db.Table("platform_channel_cost_events AS costs").
 		Select("costs.relay_job_id").
 		Joins("JOIN platform_relay_external_deliveries AS deliveries ON deliveries.event_kind = ? AND deliveries.event_id = costs.id", PlatformRelayDeliveryKindChannelCost).
 		Where("deliveries.state = ? AND costs.relay_job_id <> ?", PlatformRelayDeliveryDelivered, "")
-	if err := DB.Table("(?) AS delivered_cost_jobs", deliveredJobs).
+	if err := db.Table("(?) AS delivered_cost_jobs", deliveredJobs).
 		Distinct("relay_job_id").Count(&summary.DeliveredCostRelayJobs).Error; err != nil {
 		return summary, err
 	}
@@ -155,13 +177,13 @@ func GetPlatformChannelCostReconciliationSummary() (PlatformChannelCostReconcili
 		Count(&summary.IncompleteRelayJobs).Error; err != nil {
 		return summary, err
 	}
-	if err := DB.Model(&PlatformGenerationJob{}).
+	if err := db.Model(&PlatformGenerationJob{}).
 		Where("native_billing_reconciliation_needed = ?", true).
 		Count(&summary.NativeBillingReconciliationJobs).Error; err != nil {
 		return summary, err
 	}
 
-	deliveryCounts, err := GetPlatformRelayDeliveryCounts(PlatformRelayDeliveryKindChannelCost)
+	deliveryCounts, err := GetPlatformRelayDeliveryCountsWithDB(db, PlatformRelayDeliveryKindChannelCost)
 	if err != nil {
 		return summary, err
 	}
@@ -297,8 +319,19 @@ func validatePlatformChannelCostEvent(event *PlatformChannelCostEvent) error {
 	if event.OccurredAt.IsZero() || event.ExternalReference == "" || len(event.ExternalReference) > 240 || strings.TrimSpace(event.ExternalReference) != event.ExternalReference {
 		return fmt.Errorf("channel cost occurrence is invalid")
 	}
-	if len(event.CompanyID) > 64 || len(event.TaskID) > 64 || len(event.RelayJobID) > 36 || len(event.Note) > 240 {
+	if len(event.CompanyID) > 64 || len(event.PersonalWorkspaceID) > 64 || len(event.TaskID) > 64 || len(event.RelayJobID) > 36 || len(event.Note) > 240 {
 		return fmt.Errorf("channel cost linkage is invalid")
+	}
+	if event.CompanyID != "" && event.PersonalWorkspaceID != "" {
+		return fmt.Errorf("channel cost cannot belong to two billing scopes")
+	}
+	if event.TaskID != "" {
+		if (event.CompanyID == "") == (event.PersonalWorkspaceID == "") {
+			return fmt.Errorf("task-linked channel cost requires exactly one billing scope")
+		}
+		if event.RelayJobID == "" {
+			return fmt.Errorf("task-linked channel cost requires Relay job id")
+		}
 	}
 	if event.RelayJobID != "" {
 		if parsed, err := uuid.Parse(event.RelayJobID); err != nil || parsed.String() != event.RelayJobID {
@@ -329,7 +362,8 @@ func platformChannelCostEventsEqual(left PlatformChannelCostEvent, right Platfor
 	return left.ID == right.ID && left.AmountCents == right.AmountCents && left.IdempotencyKey == right.IdempotencyKey &&
 		left.ChannelKey == right.ChannelKey && left.ChannelType == right.ChannelType &&
 		left.OccurredAt.UTC().Equal(right.OccurredAt.UTC()) && left.ExternalReference == right.ExternalReference &&
-		left.CompanyID == right.CompanyID && left.TaskID == right.TaskID && left.RelayJobID == right.RelayJobID &&
+		left.CompanyID == right.CompanyID && left.PersonalWorkspaceID == right.PersonalWorkspaceID &&
+		left.TaskID == right.TaskID && left.RelayJobID == right.RelayJobID &&
 		left.Note == right.Note && left.EvidenceSource == right.EvidenceSource &&
 		left.EvidenceReference == right.EvidenceReference && left.SourceDocumentSHA256 == right.SourceDocumentSHA256 &&
 		left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadJSON == right.PayloadJSON

@@ -27,15 +27,19 @@ import (
 // https://platform.minimaxi.com/docs/api-reference/video-generation-intro
 type TaskAdaptor struct {
 	taskcommon.BaseBilling
-	ChannelType int
-	apiKey      string
-	baseURL     string
+	ChannelType   int
+	apiKey        string
+	baseURL       string
+	upstreamModel string
+	h3Video       bool
 }
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 	a.ChannelType = info.ChannelType
 	a.baseURL = info.ChannelBaseUrl
 	a.apiKey = info.ApiKey
+	a.upstreamModel = info.UpstreamModelName
+	a.h3Video = isH3Model(info.UpstreamModelName)
 }
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *taskdto.TaskError) {
@@ -43,6 +47,16 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if isH3Model(info.UpstreamModelName) {
+		baseURL, err := h3ProviderBaseURL(a.baseURL)
+		if err != nil {
+			return "", err
+		}
+		return baseURL + H3VideoEndpoint, nil
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(info.UpstreamModelName)), "minimax-h3") {
+		return "", fmt.Errorf("MiniMax H3 provider model is not reviewed")
+	}
 	return fmt.Sprintf("%s%s", a.baseURL, TextToVideoEndpoint), nil
 }
 
@@ -62,6 +76,20 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if !ok {
 		return nil, fmt.Errorf("invalid request type in context")
 	}
+	if isH3Model(info.UpstreamModelName) ||
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(info.UpstreamModelName)), "minimax-h3") ||
+		(info.TaskRelayInfo != nil && info.PinnedProviderRoute) {
+		body, err := convertPinnedH3Request(&req, info)
+		if err != nil {
+			return nil, err
+		}
+		data, err := common.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		a.h3Video = true
+		return bytes.NewReader(data), nil
+	}
 
 	body, err := a.convertToRequestPayload(&req, info)
 	if err != nil {
@@ -77,10 +105,23 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	if a.h3Video || isH3Model(info.UpstreamModelName) {
+		// H3 has no provider idempotency guarantee. A 307/308 must not replay
+		// the paid POST, even when the default HTTP client follows redirects.
+		return channel.DoTaskApiRequestNoRedirect(a, c, info, requestBody)
+	}
 	return channel.DoTaskApiRequest(a, c, info, requestBody)
 }
 
+// DoRequestNoRedirect is the exact-route acceptance probe seam.
+func (a *TaskAdaptor) DoRequestNoRedirect(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	return channel.DoTaskApiRequestNoRedirect(a, c, info, requestBody)
+}
+
 func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (taskID string, taskData []byte, taskErr *taskdto.TaskError) {
+	if a.h3Video || isH3Model(info.UpstreamModelName) {
+		return a.doH3Response(c, resp, info)
+	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		taskErr = service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
@@ -118,6 +159,19 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 }
 
 func (a *TaskAdaptor) FetchTaskWithContext(ctx context.Context, baseUrl, key string, body map[string]any, proxy string) (*http.Response, error) {
+	providerModel := a.upstreamModel
+	if value, present := body["provider_model"]; present {
+		var ok bool
+		providerModel, ok = value.(string)
+		if !ok || providerModel == "" || providerModel != strings.TrimSpace(providerModel) {
+			return nil, fmt.Errorf("provider model identity is invalid")
+		}
+	}
+	if isH3Model(providerModel) || strings.HasPrefix(strings.ToLower(strings.TrimSpace(providerModel)), "minimax-h3") {
+		a.h3Video = true
+		return a.fetchH3Task(ctx, baseUrl, key, body, proxy, providerModel)
+	}
+	a.h3Video = false
 	taskID, ok := body["task_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("invalid task_id")
@@ -188,6 +242,9 @@ func (a *TaskAdaptor) parseResolutionFromSize(size string, modelConfig ModelConf
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
+	if a.h3Video || h3TaskEnvelopePresent(respBody) {
+		return parseH3TaskResult(respBody)
+	}
 	resTask := QueryTaskResponse{}
 	if err := common.Unmarshal(respBody, &resTask); err != nil {
 		return nil, errors.Wrap(err, "unmarshal task result failed")
@@ -230,6 +287,11 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 }
 
 func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error) {
+	if a.h3Video || isH3Model(originTask.Properties.UpstreamModelName) {
+		// Only the canonical task's public projection is exposed. H3 provider
+		// locators, errors and usage payloads are never decoded into this DTO.
+		return common.Marshal(originTask.ToOpenAIVideo())
+	}
 	var hailuoResp QueryTaskResponse
 	if err := common.Unmarshal(originTask.Data, &hailuoResp); err != nil {
 		return nil, errors.Wrap(err, "unmarshal hailuo task data failed")

@@ -241,6 +241,48 @@ func TestPlatformDownloadEdgeProtectedStagingUsesProductionSecurityPolicy(t *tes
 	})
 }
 
+func TestPlatformDownloadEdgeDevelopmentAllowsExactComposePlatformCompletionOrigin(t *testing.T) {
+	setPlatformDownloadEdgeEnvironment(t, "development")
+	t.Setenv(
+		"RELAY_DOWNLOAD_EDGE_PLATFORM_COMPLETION_URL",
+		"http://platform-api:8000/internal/artifact-download-completions/edge-gateway",
+	)
+	config, err := PlatformDownloadEdgeConfigFromEnv()
+	require.NoError(t, err)
+	require.Equal(
+		t,
+		"http://platform-api:8000/internal/artifact-download-completions/edge-gateway",
+		config.PlatformCompletionURL,
+	)
+}
+
+func TestPlatformDownloadEdgePlaintextPlatformCompletionOriginRemainsNarrow(t *testing.T) {
+	tests := map[string]string{
+		"missing compose port": "http://platform-api/internal/artifact-download-completions/edge-gateway",
+		"wrong compose port":   "http://platform-api:8001/internal/artifact-download-completions/edge-gateway",
+		"lookalike hostname":   "http://platform-api.example.test:8000/internal/artifact-download-completions/edge-gateway",
+		"private address":      "http://10.0.0.8:8000/internal/artifact-download-completions/edge-gateway",
+	}
+	for name, completionURL := range tests {
+		t.Run(name, func(t *testing.T) {
+			setPlatformDownloadEdgeEnvironment(t, "development")
+			t.Setenv("RELAY_DOWNLOAD_EDGE_PLATFORM_COMPLETION_URL", completionURL)
+			_, err := PlatformDownloadEdgeConfigFromEnv()
+			require.EqualError(t, err, "download edge Platform completion URL is invalid")
+		})
+	}
+
+	t.Run("protected staging rejects compose plaintext", func(t *testing.T) {
+		setPlatformDownloadEdgeEnvironment(t, "staging")
+		t.Setenv(
+			"RELAY_DOWNLOAD_EDGE_PLATFORM_COMPLETION_URL",
+			"http://platform-api:8000/internal/artifact-download-completions/edge-gateway",
+		)
+		_, err := PlatformDownloadEdgeConfigFromEnv()
+		require.EqualError(t, err, "download edge Platform completion URL is invalid")
+	})
+}
+
 func TestParsePlatformDownloadEdgeRuntimeSecretsAcceptsBinaryControlBytes(t *testing.T) {
 	document := platformDownloadEdgeRuntimeTestDocument()
 	raw, err := json.Marshal(document)

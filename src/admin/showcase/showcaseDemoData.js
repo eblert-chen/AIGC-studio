@@ -77,23 +77,6 @@ const DEMO_ITEMS = [
   },
 ];
 
-export const SHOWCASE_DEMO_ARTWORKS = [
-  {
-    artifact_id: "30000000-0000-0000-0000-000000000001",
-    task_id: "40000000-0000-0000-0000-000000000001",
-    media_type: "image",
-    model_display_name: "旭天 Image Pro",
-    preview_url: "/community/miniature-fashion.png",
-  },
-  {
-    artifact_id: "30000000-0000-0000-0000-000000000002",
-    task_id: "40000000-0000-0000-0000-000000000002",
-    media_type: "image",
-    model_display_name: "旭天 Portrait",
-    preview_url: "/community/cyber-fashion-portrait.png",
-  },
-];
-
 function cloneItems(items) {
   return items.map((item) => ({ ...item }));
 }

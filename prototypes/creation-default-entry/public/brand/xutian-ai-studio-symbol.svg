@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" role="img" aria-labelledby="xutian-symbol-title">
+  <title id="xutian-symbol-title">旭天 AI studio</title>
+  <defs>
+    <mask id="xutian-play-cutout" maskUnits="userSpaceOnUse" x="0" y="0" width="220" height="220">
+      <rect width="220" height="220" fill="#fff" />
+      <path d="M88 82q-7-4-7 6v44q0 10 7 6l37-23q8-5 0-10Z" fill="#000" />
+    </mask>
+  </defs>
+  <g fill="#087b80" mask="url(#xutian-play-cutout)">
+    <path d="M30 28h39l121 124v40h-39L30 68Z" />
+    <path d="M151 28h39v40L69 192H30v-40Z" />
+  </g>
+</svg>

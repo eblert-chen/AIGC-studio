@@ -6,6 +6,7 @@ from typing import Any
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
@@ -13,7 +14,6 @@ from sqlalchemy.exc import IntegrityError
 
 V2_HEAD = "0037_production_auth_lifecycle"
 V3_HEAD = "0038_download_evidence_checks"
-CURRENT_HEAD = "0040_showcase_management"
 _AFFECTED_TABLES = (
     "channel_cost_entries",
     "download_completions",
@@ -216,9 +216,10 @@ def test_sqlite_0038_strengthens_hash_and_preserves_immutable_guards(
     pre_upgrade = _database_state(engine)
     engine.dispose()
 
-    command.upgrade(config, "head")
+    # This exact comparison describes 0038, not later provider-account columns.
+    command.upgrade(config, V3_HEAD)
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == CURRENT_HEAD
+    assert _revision(engine) == V3_HEAD
     post_upgrade = _database_state(engine)
     for table_name in _AFFECTED_TABLES:
         assert _structural_state(post_upgrade[table_name]) == _structural_state(
@@ -265,8 +266,7 @@ def test_sqlite_0038_strengthens_hash_and_preserves_immutable_guards(
         _insert_personal_download(engine, digest="g" * 64)
     _assert_integrity(engine)
     engine.dispose()
-    command.check(config)
-
+    # Exercise the 0038 boundary before advancing to irreversible later heads.
     command.downgrade(config, V2_HEAD)
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     assert _revision(engine) == V2_HEAD
@@ -291,9 +291,9 @@ def test_sqlite_0038_strengthens_hash_and_preserves_immutable_guards(
     _assert_integrity(engine)
     engine.dispose()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, V3_HEAD)
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == CURRENT_HEAD
+    assert _revision(engine) == V3_HEAD
     upgraded_again = _database_state(engine)
     for table_name in _AFFECTED_TABLES:
         assert _structural_state(upgraded_again[table_name]) == _structural_state(
@@ -307,6 +307,7 @@ def test_sqlite_0038_strengthens_hash_and_preserves_immutable_guards(
         ]["triggers"]
     _assert_integrity(engine)
     engine.dispose()
+    command.upgrade(config, "head")
     command.check(config)
 
 
@@ -400,7 +401,7 @@ def test_sqlite_fresh_0038_is_metadata_exact(
 
     command.upgrade(config, "head")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == CURRENT_HEAD
+    assert _revision(engine) == ScriptDirectory.from_config(config).get_current_head()
     _assert_integrity(engine)
     engine.dispose()
     command.check(config)

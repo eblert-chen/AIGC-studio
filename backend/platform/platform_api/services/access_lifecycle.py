@@ -17,6 +17,7 @@ from ..models import (
     User,
 )
 from .errors import ConflictError, NotFoundError, PermissionDeniedError
+from .account_partition import AccountPartitionService
 from .permission_catalog import PERMISSION_CODES
 from .permissions import PermissionService
 
@@ -270,6 +271,16 @@ class AccessLifecycleService:
         )
         if any(role.system_key == OWNER_ROLE_KEY for role in target_roles):
             raise PermissionDeniedError("老板成员不能被停用")
+        if status == MembershipStatus.ACTIVE:
+            target_user = session.scalar(
+                select(User).where(User.id == membership.user_id).with_for_update()
+            )
+            if target_user is None:
+                raise NotFoundError("成员账号不存在")
+            AccountPartitionService.require_company_provisioning_eligible(
+                session,
+                user=target_user,
+            )
         cls._ensure_actor_can_manage_permissions(
             session,
             actor_membership_id=actor_membership_id,

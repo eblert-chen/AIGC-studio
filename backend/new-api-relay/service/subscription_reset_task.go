@@ -31,17 +31,29 @@ func StartSubscriptionQuotaResetTask() {
 		if !common.IsMasterNode {
 			return
 		}
-		gopool.Go(func() {
-			logger.LogInfo(context.Background(), fmt.Sprintf("subscription quota reset task started: tick=%s", subscriptionResetTickInterval))
-			ticker := time.NewTicker(subscriptionResetTickInterval)
-			defer ticker.Stop()
-
-			runSubscriptionQuotaResetOnce()
-			for range ticker.C {
-				runSubscriptionQuotaResetOnce()
-			}
-		})
+		gopool.Go(func() { RunSubscriptionQuotaResetTask(context.Background()) })
 	})
+}
+
+// RunSubscriptionQuotaResetTask runs the legacy maintenance loop under a
+// caller-owned lifecycle. Cancellation prevents another batch from starting;
+// the caller joins this function before closing the shared database pool.
+func RunSubscriptionQuotaResetTask(ctx context.Context) {
+	if ctx == nil || !common.IsMasterNode {
+		return
+	}
+	logger.LogInfo(ctx, fmt.Sprintf("subscription quota reset task started: tick=%s", subscriptionResetTickInterval))
+	ticker := time.NewTicker(subscriptionResetTickInterval)
+	defer ticker.Stop()
+	runSubscriptionQuotaResetOnce()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runSubscriptionQuotaResetOnce()
+		}
+	}
 }
 
 func runSubscriptionQuotaResetOnce() {

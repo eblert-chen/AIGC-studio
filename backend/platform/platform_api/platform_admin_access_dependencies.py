@@ -17,9 +17,10 @@ from .dependencies import (
     _record_platform_admin_activity,
     get_db,
 )
-from .models import User, UserStatus
+from .models import ProductContext, User, UserAccountType, UserStatus
 from .services.authentication import SESSION_COOKIE_NAME
 from .platform_admin_access_catalog import validate_platform_admin_permission_code
+from .services.account_partition import AccountProductType, AccountPartitionService
 from .services.platform_admin_access import PlatformAdminAccessService
 from .platform_owner_identity import is_platform_owner_identity
 
@@ -44,6 +45,11 @@ def _authenticate_platform_administrator(
         authenticated = _authenticated_principal(request, session, authorization)
         if not authenticated.user.is_platform_admin:
             raise HTTPException(status_code=403, detail="Not a platform administrator")
+        if authenticated.active_product_context != ProductContext.PLATFORM:
+            raise HTTPException(
+                status_code=403,
+                detail="Current session is not in the platform administration context",
+            )
         if runtime_settings_are_protected(settings):
             accepted_methods = {
                 method.casefold() for method in settings.platform_admin_required_amr
@@ -91,7 +97,14 @@ def _authenticate_platform_administrator(
             status_code=401, detail="Missing platform administrator identity"
         )
     user = session.get(User, user_id)
-    if user is None or user.status != UserStatus.ACTIVE or not user.is_platform_admin:
+    if (
+        user is None
+        or user.status != UserStatus.ACTIVE
+        or not user.is_platform_admin
+        or user.account_type != UserAccountType.PLATFORM_ADMIN
+        or AccountPartitionService.resolve(session, user=user)
+        != AccountProductType.PLATFORM_ADMIN
+    ):
         raise HTTPException(status_code=403, detail="Not a platform administrator")
 
     owner_ids = set(_owner_local_user_ids(session, settings))

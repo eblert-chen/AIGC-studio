@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net/url"
 	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,6 +15,29 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/stretchr/testify/require"
 )
+
+type functionalDownloadEdgeReadinessStopper func(context.Context) error
+
+func (stopper functionalDownloadEdgeReadinessStopper) StopProtectedReadinessRefresh(ctx context.Context) error {
+	return stopper(ctx)
+}
+
+type blockingDownloadEdgeReadinessStopper struct {
+	started chan struct{}
+	release chan struct{}
+	exited  atomic.Bool
+}
+
+func (stopper *blockingDownloadEdgeReadinessStopper) StopProtectedReadinessRefresh(ctx context.Context) error {
+	close(stopper.started)
+	select {
+	case <-stopper.release:
+		stopper.exited.Store(true)
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 func unsetDownloadEdgeDatabaseEnvironmentForTest(t *testing.T, name string) {
 	t.Helper()
@@ -35,8 +63,16 @@ func setProtectedDownloadEdgeDatabaseFileForTest(t *testing.T, dsn string) strin
 	t.Setenv("RELAY_DATABASE_TLS_ATTESTATION_REQUIRED", "true")
 	t.Setenv("RELAY_DATABASE_SECRET_FILES_REQUIRED", "true")
 	t.Setenv("RELAY_DATABASE_SECRET_FILE_MODE_REQUIRED", "true")
-	t.Setenv("RELAY_DATABASE_CA_FILE", "/run/secrets/relay-database-ca.pem")
-	fileName := "/run/secrets/relay-download-edge-sql-dsn"
+	secretDirectory := t.TempDir()
+	caFile := filepath.Join(secretDirectory, "relay-database-ca.pem")
+	fileName := filepath.Join(secretDirectory, "relay-download-edge-sql-dsn")
+	parsedDSN, err := url.Parse(dsn)
+	require.NoError(t, err)
+	query := parsedDSN.Query()
+	query.Set("sslrootcert", caFile)
+	parsedDSN.RawQuery = query.Encode()
+	dsn = parsedDSN.String()
+	t.Setenv("RELAY_DATABASE_CA_FILE", caFile)
 	t.Setenv("RELAY_DOWNLOAD_EDGE_SQL_DSN_FILE", fileName)
 	previousResolver := resolveDownloadEdgeDatabaseDSN
 	resolveDownloadEdgeDatabaseDSN = func(environment string) (string, error) {
@@ -133,5 +169,117 @@ func TestWaitForDownloadEdgeWorkerHonorsDrainDeadline(t *testing.T) {
 	joinContext, cancelJoin := context.WithTimeout(context.Background(), time.Second)
 	defer cancelJoin()
 	err = waitForDownloadEdgeWorker(joinContext, done)
-	require.ErrorIs(t, err, context.Canceled)
+	require.NoError(t, err)
+
+	workerFailure := errors.New("delivery worker failed")
+	done <- workerFailure
+	err = waitForDownloadEdgeWorker(joinContext, done)
+	require.ErrorIs(t, err, workerFailure)
+}
+
+func TestLifecycleLossJoinsReadinessRefreshBeforeClosingDatabase(t *testing.T) {
+	stopper := &blockingDownloadEdgeReadinessStopper{started: make(chan struct{}), release: make(chan struct{})}
+	closeCalled := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() {
+		done <- stopDownloadEdgeReadinessAndCloseDatabase(ctx, stopper, func() error {
+			if !stopper.exited.Load() {
+				return errors.New("database close ran before readiness refresh exited")
+			}
+			closeCalled <- struct{}{}
+			return nil
+		})
+	}()
+
+	<-stopper.started
+	select {
+	case <-closeCalled:
+		t.Fatal("database closed while readiness refresh was still running")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(stopper.release)
+	require.NoError(t, <-done)
+	select {
+	case <-closeCalled:
+	default:
+		t.Fatal("database was not closed after readiness refresh exited")
+	}
+}
+
+func TestFinalizeDownloadEdgeDatabaseShutdownOrdersNormalAndLifecycleLoss(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		anchorStep string
+	}{
+		{name: "normal", anchorStep: "anchor-release"},
+		{name: "lifecycle-loss", anchorStep: "anchor-close"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var mu sync.Mutex
+			sequence := make([]string, 0, 5)
+			record := func(step string) {
+				mu.Lock()
+				sequence = append(sequence, step)
+				mu.Unlock()
+			}
+			started := make(chan struct{})
+			release := make(chan struct{})
+			stopper := functionalDownloadEdgeReadinessStopper(func(ctx context.Context) error {
+				record("readiness-start")
+				close(started)
+				select {
+				case <-release:
+					record("readiness-end")
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+			done := make(chan error, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			go func() {
+				done <- finalizeDownloadEdgeDatabaseShutdown(
+					ctx,
+					stopper,
+					func() error { record("database-close"); return nil },
+					func() { record("monitor-stop") },
+					func() error { record(test.anchorStep); return nil },
+					func() error { record("anchor-close"); return nil },
+				)
+			}()
+			<-started
+			mu.Lock()
+			require.Equal(t, []string{"readiness-start"}, append([]string(nil), sequence...))
+			mu.Unlock()
+			close(release)
+			require.NoError(t, <-done)
+			mu.Lock()
+			require.Equal(t, []string{
+				"readiness-start", "readiness-end", "database-close", "monitor-stop", test.anchorStep,
+			}, sequence)
+			mu.Unlock()
+		})
+	}
+}
+
+func TestFinalizeDownloadEdgeDatabaseShutdownSkipsPoolCloseWhenRefreshCannotJoin(t *testing.T) {
+	sequence := make([]string, 0, 3)
+	closeDatabaseCalled := false
+	err := finalizeDownloadEdgeDatabaseShutdown(
+		context.Background(),
+		functionalDownloadEdgeReadinessStopper(func(context.Context) error {
+			sequence = append(sequence, "readiness-failed")
+			return errors.New("refresh did not join")
+		}),
+		func() error { closeDatabaseCalled = true; return nil },
+		func() { sequence = append(sequence, "monitor-stop") },
+		func() error { sequence = append(sequence, "anchor-release"); return nil },
+		func() error { sequence = append(sequence, "anchor-close"); return nil },
+	)
+	require.ErrorContains(t, err, "refresh did not join")
+	require.False(t, closeDatabaseCalled)
+	require.Equal(t, []string{"readiness-failed", "monitor-stop", "anchor-close"}, sequence)
 }

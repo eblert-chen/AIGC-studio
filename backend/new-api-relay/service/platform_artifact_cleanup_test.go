@@ -131,6 +131,28 @@ func appendPlatformArtifactCleanupServiceIntent(
 	return job, transferToken, objectKey, *intent
 }
 
+func createProtectedPlatformArtifactCleanupServiceIntent(
+	t *testing.T,
+	store *cleanupRecordingArtifactStore,
+) (model.PlatformGenerationJob, string, string, model.PlatformArtifactUploadIntent) {
+	t.Helper()
+	truncate(t)
+	job, transferToken, _ := seedClaimedProtectedSeedanceTransfer(
+		t,
+		"https://provider.example/temporary-result.mp4?signature=cleanup-proof",
+	)
+	objectKey := "outputs/" + job.TenantID + "/" + job.ID + "/" + uuid.NewString()
+	intent, err := model.CreatePlatformArtifactUploadIntent(
+		job.ID,
+		transferToken,
+		objectKey,
+		store.Kind(),
+		store.BindingID(),
+	)
+	require.NoError(t, err)
+	return job, transferToken, objectKey, *intent
+}
+
 func expirePlatformArtifactCleanupServiceIntent(
 	t *testing.T,
 	jobID string,
@@ -375,7 +397,7 @@ func TestArtifactCleanupPersistsAndDeletesExactAcknowledgedObjectVersion(t *test
 
 func TestArtifactCleanupNeverDeletesPublishedObjectAfterUnknownCompleteCommit(t *testing.T) {
 	store := &cleanupRecordingArtifactStore{objects: map[string]bool{}}
-	job, transferToken, objectKey, intent := createPlatformArtifactCleanupServiceIntent(t, store)
+	job, transferToken, objectKey, intent := createProtectedPlatformArtifactCleanupServiceIntent(t, store)
 	store.objects[objectKey] = true
 	outputsJSON := `[{"asset_id":"asset-one","object_key":"` + objectKey + `"}]`
 

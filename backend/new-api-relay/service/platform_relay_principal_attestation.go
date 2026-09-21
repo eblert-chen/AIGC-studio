@@ -87,10 +87,14 @@ func BuildProtectedPlatformRelayServicePrincipalUser(clientID string, tenantID s
 // token material in an error. Startup, readiness, job admission and the final
 // provider boundary all use this same proof.
 func ValidateProtectedPlatformRelayServicePrincipals() error {
+	return ValidateProtectedPlatformRelayServicePrincipalsWithDB(model.DB)
+}
+
+func ValidateProtectedPlatformRelayServicePrincipalsWithDB(db *gorm.DB) error {
 	if !model.RelayDatabaseRoleAttestationRequired() {
 		return nil
 	}
-	if model.DB == nil {
+	if db == nil {
 		return fmt.Errorf("%w: database is unavailable", ErrProtectedPlatformRelayPrincipal)
 	}
 	snapshot := loadPlatformRelayConfig()
@@ -172,10 +176,10 @@ func ValidateProtectedPlatformRelayServicePrincipals() error {
 	}
 
 	isolation := sql.LevelSerializable
-	if model.DB.Dialector.Name() == "postgres" {
+	if db.Dialector.Name() == "postgres" {
 		isolation = sql.LevelRepeatableRead
 	}
-	return model.DB.Transaction(func(tx *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
 		return validateProtectedPlatformRelayServicePrincipalsTx(tx, expectedByPurpose)
 	}, &sql.TxOptions{Isolation: isolation, ReadOnly: true})
 }

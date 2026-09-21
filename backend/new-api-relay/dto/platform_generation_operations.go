@@ -39,47 +39,115 @@ type PlatformGenerationReconciliationPage struct {
 	Total         int64                                  `json:"total"`
 }
 
+// PlatformGenerationProviderResultReconciliationItem is a read-only
+// operations record for provider terminal evidence that failed immutable
+// proof or final provider-material scrub. No automatic resolution is exposed:
+// the retained evidence must be inspected under a separately reviewed flow.
+type PlatformGenerationProviderResultReconciliationItem struct {
+	APIVersion                string    `json:"api_version"`
+	SchemaVersion             int       `json:"schema_version"`
+	Object                    string    `json:"object"`
+	JobID                     string    `json:"job_id"`
+	TenantID                  string    `json:"tenant_id"`
+	ClientReferenceID         *string   `json:"client_reference_id"`
+	Model                     string    `json:"model"`
+	Mode                      string    `json:"mode"`
+	Status                    string    `json:"status"`
+	Progress                  int       `json:"progress"`
+	ProviderRouteID           int64     `json:"provider_route_id"`
+	ProviderChannelID         int       `json:"provider_channel_id"`
+	ProviderSubmissionAttempt int       `json:"provider_submission_attempt"`
+	UpstreamTaskID            string    `json:"upstream_task_id"`
+	ReconciliationKind        string    `json:"reconciliation_kind"`
+	ResolutionSupported       bool      `json:"resolution_supported"`
+	EvidenceRetained          bool      `json:"evidence_retained"`
+	ErrorCode                 string    `json:"error_code"`
+	ErrorMessage              string    `json:"error_message"`
+	CreatedAt                 time.Time `json:"created_at"`
+	UpdatedAt                 time.Time `json:"updated_at"`
+}
+
+type PlatformGenerationProviderResultReconciliationPage struct {
+	APIVersion    string                                               `json:"api_version"`
+	SchemaVersion int                                                  `json:"schema_version"`
+	Object        string                                               `json:"object"`
+	Data          []PlatformGenerationProviderResultReconciliationItem `json:"data"`
+	Page          int                                                  `json:"page"`
+	PageSize      int                                                  `json:"page_size"`
+	Total         int64                                                `json:"total"`
+}
+
 type PlatformGenerationReconciliationRequest struct {
-	OperationID                 string `json:"operation_id"`
-	TenantID                    string `json:"tenant_id"`
-	Outcome                     string `json:"outcome"`
-	UpstreamTaskID              string `json:"upstream_task_id"`
-	ExpectedRouteID             int64  `json:"expected_route_id"`
-	ExpectedSubmissionAttempt   int    `json:"expected_submission_attempt"`
-	ExpectedReconciliationToken string `json:"expected_reconciliation_token"`
-	VerificationReference       string `json:"verification_reference"`
-	ApprovedBy                  string `json:"approved_by"`
-	ApprovalReason              string `json:"approval_reason"`
-	ApprovalKeyID               string `json:"approval_key_id"`
-	ApprovalSignature           string `json:"approval_signature"`
+	OperationID                 string                                       `json:"operation_id"`
+	TenantID                    string                                       `json:"tenant_id"`
+	Outcome                     string                                       `json:"outcome"`
+	UpstreamTaskID              string                                       `json:"upstream_task_id"`
+	ExpectedRouteID             int64                                        `json:"expected_route_id"`
+	ExpectedSubmissionAttempt   int                                          `json:"expected_submission_attempt"`
+	ExpectedReconciliationToken string                                       `json:"expected_reconciliation_token"`
+	VerificationReference       string                                       `json:"verification_reference"`
+	ApprovedBy                  string                                       `json:"approved_by"`
+	ApprovalReason              string                                       `json:"approval_reason"`
+	ApprovalKeyID               string                                       `json:"approval_key_id"`
+	ApprovalSignature           string                                       `json:"approval_signature"`
+	SynchronousResult           *PlatformGenerationSynchronousResultEvidence `json:"synchronous_result,omitempty"`
+}
+
+// PlatformGenerationSynchronousResultEvidence is required only when an
+// operator confirms that a synchronous image request was created despite a
+// lost HTTP acknowledgement. The provider-response digest is the stable
+// upstream identity used by the Seedream adapter; the temporary artifact URL
+// is consumed only by Relay's verified transfer worker.
+type PlatformGenerationSynchronousResultEvidence struct {
+	ProviderModelID        string `json:"provider_model_id"`
+	ProviderResponseSHA256 string `json:"provider_response_sha256"`
+	ArtifactURL            string `json:"artifact_url"`
+	ProviderCreatedAt      string `json:"provider_created_at"`
+	GeneratedImages        int    `json:"generated_images"`
+	OutputTokens           int    `json:"output_tokens"`
+	TotalTokens            int    `json:"total_tokens"`
 }
 
 // PlatformGenerationReconciliationResult is the durable receipt for one
 // manual unknown-submission decision. Unlike the discovery resource, it
 // remains readable after the generation leaves reconciliation_required.
 type PlatformGenerationReconciliationResult struct {
-	APIVersion                  string    `json:"api_version"`
-	SchemaVersion               int       `json:"schema_version"`
-	Object                      string    `json:"object"`
-	EventID                     string    `json:"event_id"`
-	OperationID                 string    `json:"operation_id"`
-	RequestID                   string    `json:"request_id"`
-	TenantID                    string    `json:"tenant_id"`
-	JobID                       string    `json:"job_id"`
-	Outcome                     string    `json:"outcome"`
-	UpstreamTaskID              string    `json:"upstream_task_id"`
-	ExpectedRouteID             int64     `json:"expected_route_id"`
-	ExpectedSubmissionAttempt   int       `json:"expected_submission_attempt"`
-	ExpectedReconciliationToken string    `json:"expected_reconciliation_token"`
-	VerificationReference       string    `json:"verification_reference"`
-	ApprovedBy                  string    `json:"approved_by"`
-	ApprovalReason              string    `json:"approval_reason"`
-	ApprovalKeyID               string    `json:"approval_key_id"`
-	ApprovalSignature           string    `json:"approval_signature"`
-	ResolvedStatus              string    `json:"resolved_status"`
-	CurrentStatus               string    `json:"current_status"`
-	PayloadSHA256               string    `json:"payload_sha256"`
-	ResolvedAt                  time.Time `json:"resolved_at"`
+	APIVersion                  string                                      `json:"api_version"`
+	SchemaVersion               int                                         `json:"schema_version"`
+	Object                      string                                      `json:"object"`
+	EventID                     string                                      `json:"event_id"`
+	OperationID                 string                                      `json:"operation_id"`
+	RequestID                   string                                      `json:"request_id"`
+	TenantID                    string                                      `json:"tenant_id"`
+	JobID                       string                                      `json:"job_id"`
+	Outcome                     string                                      `json:"outcome"`
+	UpstreamTaskID              string                                      `json:"upstream_task_id"`
+	ExpectedRouteID             int64                                       `json:"expected_route_id"`
+	ExpectedSubmissionAttempt   int                                         `json:"expected_submission_attempt"`
+	ExpectedReconciliationToken string                                      `json:"expected_reconciliation_token"`
+	VerificationReference       string                                      `json:"verification_reference"`
+	ApprovedBy                  string                                      `json:"approved_by"`
+	ApprovalReason              string                                      `json:"approval_reason"`
+	ApprovalKeyID               string                                      `json:"approval_key_id"`
+	ApprovalSignature           string                                      `json:"approval_signature"`
+	SynchronousResult           *PlatformGenerationSynchronousResultReceipt `json:"synchronous_result,omitempty"`
+	ResolvedStatus              string                                      `json:"resolved_status"`
+	CurrentStatus               string                                      `json:"current_status"`
+	PayloadSHA256               string                                      `json:"payload_sha256"`
+	ResolvedAt                  time.Time                                   `json:"resolved_at"`
+}
+
+// PlatformGenerationSynchronousResultReceipt deliberately records only a
+// digest of the temporary provider URL. The URL itself remains private worker
+// state because signed provider URLs can contain bearer-like query material.
+type PlatformGenerationSynchronousResultReceipt struct {
+	ProviderModelID        string `json:"provider_model_id"`
+	ProviderResponseSHA256 string `json:"provider_response_sha256"`
+	ArtifactURLSHA256      string `json:"artifact_url_sha256"`
+	ProviderCreatedAt      string `json:"provider_created_at"`
+	GeneratedImages        int    `json:"generated_images"`
+	OutputTokens           int    `json:"output_tokens"`
+	TotalTokens            int    `json:"total_tokens"`
 }
 
 type PlatformGenerationCallbackDeliveryItem struct {

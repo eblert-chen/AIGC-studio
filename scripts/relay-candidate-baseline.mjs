@@ -8,11 +8,14 @@ import {
   assertSecretFreeEvidence,
   harnessSourceSnapshot,
   relaySourceSnapshot,
+  synchronizeRelaySourceEnvironment,
+  validateRelaySourceEnvironment,
 } from "./relay-fault-source-snapshot.mjs";
 import { CANDIDATE_UPSTREAM_GIT_REVISION } from "./relay-migration-acceptance.mjs";
 import { platformSourceSnapshot } from "./run-cross-service-cost-acceptance.mjs";
 
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const environmentExamplePath = resolve(workspace, ".env.example");
 const candidateGateNames = Object.freeze([
   "local_regression",
   "postgresql_redis_race",
@@ -166,18 +169,42 @@ export function validateCandidateBaseline(persisted, current) {
 }
 
 export async function writeCandidateBaseline(path = candidateBaselinePath) {
-  const baseline = await buildCandidateBaseline();
-  assertSecretFreeEvidence(baseline);
+  let stableBaseline;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const relaySource = await relaySourceSnapshot();
+    const currentEnvironment = await readFile(environmentExamplePath, "utf8");
+    const synchronizedEnvironment = synchronizeRelaySourceEnvironment(currentEnvironment, relaySource);
+    if (synchronizedEnvironment !== currentEnvironment) {
+      await writeFile(environmentExamplePath, synchronizedEnvironment, "utf8");
+    }
+    const baseline = await buildCandidateBaseline();
+    const confirmation = await buildCandidateBaseline(baseline.generated_at_utc);
+    const frozenEnvironment = await readFile(environmentExamplePath, "utf8");
+    const sourceDrift = validateCandidateBaseline(baseline, confirmation);
+    const environmentDrift = validateRelaySourceEnvironment(frozenEnvironment, confirmation.source);
+    if (sourceDrift.length === 0 && environmentDrift.length === 0) {
+      stableBaseline = confirmation;
+      break;
+    }
+  }
+  if (!stableBaseline) {
+    throw new Error("Candidate sources changed repeatedly while freezing .env.example; stop source writers and retry");
+  }
+  assertSecretFreeEvidence(stableBaseline);
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(baseline, null, 2)}\n`, "utf8");
-  return baseline;
+  await writeFile(path, `${JSON.stringify(stableBaseline, null, 2)}\n`, "utf8");
+  return stableBaseline;
 }
 
 export async function checkCandidateBaseline(path = candidateBaselinePath) {
   const persisted = JSON.parse(await readFile(path, "utf8"));
   const current = await buildCandidateBaseline(persisted.generated_at_utc);
   assertSecretFreeEvidence(persisted);
-  return validateCandidateBaseline(persisted, current);
+  const environment = await readFile(environmentExamplePath, "utf8");
+  return [
+    ...validateCandidateBaseline(persisted, current),
+    ...validateRelaySourceEnvironment(environment, current.source),
+  ];
 }
 
 async function main() {

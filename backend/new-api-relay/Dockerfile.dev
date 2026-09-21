@@ -6,20 +6,32 @@ FROM golang:1.26.1-alpine AS builder
 ENV GO111MODULE=on CGO_ENABLED=0
 ARG TARGETOS
 ARG TARGETARCH
-ARG RELAY_BUILD_UPSTREAM_REVISION=unknown
-ARG RELAY_BUILD_SOURCE_REVISION=unknown
-ARG RELAY_BUILD_SOURCE_SNAPSHOT_SHA256=unknown
-ARG RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT=unknown
-ARG RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256=unknown
+ARG RELAY_BUILD_UPSTREAM_REVISION
+ARG RELAY_BUILD_SOURCE_REVISION
+ARG RELAY_BUILD_SOURCE_SNAPSHOT_SHA256
+ARG RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT
+ARG RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256
 ENV GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64}
 ENV GOEXPERIMENT=greenteagc
 
 WORKDIR /build
 
 ADD go.mod go.sum ./
+# relaykit is a local submodule referenced via replace; its go.mod must be
+# present before the module graph can be downloaded.
+ADD relaykit/go.mod ./relaykit/go.mod
 RUN go mod download
 
 COPY . .
+
+RUN printf '%s' "${RELAY_BUILD_UPSTREAM_REVISION}" | grep -Eq '^[0-9a-f]{40}$' \
+    && printf '%s' "${RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256}" | grep -Eq '^sha256:[0-9a-f]{64}$' \
+    && test "${RELAY_BUILD_ROUTE_ACCEPTANCE_KEYS_SHA256}" != 'sha256:0000000000000000000000000000000000000000000000000000000000000000' \
+    && GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" go run ./cmd/relay-source-snapshot \
+      --root . \
+      --expected-revision "${RELAY_BUILD_SOURCE_REVISION}" \
+      --expected-sha256 "${RELAY_BUILD_SOURCE_SNAPSHOT_SHA256}" \
+      --expected-file-count "${RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT}"
 
 RUN version="$(cat VERSION)" \
     && test "$(wc -l < VERSION)" -eq 1 \

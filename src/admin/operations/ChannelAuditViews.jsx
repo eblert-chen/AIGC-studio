@@ -28,6 +28,7 @@ import {
   formatTime,
 } from "../adminConsoleUtils.js";
 import { deferRelayNativeConsoleGrantConsumption } from "../relayNativeConsole.js";
+import { relayProviderResultReconciliationPresentation } from "../relayProviderResultReconciliations.js";
 import {
   ACCESS_AUDIT_TABS,
   CHANNEL_CLASS_LABELS,
@@ -87,7 +88,7 @@ export function ChannelOperationsScreen({
     const values = data.channels
       .map((channel) => Number(channel[key]))
       .filter(Number.isFinite);
-    return values.length ? values.reduce((total, value) => total + value, 0) : "—";
+    return values.length ? values.reduce((total, value) => total + value, 0) : "待核验";
   };
   const derivedSummary = {
     active: sumEvidence("activeAccounts"),
@@ -100,9 +101,15 @@ export function ChannelOperationsScreen({
   const summary = data.channelSummary || derivedSummary;
   const relayControlStatus = source.relayChannels || data.relayChannelSourceStatus || "unavailable";
   const reconciliationStatus = source.relayUnknownSubmissions || data.relayUnknownSubmissionSourceStatus || "unavailable";
+  const providerResultTransportStatus = source.relayProviderResultReconciliations
+    || "unavailable";
+  const providerResultStatus = providerResultTransportStatus === "available"
+    ? data.relayProviderResultReconciliationSourceStatus
+    : providerResultTransportStatus;
   const callbackStatus = source.relayCallbackDeadLetters || data.relayCallbackDeadLetterSourceStatus || "unavailable";
   const channelHealthStatus = source.channelHealth || "unavailable";
   const reconciliationAvailable = reconciliationStatus === "available" && data.relayUnknownSubmissionSourceStatus === "available";
+  const providerResultAvailable = providerResultStatus === "available";
   const relayControlAvailable = relayControlStatus === "available" && data.relayChannelSourceStatus === "available";
   const relayChannels = data.relayChannels;
   const relayControlSummary = {
@@ -113,6 +120,10 @@ export function ChannelOperationsScreen({
     missingCredential: relayChannels.filter((item) => !item.credentialConfigured).length,
   };
   const unknownSubmissionCount = evidenceCount(data.relayUnknownSubmissionTotal, "待核验");
+  const providerResultCount = evidenceCount(
+    data.relayProviderResultReconciliationTotal,
+    "待核验",
+  );
   const callbackDeadLetterCount = evidenceCount(data.relayCallbackDeadLetterTotal, "待核验");
   return (
     <>
@@ -170,12 +181,12 @@ export function ChannelOperationsScreen({
           </div>
         </div>
         <div className="ops-health-summary is-channel ops-relay-control-summary">
-          <span><PlayCircle size={20} /><small>已启用</small><strong>{relayControlAvailable ? relayControlSummary.enabled : "—"}</strong></span>
-          <span className="is-warning"><LockKey size={20} /><small>手动停用</small><strong>{relayControlAvailable ? relayControlSummary.manuallyDisabled : "—"}</strong></span>
-          <span className="is-critical"><LinkBreak size={20} /><small>自动停用</small><strong>{relayControlAvailable ? relayControlSummary.autoDisabled : "—"}</strong></span>
-          <span><Pulse size={20} /><small>有测试证据</small><strong>{relayControlAvailable ? relayControlSummary.tested : "—"}</strong></span>
-          <span className={relayControlSummary.missingCredential ? "is-critical" : ""}><Key size={20} /><small>凭据未配置</small><strong>{relayControlAvailable ? relayControlSummary.missingCredential : "—"}</strong></span>
-          <span className={Number(data.relayUnknownSubmissionTotal) > 0 ? "is-critical" : ""}><Alarm size={20} /><small>未知提交</small><strong>{reconciliationAvailable ? unknownSubmissionCount : "—"}</strong></span>
+          <span><PlayCircle size={20} /><small>已启用</small><strong>{relayControlAvailable ? relayControlSummary.enabled : "待核验"}</strong></span>
+          <span className="is-warning"><LockKey size={20} /><small>手动停用</small><strong>{relayControlAvailable ? relayControlSummary.manuallyDisabled : "待核验"}</strong></span>
+          <span className="is-critical"><LinkBreak size={20} /><small>自动停用</small><strong>{relayControlAvailable ? relayControlSummary.autoDisabled : "待核验"}</strong></span>
+          <span><Pulse size={20} /><small>有测试证据</small><strong>{relayControlAvailable ? relayControlSummary.tested : "待核验"}</strong></span>
+          <span className={relayControlSummary.missingCredential ? "is-critical" : ""}><Key size={20} /><small>凭据未配置</small><strong>{relayControlAvailable ? relayControlSummary.missingCredential : "待核验"}</strong></span>
+          <span className={Number(data.relayUnknownSubmissionTotal) > 0 ? "is-critical" : ""}><Alarm size={20} /><small>未知提交</small><strong>{reconciliationAvailable ? unknownSubmissionCount : "待核验"}</strong></span>
         </div>
         <TableScroller hasActions label="Relay 渠道控制面">
           <table className="ops-table ops-relay-channel-table">
@@ -193,7 +204,7 @@ export function ChannelOperationsScreen({
                     <td><strong>{row.testSupported ? (row.lastTestedAt ? "已有测试证据" : "暂无测试证据") : "不支持通用测试"}</strong><small>{row.testSupported ? freshness.label : "需 staging 真实 canary"}</small></td>
                     <td><strong>路由证据未接入</strong><small>{evidenceCount(row.modelCount)} 个模型</small></td>
                     <td><strong>{formatDateTime(row.lastTestedAt)}</strong><small>{freshness.detail}</small></td>
-                    <td>{row.responseTimeMs == null ? "—" : `${formatInteger(row.responseTimeMs)} ms`}</td>
+                    <td>{row.responseTimeMs == null ? "待核验" : `${formatInteger(row.responseTimeMs)} ms`}</td>
                     <td>
                       <div className="ops-table-actions">
                         <button className="ops-table-link" type="button" onClick={() => onRelayChannelOpen?.(row, "detail")} disabled={!onRelayChannelOpen}>详情</button>
@@ -257,10 +268,10 @@ export function ChannelOperationsScreen({
                 <tr key={item.jobId}>
                   <td>{formatDateTime(item.unknownAt)}</td>
                   <td><strong title={item.jobId}>{compactIdentifier(item.jobId)}</strong><small>{item.clientReferenceId || "无业务引用"}</small></td>
-                  <td><strong>{item.model || "—"}</strong><small>{GENERATION_MODE_LABELS[item.mode] || item.mode || "—"}</small></td>
-                  <td><strong>{item.providerName || "—"}</strong><small>{CHANNEL_CLASS_LABELS[item.providerChannelClass] || item.providerChannelClass || "—"} · route {item.providerRouteId ?? "—"}</small></td>
-                  <td><strong title={item.providerAccountId}>{compactIdentifier(item.providerAccountId, 10, 4)}</strong><small>channel {item.providerChannelId ?? "—"} · key {item.providerKeyIndex ?? "—"}</small></td>
-                  <td>{item.providerSubmissionAttempt ?? "—"}</td>
+                  <td><strong>{item.model || "未提供"}</strong><small>{GENERATION_MODE_LABELS[item.mode] || item.mode || "未提供"}</small></td>
+                  <td><strong>{item.providerName || "未提供"}</strong><small>{CHANNEL_CLASS_LABELS[item.providerChannelClass] || item.providerChannelClass || "未提供"} · route {item.providerRouteId ?? "未提供"}</small></td>
+                  <td><strong title={item.providerAccountId}>{compactIdentifier(item.providerAccountId, 10, 4)}</strong><small>channel {item.providerChannelId ?? "未提供"} · key {item.providerKeyIndex ?? "未提供"}</small></td>
+                  <td>{item.providerSubmissionAttempt ?? "未提供"}</td>
                   <td className="is-negative"><strong>{item.errorCode || "PROVIDER_RESPONSE_LOSS"}</strong><small>{item.errorMessage || "Provider 响应丢失"}</small></td>
                   <td><button className="ops-table-link" type="button" onClick={() => onRelayUnknownOpen?.(item)} disabled={!onRelayUnknownOpen || openingRelayUnknownId === item.jobId} aria-label={`核实 Relay 未知提交 ${item.jobId}`}>{openingRelayUnknownId === item.jobId ? "读取详情中…" : "核实并审批"}</button></td>
                 </tr>
@@ -270,6 +281,43 @@ export function ChannelOperationsScreen({
           </table>
         </TableScroller>
         {reconciliationAvailable && data.relayUnknownSubmissionTotal > data.relayUnknownSubmissions.length ? <div className="ops-table-footer"><span>当前显示前 {data.relayUnknownSubmissions.length} 项，共 {data.relayUnknownSubmissionTotal} 项；处置后刷新获取下一批。</span></div> : null}
+      </section>
+      <section className="ops-panel ops-relay-provider-result-panel">
+        <PanelHeader
+          title="供应商结果证据核对（只读）"
+          detail="独立展示原生任务缺失、终态证明冲突与临时供应商材料待清理记录。此处没有确认、重试或重新生成入口。"
+          action={<span className={cx("ops-queue-count", !providerResultAvailable && "is-unavailable")}>{providerResultAvailable ? `${providerResultCount} 项待核对` : providerResultStatus === "failed" ? "加载失败" : "数据不可用"}</span>}
+        />
+        {providerResultStatus !== "available" ? <DatasetState status={providerResultStatus} label="供应商结果证据核对" detail={data.sourceErrors?.relayProviderResultReconciliations} onRetry={onRetry} compact /> : null}
+        <TableScroller label="供应商结果证据核对">
+          <table className="ops-table ops-relay-provider-result-table">
+            <thead><tr><th>最近更新</th><th>任务 / 业务引用</th><th>模型 / 模式</th><th>异常类型 / 任务状态</th><th>固定路由证据</th><th>证据留存</th><th>只读说明</th></tr></thead>
+            <tbody>
+              {data.relayProviderResultReconciliations.map((item) => {
+                const presentation = relayProviderResultReconciliationPresentation(item);
+                const statusLabel = {
+                  reconciliation_required: "等待人工核对",
+                  succeeded: "作品已成功发布",
+                  failed: "任务已失败",
+                  cancelled: "任务已取消",
+                }[item.status] || "状态待核验";
+                return (
+                  <tr key={item.jobId}>
+                    <td><strong>{formatDateTime(item.updatedAt)}</strong><small>创建于 {formatDateTime(item.createdAt)}</small></td>
+                    <td><strong title={item.jobId}>{compactIdentifier(item.jobId)}</strong><small>{item.clientReferenceId || "无业务引用"}</small></td>
+                    <td><strong>{item.model}</strong><small>{GENERATION_MODE_LABELS[item.mode] || item.mode}</small></td>
+                    <td><StatusPill value={presentation.tone} label={presentation.label} /><small>{statusLabel} · {item.progress}%</small></td>
+                    <td><strong>route {item.providerRouteId} · channel {item.providerChannelId}</strong><small>attempt {item.providerSubmissionAttempt} · upstream {item.upstreamTaskId ? compactIdentifier(item.upstreamTaskId, 10, 6) : "未分配"}</small></td>
+                    <td className={item.evidenceRetained ? "is-positive" : "is-negative"}><strong>{item.evidenceRetained ? "证据已保留" : "证据留存未确认"}</strong><small>{item.errorCode || "无任务错误码"}</small></td>
+                    <td><strong>{presentation.guidance}</strong><small>仅由 Platform 读取 Relay 的安全摘要；原始响应、临时 URL 与凭据不会进入浏览器。</small></td>
+                  </tr>
+                );
+              })}
+              {!data.relayProviderResultReconciliations.length ? <tr><td colSpan="7"><EmptyState title={providerResultAvailable ? "当前没有供应商结果证据待核对" : "供应商结果证据队列暂不可用"} detail={providerResultAvailable ? "Relay 已明确返回空的只读核对列表。" : "无法确认队列是否为空；不要据此判断没有原生任务、终态证明或临时材料异常。"} /></td></tr> : null}
+            </tbody>
+          </table>
+        </TableScroller>
+        {providerResultAvailable && data.relayProviderResultReconciliationTotal > data.relayProviderResultReconciliations.length ? <div className="ops-table-footer"><span>当前显示前 {data.relayProviderResultReconciliations.length} 项，共 {data.relayProviderResultReconciliationTotal} 项；刷新页面获取最新安全摘要。</span></div> : null}
       </section>
       {channelHealthStatus === "available" ? <><section className="ops-panel">
         <div className="ops-health-summary is-channel">
@@ -291,7 +339,7 @@ export function ChannelOperationsScreen({
           <table className="ops-table">
             <thead><tr><th>渠道</th><th>类型</th><th>成功率</th><th>可用签名路由</th><th>冷却账号</th><th>失效账号</th><th>限流账号</th><th>全局故障切换</th><th>全局告警积压</th><th>状态</th></tr></thead>
             <tbody>
-              {data.channels.map((row) => <tr key={row.id}><td><strong>{row.name}</strong></td><td>{CHANNEL_CLASS_LABELS[row.channelClass] || row.channelClass || "类型未提供"}</td><td className={row.successRate == null ? "" : row.successRate < 90 ? "is-negative" : row.successRate < 96 ? "is-warning" : "is-positive"}>{row.successRate == null ? "—" : formatPercent(row.successRate, 2)}</td><td>{evidenceCount(row.activeAccounts)}</td><td>{evidenceCount(row.coolingAccounts)}</td><td className={Number.isFinite(Number(row.invalidAccounts)) && Number(row.invalidAccounts) > 0 ? "is-negative" : ""}>{evidenceCount(row.invalidAccounts)}</td><td>{evidenceCount(row.rateLimits)}</td><td>{evidenceCount(row.failovers)}</td><td className={Number.isFinite(Number(row.alertBacklog)) && Number(row.alertBacklog) > 0 ? "is-negative" : ""}>{evidenceCount(row.alertBacklog)}</td><td><StatusPill value={row.status} label={row.successRate == null ? "数据未接入" : ({ healthy: "正常", warning: "预警", critical: "异常" }[row.status])} /></td></tr>)}
+              {data.channels.map((row) => <tr key={row.id}><td><strong>{row.name}</strong></td><td>{CHANNEL_CLASS_LABELS[row.channelClass] || row.channelClass || "类型未提供"}</td><td className={row.successRate == null ? "" : row.successRate < 90 ? "is-negative" : row.successRate < 96 ? "is-warning" : "is-positive"}>{row.successRate == null ? "待核验" : formatPercent(row.successRate, 2)}</td><td>{evidenceCount(row.activeAccounts)}</td><td>{evidenceCount(row.coolingAccounts)}</td><td className={Number.isFinite(Number(row.invalidAccounts)) && Number(row.invalidAccounts) > 0 ? "is-negative" : ""}>{evidenceCount(row.invalidAccounts)}</td><td>{evidenceCount(row.rateLimits)}</td><td>{evidenceCount(row.failovers)}</td><td className={Number.isFinite(Number(row.alertBacklog)) && Number(row.alertBacklog) > 0 ? "is-negative" : ""}>{evidenceCount(row.alertBacklog)}</td><td><StatusPill value={row.status} label={row.successRate == null ? "数据未接入" : ({ healthy: "正常", warning: "预警", critical: "异常" }[row.status])} /></td></tr>)}
               {!data.channels.length ? <tr><td colSpan="10"><EmptyState title="没有签名遥测数据" /></td></tr> : null}
             </tbody>
           </table>
@@ -351,7 +399,7 @@ export function PublishingAssetsScreen({ data, onExceptionSelect, onRetry }) {
 }
 
 function formatAuditValue(value) {
-  if (value == null) return "—";
+  if (value == null) return "未提供";
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   try {
@@ -497,7 +545,7 @@ export function AuditAccessScreen({
               <tbody>
                 {filteredAudits.map((event) => (
                   <tr key={event.id}>
-                    <td>{formatDateTime(event.occurredAt)}</td><td><strong>{event.actorName}</strong><small>{event.actorId}</small></td><td><strong>{event.actionLabel}</strong><small>{event.action}</small></td><td>{event.targetLabel}</td><td><AuditDiff before={event.before} after={event.after} compact /></td><td><span className="ops-reason-summary">{event.reason || "—"}</span></td><td>{(() => { const result = auditResultMeta(event.result); return <StatusPill value={result.tone} label={result.label} />; })()}</td><td><button className="ops-table-link" type="button" onClick={() => onAuditOpen(event)}>查看差异</button></td>
+                    <td>{formatDateTime(event.occurredAt)}</td><td><strong>{event.actorName}</strong><small>{event.actorId}</small></td><td><strong>{event.actionLabel}</strong><small>{event.action}</small></td><td>{event.targetLabel}</td><td><AuditDiff before={event.before} after={event.after} compact /></td><td><span className="ops-reason-summary">{event.reason || "未填写"}</span></td><td>{(() => { const result = auditResultMeta(event.result); return <StatusPill value={result.tone} label={result.label} />; })()}</td><td><button className="ops-table-link" type="button" onClick={() => onAuditOpen(event)}>查看差异</button></td>
                   </tr>
                 ))}
                 {!filteredAudits.length ? <tr><td colSpan="8"><EmptyState title="没有匹配的审计事件" /></td></tr> : null}

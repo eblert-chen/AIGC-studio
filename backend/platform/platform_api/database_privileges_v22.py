@@ -1,0 +1,43 @@
+"""Immutable Platform PostgreSQL ACL policy for Alembic 0057.
+
+Revision 0057 makes admitted pricing snapshots and private execution contracts
+immutable. It adds no table and widens no runtime role: v21 table and ACL
+manifests remain exact. No PostgreSQL reference test is runtime qualification;
+the current catalog intentionally remains UNQUALIFIED.
+"""
+from __future__ import annotations
+
+from types import MappingProxyType
+
+from . import database_privileges_v21 as policy_v21
+
+
+ALEMBIC_HEAD = "0057_execution_integrity"
+MIGRATION_DATABASE_ROLE = policy_v21.MIGRATION_DATABASE_ROLE
+DATABASE_ROLE_BY_PROCESS = policy_v21.DATABASE_ROLE_BY_PROCESS
+DATABASE_ROLE_COMMENT_BY_PROCESS = policy_v21.DATABASE_ROLE_COMMENT_BY_PROCESS
+DATABASE_ROLE_CONNECTION_LIMIT_BY_PROCESS = (
+    policy_v21.DATABASE_ROLE_CONNECTION_LIMIT_BY_PROCESS
+)
+TABLES = policy_v21.TABLES
+PRIVILEGES_BY_PROCESS = policy_v21.PRIVILEGES_BY_PROCESS
+EXPECTED_TABLE_ACL = policy_v21.EXPECTED_TABLE_ACL
+EXPECTED_DATABASE_ACL = policy_v21.EXPECTED_DATABASE_ACL
+EXPECTED_SCHEMA_ACL = policy_v21.EXPECTED_SCHEMA_ACL
+EXPECTED_DEFAULT_ACL = policy_v21.EXPECTED_DEFAULT_ACL
+UNQUALIFIED_CATALOG_SHA256 = "0" * 64
+CATALOG_SHA256 = UNQUALIFIED_CATALOG_SHA256
+EMPTY_CATALOG_SHA256 = policy_v21.EMPTY_CATALOG_SHA256
+MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD = MappingProxyType(
+    {
+        policy_v21.ALEMBIC_HEAD: policy_v21.CATALOG_SHA256,
+        ALEMBIC_HEAD: CATALOG_SHA256,
+    }
+)
+POSTGRES16_SYSTEM_ACL_BY_SYSTEM_SEMANTIC_SHA256 = (
+    policy_v21.POSTGRES16_SYSTEM_ACL_BY_SYSTEM_SEMANTIC_SHA256
+)
+SYSTEM_ACL_SHA256 = policy_v21.SYSTEM_ACL_SHA256
+QUALIFIED_POSTGRES16_SYSTEM_ACL_SHA256 = (
+    policy_v21.QUALIFIED_POSTGRES16_SYSTEM_ACL_SHA256
+)

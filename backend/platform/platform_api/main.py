@@ -4,22 +4,19 @@ from datetime import datetime
 import os
 import socket
 from typing import Annotated, Literal
-from urllib.parse import parse_qs, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from fastapi import (
     Depends,
     FastAPI,
-    File,
-    Form,
     Header,
     HTTPException,
     Query,
     Request,
-    UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -28,8 +25,6 @@ from .config import Settings, get_settings, runtime_settings_are_protected
 from .asset_storage import (
     FilesystemInputAssetSigner,
     InputAssetStore,
-    InputAssetSignatureError,
-    InputAssetStorageError,
     build_input_asset_store,
     build_showcase_media_store,
 )
@@ -46,10 +41,17 @@ from .routers.admin_operations import router as admin_operations_router
 from .routers.admin_relay_native_console import (
     router as admin_relay_native_console_router,
 )
+from .routers.admin_task_content import router as admin_task_content_router
 from .routers.relay_telemetry import router as relay_telemetry_router
 from .routers.personal import router as personal_workspace_router
 from .routers.authentication import router as authentication_router
 from .routers.showcase import router as showcase_router
+from .routers.company_access import router as company_access_router
+from .routers.company_input_assets import create_company_input_assets_router
+from .routers.payments import router as payments_router
+from .routers.finance import router as finance_router
+from .routers.enterprise_billing import router as enterprise_billing_router
+from .routers.director_shot_packages import router as director_shot_packages_router
 from .download_gateway import (
     DownloadGatewayClient,
     DownloadGatewayPermanentError,
@@ -71,14 +73,16 @@ from .dependencies import (
     require_permission,
 )
 from .models import (
+    BillingUnit,
     ChannelCostSource,
     ChannelType,
+    Company,
     CompanyMembership,
-    CompanyModelGrant,
     CompanyResourceGrant,
+    CompanyPointLedgerEntry,
+    CompanyPointWalletAccount,
     DownloadCompletionSource,
     LedgerEntry,
-    InputAssetStatus,
     ModelDefinition,
     MembershipRole,
     MembershipStatus,
@@ -102,10 +106,25 @@ from .schemas import (
     AdminModelCreateRequest,
     AdminModelResponse,
     AdminModelUpdateRequest,
+    ModelCommercialReleaseBatchActivateResponse,
+    ModelCommercialReleaseBatchCreateRequest,
+    ModelCommercialReleaseBatchPreflightRequest,
+    ModelCommercialReleaseBatchPreflightResponse,
+    ModelCommercialReleaseBatchResponse,
+    ModelCommercialReleasePlanRequest,
+    ModelCommercialReleasePlanResponse,
+    ModelCommercialReleaseReconcileResponse,
     RelayCapabilityApprovalRequest,
     RelayCapabilityApprovalResponse,
     RelayCapabilityAuditResponse,
-    AssignRoleRequest,
+    RelayCapabilityCandidateResponse,
+    RelayCapabilityCandidateSyncRequest,
+    RelayCapabilityHistoryResponse,
+    RelayModelReconcileResponse,
+    AdminPersonalModelGrantBatchExecuteRequest,
+    AdminPersonalModelGrantBatchPreviewRequest,
+    AdminPersonalModelGrantRequest,
+    AdminPersonalModelGrantResponse,
     AuditLogPage,
     AvailableModelResponse,
     AvailableResourceResponse,
@@ -120,11 +139,10 @@ from .schemas import (
     CompanyModelGrantResponse,
     CompanyResourceGrantRequest,
     CompanyResourceGrantResponse,
-    CompanyMeResponse,
+    CompanyPointsMigrationRequest,
+    CompanyPointsMigrationResponse,
     CreateDevPublisherConnectionRequest,
-    CreateMemberRequest,
     CreatePublicationJobRequest,
-    CreateRoleRequest,
     CreateTaskRequest,
     DevModelSeedRequest,
     DevModelSeedResponse,
@@ -134,23 +152,18 @@ from .schemas import (
     DownloadCompletionResponse,
     InternalDispatchResponse,
     InternalTimeoutScanResponse,
-    InputAssetAccessResponse,
-    InputAssetResponse,
     PromotedInputAssetResponse,
     PromoteTaskArtifactRequest,
     LedgerEntryResponse,
-    MemberResponse,
-    MemberPermissionDetailResponse,
-    MemberStatusRequest,
-    PermissionCatalogResponse,
-    PermissionOverrideRequest,
-    PermissionOverrideResponse,
     PublicationJobPage,
     PlatformAdminIdentityResponse,
     PlatformAdminMeResponse,
     PlatformDashboardResponse,
+    ProviderOnboardingStatusBatchRequest,
+    ProviderOnboardingStatusBatchResponse,
     PublicationJobDetailResponse,
     PublicationJobResponse,
+    PublishingReadinessResponse,
     PublisherConnectionResponse,
     PublisherOAuthProviderResponse,
     RechargeRequest,
@@ -164,11 +177,6 @@ from .schemas import (
     ResourceDefinitionRequest,
     ResourceDefinitionResponse,
     ResourceDefinitionUpdateRequest,
-    ReplaceMemberAccessRequest,
-    ReplaceMemberRolesRequest,
-    ReplacePermissionOverridesRequest,
-    RoleResponse,
-    UpdateRoleRequest,
     TaskResponse,
     TaskHistoryPage,
     TaskReportPage,
@@ -184,6 +192,8 @@ from .relay_client import (
     RelayPermanentError,
     RelayTemporaryError,
     validate_bound_artifact_download,
+    validate_model_catalog_release_evidence_pair,
+    validate_protected_model_catalog_routes,
 )
 from .relay_backends import (
     LEGACY_RELAY_BACKEND_ID,
@@ -194,6 +204,7 @@ from .relay_backends import (
 )
 from .request_ids import normalize_request_id
 from .services.billing import WalletService
+from .services.company_points_billing import CompanyPointBillingService
 from .services.channel_costs import ChannelCostService
 from .services.channel_cost_events import ChannelCostEventVerifier
 from .services.download_completion_events import DownloadCompletionEventVerifier
@@ -209,19 +220,41 @@ from .services.authentication import (
 )
 from .services.companies import CompanyService
 from .services.dashboard import DashboardService
-from .services.errors import ConflictError, DomainError
+from .services.errors import (
+    ConflictError,
+    DomainError,
+    NotFoundError,
+    PermissionDeniedError,
+)
 from .services.models import ModelCatalogService, ModelGrantService
+from .services.model_release_guard import (
+    ModelReleaseReadiness,
+    build_model_release_readiness,
+)
+from .services.model_commercial_release import ModelCommercialReleaseService
+from .services.personal import PersonalRetailGrantService
+from .services.provider_onboarding_status import (
+    ProviderOnboardingStatusProjectionService,
+)
 from .services.publishing import PublishingService
 from .publishing_adapters import (
     PublisherAdapterRegistry,
     build_publisher_registry,
     load_publisher_adapter,
 )
+from .payment_providers import PaymentProviderRegistry
+from .services.commercial_pricing import CommercialPricingPolicy
+from .services.payment_webhooks import PaymentWebhookVerifierRegistry
 from .services.relay_capabilities import RelayCapabilityService
+from .services.relay_catalog_reconciliation import (
+    ReconciliationAuditActor,
+    RelayCatalogReconciliationService,
+)
 from .services.input_assets import (
     InputAssetRelayResolver,
     InputAssetService,
 )
+from .services.director_shot_packages import DirectorShotPackageService
 from .services.permissions import PermissionService
 from .services.relay_outbox import RelayOutboxDispatcher, RelayOutboxService
 from .services.relay_status import RelayStatusService
@@ -319,45 +352,6 @@ def _visible_user_id_for_scope(
     return None
 
 
-def _member_response(
-    session: Session, *, company_id: str, user: User, membership
-) -> MemberResponse:
-    roles = AccessLifecycleService.roles_for_membership(
-        session, company_id=company_id, membership_id=membership.id
-    )
-    inherited_permissions = PermissionService.inherited_permissions(
-        session, membership_id=membership.id
-    )
-    permission_overrides = PermissionService.permission_overrides(
-        session, membership_id=membership.id
-    )
-    effective_permissions = PermissionService.apply_overrides(
-        inherited_permissions, permission_overrides
-    )
-    return MemberResponse(
-        user_id=user.id,
-        membership_id=membership.id,
-        email=user.email,
-        display_name=user.display_name,
-        status=membership.status,
-        roles=[
-            {
-                "id": role.id,
-                "name": role.name,
-                "is_system": role.is_system,
-                "system_key": role.system_key,
-            }
-            for role in roles
-        ],
-        inherited_permission_codes=sorted(inherited_permissions),
-        effective_permission_codes=sorted(effective_permissions),
-        permission_overrides=[
-            {"permission_code": code, "effect": effect}
-            for code, effect in permission_overrides.items()
-        ],
-    )
-
-
 def _model_audit_summary(snapshot: dict) -> dict:
     return {
         key: snapshot[key]
@@ -368,6 +362,10 @@ def _model_audit_summary(snapshot: dict) -> dict:
             "billing_mode",
             "capability_version",
             "relay_capability_revision",
+            "relay_capability_candidate_revision",
+            "relay_capability_candidate_catalog_revision",
+            "relay_capability_approved_catalog_revision",
+            "relay_capability_approval_status",
             "active",
             "status",
             "capabilities",
@@ -465,6 +463,110 @@ def _can_publish_company_artifacts(session: Session, *, context: TenantContext) 
     )
 
 
+def _company_wallet_payload(session: Session, *, company_id: str) -> dict:
+    company = session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="公司不存在")
+    if company.billing_version == 2:
+        wallet = session.get(CompanyPointWalletAccount, company_id)
+        if wallet is None:
+            raise HTTPException(status_code=409, detail="公司积分钱包状态不完整")
+        return {
+            "company_id": company_id,
+            "billing_unit": BillingUnit.POINT,
+            "billing_version": 2,
+            "available_cents": None,
+            "reserved_cents": None,
+            "available_points": wallet.available_points,
+            "reserved_points": wallet.reserved_points,
+        }
+    if company.billing_version != 1:
+        raise HTTPException(status_code=409, detail="公司计费版本无效")
+    wallet = session.get(WalletAccount, company_id)
+    if wallet is None:
+        raise HTTPException(status_code=404, detail="公司钱包不存在")
+    return {
+        "company_id": company_id,
+        "billing_unit": BillingUnit.CNY_CENT,
+        "billing_version": 1,
+        "available_cents": wallet.available_cents,
+        "reserved_cents": wallet.reserved_cents,
+        "available_points": None,
+        "reserved_points": None,
+    }
+
+
+def _legacy_ledger_payload(entry: LedgerEntry) -> dict:
+    return {
+        "id": entry.id,
+        "company_id": entry.company_id,
+        "billing_unit": BillingUnit.CNY_CENT,
+        "billing_version": 1,
+        "kind": entry.kind,
+        "amount_cents": entry.amount_cents,
+        "available_delta_cents": entry.available_delta_cents,
+        "reserved_delta_cents": entry.reserved_delta_cents,
+        "amount_points": None,
+        "available_delta_points": None,
+        "reserved_delta_points": None,
+        "idempotency_key": entry.idempotency_key,
+        "task_id": entry.task_id,
+        "note": entry.note,
+        "created_at": entry.created_at,
+    }
+
+
+def _point_ledger_payload(entry: CompanyPointLedgerEntry) -> dict:
+    return {
+        "id": entry.id,
+        "company_id": entry.company_id,
+        "billing_unit": BillingUnit.POINT,
+        "billing_version": 2,
+        "kind": entry.kind,
+        "amount_cents": None,
+        "available_delta_cents": None,
+        "reserved_delta_cents": None,
+        "amount_points": entry.amount_points,
+        "available_delta_points": entry.available_delta_points,
+        "reserved_delta_points": entry.reserved_delta_points,
+        "idempotency_key": entry.idempotency_key,
+        "task_id": entry.task_id,
+        "note": entry.note,
+        "created_at": entry.created_at,
+    }
+
+
+def _report_billing_metadata(
+    session: Session,
+    *,
+    company_id: str | None,
+    unit_versions: set[tuple[str, int]],
+) -> tuple[BillingUnit | Literal["MIXED"], int | None]:
+    """Describe report units without guessing from a possibly empty page."""
+
+    if len(unit_versions) > 1:
+        return "MIXED", None
+    if len(unit_versions) == 1:
+        unit_value, version = next(iter(unit_versions))
+        try:
+            return BillingUnit(unit_value), version
+        except ValueError as error:
+            raise HTTPException(
+                status_code=409,
+                detail="报表包含未知计费单位",
+            ) from error
+    if company_id is None:
+        return "MIXED", None
+    company = session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="公司不存在")
+    if company.billing_version == 1:
+        return BillingUnit.CNY_CENT, 1
+    if company.billing_version == 2:
+        return BillingUnit.POINT, 2
+    raise HTTPException(status_code=409, detail="公司计费版本无效")
+
+
 def create_app(
     settings: Settings | None = None,
     engine: Engine | None = None,
@@ -479,6 +581,8 @@ def create_app(
     ) = None,
     provider_alert_forwarder: ProviderAlertForwarder | None = None,
     publisher_registry: PublisherAdapterRegistry | None = None,
+    payment_provider_registry: PaymentProviderRegistry | None = None,
+    payment_webhook_verifier_registry: PaymentWebhookVerifierRegistry | None = None,
 ) -> FastAPI:
     settings = settings or get_settings("platform-api")
     engine = engine or build_engine(settings.database_url)
@@ -490,6 +594,15 @@ def create_app(
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = build_session_factory(engine)
+    # Commercial payment integrations are opt-in.  An empty registry is an
+    # intentional fail-closed default: no test double or unsigned webhook can
+    # become a real-money path merely because the API process is running.
+    app.state.payment_provider_registry = (
+        payment_provider_registry or PaymentProviderRegistry()
+    )
+    app.state.payment_webhook_verifier_registry = (
+        payment_webhook_verifier_registry or PaymentWebhookVerifierRegistry()
+    )
     if publisher_registry is None:
         configured_publisher_adapters = [
             load_publisher_adapter(
@@ -725,6 +838,222 @@ def create_app(
             ) from exc
 
     app.state.resolve_task_relay_client = resolve_task_relay_client
+
+    def read_relay_model_release_evidence(
+        *,
+        request_id: str,
+        required: bool,
+    ):
+        client = app.state.relay_client
+        if client is None:
+            if required:
+                raise HTTPException(status_code=503, detail="Relay 客户端未配置")
+            return None, "Relay 客户端未配置"
+        reader = getattr(client, "get_model_release_evidence", None)
+        if not callable(reader):
+            if required:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Relay 路由发布测试证据接口未配置",
+                )
+            return None, "Relay 路由发布测试证据接口未配置"
+        try:
+            return reader(request_id=request_id), None
+        except RelayTemporaryError as exc:
+            if required:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Relay 路由发布测试证据暂时不可用",
+                ) from exc
+            return None, "Relay 路由发布测试证据暂时不可用"
+        except RelayPermanentError as exc:
+            if required:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Relay 路由发布测试证据无效或鉴权失败",
+                ) from exc
+            return None, "Relay 路由发布测试证据无效或鉴权失败"
+
+    def read_relay_model_catalog(
+        *,
+        request_id: str,
+        required: bool,
+    ):
+        client = app.state.relay_client
+        if client is None:
+            if required:
+                raise HTTPException(status_code=503, detail="Relay 客户端未配置")
+            return None, "Relay 客户端未配置"
+        reader = getattr(client, "get_model_catalog", None)
+        if not callable(reader):
+            if required:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Relay 模型目录接口未配置",
+                )
+            return None, "Relay 模型目录接口未配置"
+        try:
+            catalog_read = reader(
+                if_none_match=None,
+                request_id=request_id,
+            )
+        except RelayTemporaryError as exc:
+            if required:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Relay 模型目录暂时不可用",
+                ) from exc
+            return None, "Relay 模型目录暂时不可用"
+        except RelayPermanentError as exc:
+            if required:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Relay 模型目录无效或鉴权失败",
+                ) from exc
+            return None, "Relay 模型目录无效或鉴权失败"
+        catalog = getattr(catalog_read, "catalog", None)
+        if (
+            catalog is None
+            or bool(getattr(catalog_read, "not_modified", False))
+        ):
+            if required:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Relay 未返回完整模型目录快照",
+                )
+            return None, "Relay 未返回完整模型目录快照"
+        return catalog, None
+
+    def require_matching_relay_release_snapshot(*, catalog, evidence) -> None:
+        try:
+            validate_model_catalog_release_evidence_pair(
+                catalog=catalog,
+                evidence=evidence,
+            )
+            if runtime_settings_are_protected(settings):
+                validate_protected_model_catalog_routes(catalog=catalog)
+        except RelayPermanentError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Relay 模型目录与路由发布证据不满足受保护环境要求",
+            ) from exc
+
+    def require_models_release_ready(
+        session: Session,
+        *,
+        model_ids: set[str],
+        request_id: str,
+    ) -> dict[str, ModelReleaseReadiness]:
+        if not model_ids:
+            return {}
+        models = {
+            model.id: model
+            for model in session.scalars(
+                select(ModelDefinition).where(ModelDefinition.id.in_(model_ids))
+            ).all()
+        }
+        missing = sorted(model_ids - set(models))
+        if missing:
+            raise HTTPException(status_code=404, detail="模型不存在")
+        for model_id in sorted(model_ids):
+            model = models[model_id]
+            skip_relay_sync = __import__("os").environ.get("ENVIRONMENT") == "development"
+            if not skip_relay_sync and (
+                model.relay_capability_revision is None
+                or model.relay_capability_candidate_revision is None
+                or model.relay_capability_approved_ceiling is None
+                or model.relay_capability_candidate_revision
+                != model.relay_capability_revision
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "模型必须先同步并批准当前 Relay 能力候选版本，"
+                        "才能恢复客户分发"
+                    ),
+                )
+        # Resolve readiness from the live Relay snapshot only, and let every
+        # failure propagate as its own status: 503 when Relay cannot be read,
+        # 502 when the catalog/evidence pair does not match, 409 when the model
+        # is not currently distributable.
+        #
+        # This must stay strict. The directory read reports these exact
+        # blockers to the operator, so admitting a billable task on evidence
+        # the read refuses would make the two surfaces disagree about the same
+        # model. Development gating belongs on `skip_relay_sync` above, which
+        # only relaxes the capability-version comparison - never the evidence.
+        catalog, _ = read_relay_model_catalog(
+            request_id=request_id,
+            required=True,
+        )
+        evidence, evidence_error = read_relay_model_release_evidence(
+            request_id=request_id,
+            required=True,
+        )
+        require_matching_relay_release_snapshot(
+            catalog=catalog,
+            evidence=evidence,
+        )
+        catalog_models = {item.id: item for item in catalog.data}
+        result: dict[str, ModelReleaseReadiness] = {}
+        for model_id in sorted(model_ids):
+            model = models[model_id]
+            relay_model = catalog_models.get(model.slug)
+            if (
+                relay_model is None
+                or relay_model.lifecycle != "published_route"
+                or not relay_model.customer_callable
+                or relay_model.capability_revision
+                != model.relay_capability_revision
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Relay 当前模型目录未发布该模型路由",
+                )
+            if (
+                runtime_settings_are_protected(settings)
+                and not relay_model.managed_route
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="受保护环境只允许已完成托管接入闭环的模型路由",
+                )
+            item = RelayCapabilityService.require_customer_distribution_ready(
+                public_model_id=model.slug,
+                capability_revision=model.relay_capability_revision,
+                evidence=evidence,
+                evidence_error=evidence_error,
+            )
+            result[model_id] = build_model_release_readiness(
+                model=model,
+                evidence=item.model_dump(mode="json"),
+            )
+        return result
+
+    def read_customer_model_release_evidence(*, request_id: str):
+        """One authenticated snapshot per directory read; failures become blockers.
+
+        This read never changes a commercial execution or restores a grant.
+        The task endpoint still obtains and validates a separate live snapshot.
+        """
+        catalog, _ = read_relay_model_catalog(request_id=request_id, required=False)
+        if catalog is None:
+            return None
+        evidence, _ = read_relay_model_release_evidence(request_id=request_id, required=False)
+        if evidence is None:
+            return None
+        try:
+            require_matching_relay_release_snapshot(catalog=catalog, evidence=evidence)
+        except HTTPException:
+            return None
+        return evidence
+
+    app.state.read_relay_model_release_evidence = (
+        read_relay_model_release_evidence
+    )
+    app.state.read_relay_model_catalog = read_relay_model_catalog
+    app.state.require_models_release_ready = require_models_release_ready
+    app.state.read_customer_model_release_evidence = read_customer_model_release_evidence
     if relay_operations_client is None and all(
         (
             settings.relay_operations_base_url,
@@ -745,7 +1074,12 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins or [],
-        allow_credentials=settings.oidc_enabled,
+        # The browser session contract stays credential-capable even while an
+        # IdP is temporarily unavailable, so the frontend does not have to
+        # change transport semantics when OIDC is enabled again.  The explicit
+        # development-header-auth fixture is the sole non-cookie browser mode
+        # and must not advertise credentialed CORS.
+        allow_credentials=not settings.development_header_auth_enabled,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["X-Request-ID", "X-Auth-Required", "ETag"],
@@ -812,7 +1146,10 @@ def create_app(
     @app.middleware("http")
     async def relay_native_console_no_store_middleware(request: Request, call_next):
         response = await call_next(request)
-        if request.url.path == "/api/v1/platform-admin/relay/native-console/open":
+        if request.url.path in {
+            "/api/v1/platform-admin/relay/native-console/open",
+            "/api/v1/platform-admin/relay/provider-onboarding/open",
+        }:
             response.headers["Cache-Control"] = "private, no-store"
             response.headers["Pragma"] = "no-cache"
             response.headers["Referrer-Policy"] = "no-referrer"
@@ -1009,611 +1346,7 @@ def create_app(
             ],
         )
 
-    @app.get(
-        "/api/v1/companies/{company_id}/me",
-        response_model=CompanyMeResponse,
-    )
-    def company_me(
-        company_id: str,
-        context: Annotated[TenantContext, Depends(get_tenant_context)],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        return AccessLifecycleService.current_identity(
-            session,
-            company_id=company_id,
-            membership_id=context.membership_id,
-            user_id=context.user_id,
-        )
-
-    @app.get(
-        "/api/v1/companies/{company_id}/permissions",
-        response_model=list[PermissionCatalogResponse],
-    )
-    def list_permission_catalog(
-        company_id: str,
-        _: Annotated[TenantContext, Depends(require_permission("users.read"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        return PermissionService.list_catalog(session)
-
-    @app.get(
-        "/api/v1/companies/{company_id}/members",
-        response_model=list[MemberResponse],
-    )
-    def list_members(
-        company_id: str,
-        _: Annotated[TenantContext, Depends(require_permission("users.read"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ) -> list[MemberResponse]:
-        return [
-            _member_response(
-                session,
-                company_id=company_id,
-                user=user,
-                membership=membership,
-            )
-            for user, membership in CompanyService.list_members(
-                session, company_id=company_id
-            )
-        ]
-
-    @app.get(
-        "/api/v1/companies/{company_id}/members/{membership_id}/permissions",
-        response_model=MemberPermissionDetailResponse,
-    )
-    def member_permission_detail(
-        company_id: str,
-        membership_id: str,
-        _: Annotated[TenantContext, Depends(require_permission("users.read"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        membership = AccessLifecycleService.get_membership(
-            session, company_id=company_id, membership_id=membership_id
-        )
-        return {
-            "membership_id": membership.id,
-            "items": PermissionService.permission_detail(
-                session, membership_id=membership.id
-            ),
-        }
-
-    @app.post(
-        "/api/v1/companies/{company_id}/members",
-        response_model=MemberResponse,
-        status_code=201,
-    )
-    def create_member(
-        company_id: str,
-        body: CreateMemberRequest,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ) -> MemberResponse:
-        if runtime_settings_are_protected(request.app.state.settings):
-            raise DomainError(
-                "Company invitations are required",
-                "invitation_required",
-                409,
-            )
-        user, membership, created = CompanyService.add_member(
-            session,
-            company_id=company_id,
-            email=str(body.email),
-            display_name=body.display_name,
-        )
-        if created:
-            primary_role = AccessLifecycleService.system_role(
-                session,
-                company_id=company_id,
-                system_key=body.primary_role,
-            )
-            AccessLifecycleService.assign_role(
-                session,
-                company_id=company_id,
-                membership_id=membership.id,
-                role_id=primary_role.id,
-                actor_membership_id=context.membership_id,
-            )
-        else:
-            existing_primary_keys = {
-                role.system_key
-                for role in AccessLifecycleService.roles_for_membership(
-                    session,
-                    company_id=company_id,
-                    membership_id=membership.id,
-                )
-                if role.system_key in {"operator", "team_lead"}
-            }
-            if existing_primary_keys != {body.primary_role}:
-                raise ConflictError(
-                    "该成员已存在；基础级别不一致，请使用成员升降级接口"
-                )
-        if created:
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.member.create",
-                target_type="company_membership",
-                target_id=membership.id,
-                before_summary={},
-                after_summary={
-                    "company_id": company_id,
-                    "user_id": user.id,
-                    "status": membership.status.value,
-                    "primary_role": body.primary_role,
-                },
-                request_id=request.state.request_id,
-            )
-        return _member_response(
-            session,
-            company_id=company_id,
-            user=user,
-            membership=membership,
-        )
-
-    @app.patch(
-        "/api/v1/companies/{company_id}/members/{membership_id}/status",
-        response_model=MemberResponse,
-    )
-    def set_member_status(
-        company_id: str,
-        membership_id: str,
-        body: MemberStatusRequest,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        before, membership, changed = AccessLifecycleService.set_member_status(
-            session,
-            company_id=company_id,
-            membership_id=membership_id,
-            status=body.status,
-            actor_membership_id=context.membership_id,
-        )
-        user = session.get(User, membership.user_id)
-        if user is None:
-            raise HTTPException(status_code=404, detail="成员用户不存在")
-        if changed:
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.member.status.update",
-                target_type="company_membership",
-                target_id=membership.id,
-                before_summary={"status": before.value},
-                after_summary={"status": membership.status.value},
-                request_id=request.state.request_id,
-            )
-        return _member_response(
-            session,
-            company_id=company_id,
-            user=user,
-            membership=membership,
-        )
-
-    @app.get(
-        "/api/v1/companies/{company_id}/roles",
-        response_model=list[RoleResponse],
-    )
-    def list_roles(
-        company_id: str,
-        _: Annotated[TenantContext, Depends(require_permission("users.read"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        return [
-            role.as_dict()
-            for role in AccessLifecycleService.list_roles(
-                session, company_id=company_id
-            )
-        ]
-
-    @app.post(
-        "/api/v1/companies/{company_id}/roles",
-        response_model=RoleResponse,
-        status_code=201,
-    )
-    def create_role(
-        company_id: str,
-        body: CreateRoleRequest,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        role, created = AccessLifecycleService.create_role(
-            session,
-            company_id=company_id,
-            name=body.name,
-            description=body.description,
-            permission_codes=body.permission_codes,
-            actor_membership_id=context.membership_id,
-        )
-        snapshot = AccessLifecycleService.role_snapshot(session, role=role)
-        if created:
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.role.create",
-                target_type="role",
-                target_id=role.id,
-                before_summary={},
-                after_summary=snapshot.as_dict(),
-                request_id=request.state.request_id,
-            )
-        return snapshot.as_dict()
-
-    @app.put(
-        "/api/v1/companies/{company_id}/roles/{role_id}",
-        response_model=RoleResponse,
-    )
-    def update_role(
-        company_id: str,
-        role_id: str,
-        body: UpdateRoleRequest,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        before, after, changed = AccessLifecycleService.update_role(
-            session,
-            company_id=company_id,
-            role_id=role_id,
-            name=body.name,
-            description=body.description,
-            permission_codes=body.permission_codes,
-            actor_membership_id=context.membership_id,
-        )
-        if changed:
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.role.update",
-                target_type="role",
-                target_id=role_id,
-                before_summary=before.as_dict(),
-                after_summary=after.as_dict(),
-                request_id=request.state.request_id,
-            )
-        return after.as_dict()
-
-    @app.delete(
-        "/api/v1/companies/{company_id}/roles/{role_id}",
-        status_code=204,
-    )
-    def delete_role(
-        company_id: str,
-        role_id: str,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ) -> None:
-        before = AccessLifecycleService.delete_role(
-            session,
-            company_id=company_id,
-            role_id=role_id,
-            actor_membership_id=context.membership_id,
-        )
-        AuditService.append(
-            session,
-            actor_user_id=context.user_id,
-            action="company.role.delete",
-            target_type="role",
-            target_id=role_id,
-            before_summary=before.as_dict(),
-            after_summary={},
-            request_id=request.state.request_id,
-        )
-
-    @app.post(
-        "/api/v1/companies/{company_id}/roles/{role_id}/assign",
-        status_code=204,
-    )
-    def assign_role(
-        company_id: str,
-        role_id: str,
-        body: AssignRoleRequest,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ) -> None:
-        before = AccessLifecycleService.roles_for_membership(
-            session,
-            company_id=company_id,
-            membership_id=body.membership_id,
-        )
-        changed = AccessLifecycleService.assign_role(
-            session,
-            company_id=company_id,
-            membership_id=body.membership_id,
-            role_id=role_id,
-            actor_membership_id=context.membership_id,
-        )
-        if changed:
-            after = AccessLifecycleService.roles_for_membership(
-                session,
-                company_id=company_id,
-                membership_id=body.membership_id,
-            )
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.member.role.assign",
-                target_type="company_membership",
-                target_id=body.membership_id,
-                before_summary={"role_ids": [role.id for role in before]},
-                after_summary={"role_ids": [role.id for role in after]},
-                request_id=request.state.request_id,
-            )
-
-    @app.delete(
-        "/api/v1/companies/{company_id}/roles/{role_id}/assignments/{membership_id}",
-        status_code=204,
-    )
-    def unassign_role(
-        company_id: str,
-        role_id: str,
-        membership_id: str,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ) -> None:
-        before = AccessLifecycleService.roles_for_membership(
-            session,
-            company_id=company_id,
-            membership_id=membership_id,
-        )
-        changed = AccessLifecycleService.unassign_role(
-            session,
-            company_id=company_id,
-            membership_id=membership_id,
-            role_id=role_id,
-            actor_membership_id=context.membership_id,
-        )
-        if changed:
-            after = AccessLifecycleService.roles_for_membership(
-                session,
-                company_id=company_id,
-                membership_id=membership_id,
-            )
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.member.role.unassign",
-                target_type="company_membership",
-                target_id=membership_id,
-                before_summary={"role_ids": [role.id for role in before]},
-                after_summary={"role_ids": [role.id for role in after]},
-                request_id=request.state.request_id,
-            )
-
-    @app.put(
-        "/api/v1/companies/{company_id}/members/{membership_id}/roles",
-        response_model=MemberResponse,
-    )
-    def replace_member_roles(
-        company_id: str,
-        membership_id: str,
-        body: ReplaceMemberRolesRequest,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        before, after, changed = AccessLifecycleService.replace_roles(
-            session,
-            company_id=company_id,
-            membership_id=membership_id,
-            role_ids=body.role_ids,
-            actor_membership_id=context.membership_id,
-            expected_role_ids=body.expected_role_ids,
-        )
-        if changed:
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.member.roles.replace",
-                target_type="company_membership",
-                target_id=membership_id,
-                before_summary={"role_ids": [role.id for role in before]},
-                after_summary={"role_ids": [role.id for role in after]},
-                request_id=request.state.request_id,
-            )
-        membership = AccessLifecycleService.get_membership(
-            session, company_id=company_id, membership_id=membership_id
-        )
-        user = session.get(User, membership.user_id)
-        if user is None:
-            raise HTTPException(status_code=404, detail="成员用户不存在")
-        return _member_response(
-            session,
-            company_id=company_id,
-            user=user,
-            membership=membership,
-        )
-
-    @app.put(
-        "/api/v1/companies/{company_id}/members/{membership_id}/access",
-        response_model=MemberResponse,
-    )
-    def replace_member_access(
-        company_id: str,
-        membership_id: str,
-        body: ReplaceMemberAccessRequest,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        (
-            before_roles,
-            after_roles,
-            before_overrides,
-            after_overrides,
-            changed,
-        ) = AccessLifecycleService.replace_member_access(
-            session,
-            company_id=company_id,
-            membership_id=membership_id,
-            role_ids=body.role_ids,
-            permission_overrides=body.permission_overrides,
-            actor_membership_id=context.membership_id,
-            expected_role_ids=body.expected_role_ids,
-            expected_permission_overrides=body.expected_permission_overrides,
-        )
-        if changed:
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.member.access.replace",
-                target_type="company_membership",
-                target_id=membership_id,
-                before_summary={
-                    "role_ids": [role.id for role in before_roles],
-                    "permission_overrides": {
-                        code: effect.value for code, effect in before_overrides.items()
-                    },
-                },
-                after_summary={
-                    "role_ids": [role.id for role in after_roles],
-                    "permission_overrides": {
-                        code: effect.value for code, effect in after_overrides.items()
-                    },
-                },
-                request_id=request.state.request_id,
-            )
-        membership = AccessLifecycleService.get_membership(
-            session, company_id=company_id, membership_id=membership_id
-        )
-        user = session.get(User, membership.user_id)
-        if user is None:
-            raise HTTPException(status_code=404, detail="成员用户不存在")
-        return _member_response(
-            session,
-            company_id=company_id,
-            user=user,
-            membership=membership,
-        )
-
-    @app.put(
-        "/api/v1/companies/{company_id}/members/{membership_id}/permissions",
-        response_model=MemberResponse,
-    )
-    def replace_permission_overrides(
-        company_id: str,
-        membership_id: str,
-        body: ReplacePermissionOverridesRequest,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        before, after, changed = AccessLifecycleService.replace_overrides(
-            session,
-            company_id=company_id,
-            membership_id=membership_id,
-            overrides=body.overrides,
-            actor_membership_id=context.membership_id,
-            expected_overrides=body.expected_overrides,
-        )
-        if changed:
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.member.permissions.replace",
-                target_type="company_membership",
-                target_id=membership_id,
-                before_summary={
-                    "overrides": {code: effect.value for code, effect in before.items()}
-                },
-                after_summary={
-                    "overrides": {code: effect.value for code, effect in after.items()}
-                },
-                request_id=request.state.request_id,
-            )
-        membership = AccessLifecycleService.get_membership(
-            session, company_id=company_id, membership_id=membership_id
-        )
-        user = session.get(User, membership.user_id)
-        if user is None:
-            raise HTTPException(status_code=404, detail="成员用户不存在")
-        return _member_response(
-            session,
-            company_id=company_id,
-            user=user,
-            membership=membership,
-        )
-
-    @app.put(
-        "/api/v1/companies/{company_id}/members/{membership_id}/permission",
-        response_model=PermissionOverrideResponse,
-    )
-    def set_permission_override(
-        company_id: str,
-        membership_id: str,
-        body: PermissionOverrideRequest,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        override, before_effect, changed = AccessLifecycleService.set_override(
-            session,
-            company_id=company_id,
-            membership_id=membership_id,
-            permission_code=body.permission_code,
-            effect=body.effect,
-            actor_membership_id=context.membership_id,
-        )
-        if changed:
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.member.permission.set",
-                target_type="company_membership",
-                target_id=membership_id,
-                before_summary={
-                    "permission_code": body.permission_code,
-                    "effect": before_effect.value if before_effect else None,
-                },
-                after_summary={
-                    "permission_code": body.permission_code,
-                    "effect": body.effect.value,
-                },
-                request_id=request.state.request_id,
-            )
-        return override
-
-    @app.delete(
-        "/api/v1/companies/{company_id}/members/{membership_id}/permission/{permission_code}",
-        status_code=204,
-    )
-    def clear_permission_override(
-        company_id: str,
-        membership_id: str,
-        permission_code: str,
-        request: Request,
-        context: Annotated[TenantContext, Depends(require_permission("users.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ) -> None:
-        before_effect, changed = AccessLifecycleService.clear_override(
-            session,
-            company_id=company_id,
-            membership_id=membership_id,
-            permission_code=permission_code,
-            actor_membership_id=context.membership_id,
-        )
-        if changed:
-            AuditService.append(
-                session,
-                actor_user_id=context.user_id,
-                action="company.member.permission.clear",
-                target_type="company_membership",
-                target_id=membership_id,
-                before_summary={
-                    "permission_code": permission_code,
-                    "effect": before_effect.value if before_effect else None,
-                },
-                after_summary={
-                    "permission_code": permission_code,
-                    "effect": None,
-                },
-                request_id=request.state.request_id,
-            )
+    app.include_router(company_access_router)
 
     @app.get(
         "/api/v1/companies/{company_id}/models",
@@ -1621,10 +1354,18 @@ def create_app(
     )
     def available_models(
         company_id: str,
+        request: Request,
         _: Annotated[TenantContext, Depends(require_permission("models.read"))],
         session: Annotated[Session, Depends(get_db, scope="function")],
     ):
-        return ModelGrantService.list_available_models(session, company_id=company_id)
+        return ModelGrantService.list_available_models(
+            session,
+            company_id=company_id,
+            require_relay_approval=(app.state.relay_client is not None),
+            release_evidence=read_customer_model_release_evidence(
+                request_id=request.state.request_id
+            ),
+        )
 
     @app.get(
         "/api/v1/companies/{company_id}/resources",
@@ -1657,10 +1398,7 @@ def create_app(
         _: Annotated[TenantContext, Depends(require_permission("billing.read"))],
         session: Annotated[Session, Depends(get_db, scope="function")],
     ):
-        account = session.get(WalletAccount, company_id)
-        if account is None:
-            raise HTTPException(status_code=404, detail="公司钱包不存在")
-        return account
+        return _company_wallet_payload(session, company_id=company_id)
 
     @app.get(
         "/api/v1/companies/{company_id}/ledger",
@@ -1671,13 +1409,39 @@ def create_app(
         _: Annotated[TenantContext, Depends(require_permission("billing.read"))],
         session: Annotated[Session, Depends(get_db, scope="function")],
     ):
-        return list(
-            session.scalars(
+        company = session.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="公司不存在")
+        if company.billing_version == 2:
+            entries = [
+                _point_ledger_payload(entry)
+                for entry in session.scalars(
+                    select(CompanyPointLedgerEntry)
+                    .where(CompanyPointLedgerEntry.company_id == company_id)
+                    .order_by(CompanyPointLedgerEntry.created_at.desc())
+                ).all()
+            ]
+            entries.extend(
+                _legacy_ledger_payload(entry)
+                for entry in session.scalars(
+                    select(LedgerEntry)
+                    .where(LedgerEntry.company_id == company_id)
+                    .order_by(LedgerEntry.created_at.desc())
+                ).all()
+            )
+            entries.sort(
+                key=lambda item: (item["created_at"], item["id"]),
+                reverse=True,
+            )
+            return entries
+        return [
+            _legacy_ledger_payload(entry)
+            for entry in session.scalars(
                 select(LedgerEntry)
                 .where(LedgerEntry.company_id == company_id)
                 .order_by(LedgerEntry.created_at.desc())
             ).all()
-        )
+        ]
 
     @app.post(
         "/api/v1/companies/{company_id}/wallet/recharge",
@@ -1697,7 +1461,10 @@ def create_app(
             idempotency_key=body.idempotency_key,
             note=body.note,
         )
-        return WalletOperationResponse(wallet=account, ledger_entry=entry)
+        return WalletOperationResponse(
+            wallet=_company_wallet_payload(session, company_id=company_id),
+            ledger_entry=_legacy_ledger_payload(entry),
+        )
 
     @app.get(
         "/api/v1/companies/{company_id}/wallet/recharges",
@@ -1713,7 +1480,13 @@ def create_app(
         end_time: datetime | None = None,
     ) -> RechargeRecordPage:
         _validate_report_time_range(start_time, end_time)
-        total, total_amount_cents, items = WalletService.recharge_page(
+        (
+            total,
+            total_amount_cents,
+            total_amount_points,
+            items,
+            unit_versions,
+        ) = WalletService.funding_page(
             session,
             company_id=company_id,
             page=page,
@@ -1721,168 +1494,75 @@ def create_app(
             start_time=start_time,
             end_time=end_time,
         )
+        billing_unit, billing_version = _report_billing_metadata(
+            session,
+            company_id=company_id,
+            unit_versions=unit_versions,
+        )
         return RechargeRecordPage(
             page=page,
             page_size=page_size,
             total=total,
+            billing_unit=billing_unit,
+            billing_version=billing_version,
             total_amount_cents=total_amount_cents,
+            total_amount_points=total_amount_points,
             items=items,
         )
 
-    @app.post(
-        "/api/v1/companies/{company_id}/assets",
-        response_model=InputAssetResponse,
-        status_code=201,
-    )
-    def upload_input_asset(
-        company_id: str,
-        context: Annotated[TenantContext, Depends(require_permission("assets.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-        file: Annotated[UploadFile, File(description="Private input media")],
-        media_type: Annotated[Literal["image", "video", "audio"] | None, Form()] = None,
-        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
-    ):
-        return InputAssetService.create_from_upload(
-            session,
-            store=app.state.input_asset_store,
-            company_id=company_id,
-            user_id=context.user_id,
-            upload=file,
-            requested_media_type=media_type,
-            max_bytes=settings.input_asset_max_bytes,
-            idempotency_key=idempotency_key,
-        )
+    app.include_router(create_company_input_assets_router(app=app, settings=settings))
 
     @app.get(
-        "/api/v1/companies/{company_id}/assets",
-        response_model=list[InputAssetResponse],
+        "/api/v1/companies/{company_id}/publishing/readiness",
+        response_model=PublishingReadinessResponse,
     )
-    def list_input_assets(
+    def publishing_readiness(
         company_id: str,
-        _: Annotated[TenantContext, Depends(require_permission("assets.read"))],
+        context: Annotated[TenantContext, Depends(get_tenant_context)],
         session: Annotated[Session, Depends(get_db, scope="function")],
-        status: InputAssetStatus | None = InputAssetStatus.ACTIVE,
-        media_type: Literal["image", "video", "audio"] | None = None,
-        limit: int = Query(default=200, ge=1, le=500),
-    ):
-        return InputAssetService.list_company(
-            session,
-            company_id=company_id,
-            status=status,
-            media_type=media_type,
-            limit=limit,
+    ) -> PublishingReadinessResponse:
+        permissions = PermissionService.effective_permissions(
+            session, membership_id=context.membership_id
         )
-
-    def input_asset_access(
-        *,
-        company_id: str,
-        asset_id: str,
-        session: Session,
-        disposition: Literal["inline", "attachment"],
-    ) -> InputAssetAccessResponse:
-        asset = InputAssetService.get_company_asset(
-            session, company_id=company_id, asset_id=asset_id
-        )
-        url = InputAssetService.access_url(
-            asset=asset,
-            store=app.state.input_asset_store,
-            signer=app.state.input_asset_signer,
-            expires_seconds=settings.input_asset_signed_url_seconds,
-            disposition=disposition,
-        )
-        return InputAssetAccessResponse(
-            url=url,
-            expires_seconds=settings.input_asset_signed_url_seconds,
-        )
-
-    @app.get(
-        "/api/v1/companies/{company_id}/assets/{asset_id}/preview",
-        response_model=InputAssetAccessResponse,
-    )
-    def preview_input_asset(
-        company_id: str,
-        asset_id: str,
-        _: Annotated[TenantContext, Depends(require_permission("assets.read"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        return input_asset_access(
-            company_id=company_id,
-            asset_id=asset_id,
-            session=session,
-            disposition="inline",
-        )
-
-    @app.get(
-        "/api/v1/companies/{company_id}/assets/{asset_id}/download",
-        response_model=InputAssetAccessResponse,
-    )
-    def download_input_asset(
-        company_id: str,
-        asset_id: str,
-        _: Annotated[TenantContext, Depends(require_permission("assets.read"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        return input_asset_access(
-            company_id=company_id,
-            asset_id=asset_id,
-            session=session,
-            disposition="attachment",
-        )
-
-    @app.delete(
-        "/api/v1/companies/{company_id}/assets/{asset_id}",
-        status_code=204,
-    )
-    def disable_input_asset(
-        company_id: str,
-        asset_id: str,
-        _: Annotated[TenantContext, Depends(require_permission("assets.manage"))],
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        InputAssetService.disable(session, company_id=company_id, asset_id=asset_id)
-        return Response(status_code=204)
-
-    @app.get("/api/v1/input-assets/{asset_id}/content", include_in_schema=False)
-    def read_signed_input_asset(
-        asset_id: str,
-        expires: int,
-        disposition: Literal["inline", "attachment"],
-        signature: str,
-        session: Annotated[Session, Depends(get_db, scope="function")],
-    ):
-        if app.state.input_asset_signer is None:
-            raise HTTPException(status_code=404, detail="Input asset does not exist")
-        try:
-            app.state.input_asset_signer.verify(
-                asset_id,
-                expires=expires,
-                disposition=disposition,
-                signature=signature,
+        publish_permissions = {
+            "publish.accounts.read",
+            "publish.accounts.manage",
+            "publish.jobs.read",
+            "publish.jobs.manage",
+        }
+        if not permissions.intersection(publish_permissions):
+            raise PermissionDeniedError(
+                "至少需要一项发布账号或发布任务权限"
             )
-        except InputAssetSignatureError:
-            raise HTTPException(
-                status_code=404, detail="Input asset does not exist"
-            ) from None
-        asset = InputAssetService.get_signed_asset(session, asset_id=asset_id)
-        if asset.storage_backend != "filesystem":
-            raise HTTPException(status_code=404, detail="Input asset does not exist")
-        try:
-            path = app.state.input_asset_store.local_path(asset.object_key)
-        except InputAssetStorageError:
-            raise HTTPException(
-                status_code=404, detail="Input asset does not exist"
-            ) from None
-        if path is None:
-            raise HTTPException(status_code=404, detail="Input asset does not exist")
-        filename = quote(asset.original_filename)
-        return FileResponse(
-            path,
-            media_type=asset.content_type,
-            headers={
-                "Cache-Control": "private, no-store",
-                "Content-Disposition": (f"{disposition}; filename*=UTF-8''{filename}"),
-                "X-Content-Type-Options": "nosniff",
-            },
+        can_read_accounts = "publish.accounts.read" in permissions
+        can_manage_accounts = "publish.accounts.manage" in permissions
+        can_read_jobs = "publish.jobs.read" in permissions
+        can_manage_jobs = "publish.jobs.manage" in permissions
+        feature_enabled, entitlement_blockers = (
+            PublishingService.entitlement_state(
+                session, company_id=company_id
+            )
+        )
+        has_side_effect_permission = can_manage_accounts or can_manage_jobs
+        blocking_reasons = list(entitlement_blockers)
+        if not has_side_effect_permission:
+            blocking_reasons.append("no_publish_manage_permission")
+        return PublishingReadinessResponse(
+            feature_auto_publish_enabled=feature_enabled,
+            can_read_accounts=can_read_accounts,
+            can_manage_accounts=can_manage_accounts,
+            can_read_jobs=can_read_jobs,
+            can_manage_jobs=can_manage_jobs,
+            side_effects_enabled=(
+                feature_enabled and has_side_effect_permission
+            ),
+            account_side_effects_enabled=(
+                feature_enabled and can_manage_accounts
+            ),
+            job_side_effects_enabled=(feature_enabled and can_manage_jobs),
+            historical_read_enabled=(can_read_accounts or can_read_jobs),
+            historical_safety_actions_enabled=has_side_effect_permission,
+            blocking_reasons=blocking_reasons,
         )
 
     @app.get(
@@ -2498,10 +2178,40 @@ def create_app(
         context: Annotated[TenantContext, Depends(require_permission("tasks.create"))],
         session: Annotated[Session, Depends(get_db, scope="function")],
     ):
+        replay_payload = DirectorShotPackageService.canonicalize_task_payload(
+            body.request_payload
+        )
+        replay_payload = InputAssetService.canonicalize_task_payload(
+            replay_payload
+        )
+        replay = TaskService.idempotent_replay(
+            session,
+            company_id=company_id,
+            user_id=context.user_id,
+            model_id=body.model_id,
+            request_payload=replay_payload,
+            idempotency_key=body.idempotency_key,
+        )
+        if replay is not None:
+            return TaskService.response_payload(session, replay)
+        commercial_readiness = (
+            require_models_release_ready(
+                session, model_ids={body.model_id},
+                request_id=request.state.request_id,
+            ).get(body.model_id)
+            if CommercialPricingPolicy.task_needs_live_evidence(session, model_id=body.model_id)
+            else None
+        )
         normalized_payload, input_assets = InputAssetService.normalize_task_payload(
             session,
             company_id=company_id,
-            request_payload=body.request_payload,
+            request_payload=replay_payload,
+        )
+        director_shot_package = DirectorShotPackageService.require_for_task(
+            session,
+            company_id=company_id,
+            personal_workspace_id=None,
+            request_payload=normalized_payload,
         )
         relay_affinity = app.state.relay_backend_registry.default_affinity
         task, created = TaskService.create(
@@ -2517,10 +2227,19 @@ def create_app(
             require_relay_capability_revision=(app.state.relay_client is not None),
             relay_backend_id=relay_affinity.backend_id,
             relay_contract_revision=relay_affinity.contract_revision,
+            expected_commercial_release_snapshot=(
+                commercial_readiness.expected_snapshot
+                if commercial_readiness is not None else None
+            ),
         )
         if not created:
             return TaskService.response_payload(session, task)
         InputAssetService.link_task(session, task_id=task.id, assets=input_assets)
+        DirectorShotPackageService.link_task(
+            session,
+            task=task,
+            package=director_shot_package,
+        )
         WalletService.reserve(
             session,
             company_id=company_id,
@@ -2535,10 +2254,19 @@ def create_app(
             session,
             task=task,
             model=model,
+            expected_commercial_release_snapshot=(
+                commercial_readiness.expected_snapshot if commercial_readiness is not None else None
+            ),
             request_id=request.state.request_id,
             # The outbox stores private asset identities at task creation.
             # The dispatcher signs them once immediately before its first POST.
             resolved_assets=[],
+            director_shot=DirectorShotPackageService.relay_input(
+                director_shot_package
+            ),
+            director_motion=DirectorShotPackageService.motion_relay_input(
+                normalized_payload
+            ),
             callback_url=relay_callback_url_for_backend(
                 settings.relay_callback_public_url,
                 backend_id=task.relay_backend_id,
@@ -2651,7 +2379,7 @@ def create_app(
             and employee_user_id != visible_user_id
         ):
             raise HTTPException(status_code=403, detail="不能查询其他员工的任务")
-        total, items = TaskArtifactService.task_history_page(
+        total, items, unit_versions = TaskArtifactService.task_history_page(
             session,
             company_id=company_id,
             visible_user_id=visible_user_id,
@@ -2665,7 +2393,19 @@ def create_app(
             start_time=start_time,
             end_time=end_time,
         )
-        return TaskHistoryPage(page=page, page_size=page_size, total=total, items=items)
+        billing_unit, billing_version = _report_billing_metadata(
+            session,
+            company_id=company_id,
+            unit_versions=unit_versions,
+        )
+        return TaskHistoryPage(
+            page=page,
+            page_size=page_size,
+            total=total,
+            billing_unit=billing_unit,
+            billing_version=billing_version,
+            items=items,
+        )
 
     @app.get(
         "/api/v1/companies/{company_id}/artworks",
@@ -2695,7 +2435,7 @@ def create_app(
             and employee_user_id != visible_user_id
         ):
             raise HTTPException(status_code=403, detail="不能查询其他员工的作品")
-        total, items = TaskArtifactService.artwork_page(
+        total, items, unit_versions = TaskArtifactService.artwork_page(
             session,
             company_id=company_id,
             visible_user_id=visible_user_id,
@@ -2708,7 +2448,19 @@ def create_app(
             start_time=start_time,
             end_time=end_time,
         )
-        return ArtworkPage(page=page, page_size=page_size, total=total, items=items)
+        billing_unit, billing_version = _report_billing_metadata(
+            session,
+            company_id=company_id,
+            unit_versions=unit_versions,
+        )
+        return ArtworkPage(
+            page=page,
+            page_size=page_size,
+            total=total,
+            billing_unit=billing_unit,
+            billing_version=billing_version,
+            items=items,
+        )
 
     @app.get(
         "/api/v1/companies/{company_id}/tasks/{task_id}/artifacts/{asset_id}/preview",
@@ -3249,7 +3001,13 @@ def create_app(
         end_time: datetime | None = None,
     ) -> TaskReportPage:
         _validate_report_time_range(start_time, end_time)
-        total, total_actual_cost_cents, items = ReportService.task_page(
+        (
+            total,
+            total_actual_cost_cents,
+            total_actual_cost_points,
+            items,
+            unit_versions,
+        ) = ReportService.task_page(
             session,
             company_id=company_id,
             page=page,
@@ -3260,11 +3018,19 @@ def create_app(
             start_time=start_time,
             end_time=end_time,
         )
+        billing_unit, billing_version = _report_billing_metadata(
+            session,
+            company_id=company_id,
+            unit_versions=unit_versions,
+        )
         return TaskReportPage(
             page=page,
             page_size=page_size,
             total=total,
+            billing_unit=billing_unit,
+            billing_version=billing_version,
             total_actual_cost_cents=total_actual_cost_cents,
+            total_actual_cost_points=total_actual_cost_points,
             items=items,
         )
 
@@ -3285,7 +3051,13 @@ def create_app(
         end_time: datetime | None = None,
     ) -> ConsumptionReportPage:
         _validate_report_time_range(start_time, end_time)
-        total, total_amount_cents, items = ReportService.consumption_page(
+        (
+            total,
+            total_amount_cents,
+            total_amount_points,
+            items,
+            unit_versions,
+        ) = ReportService.consumption_page(
             session,
             company_id=company_id,
             page=page,
@@ -3296,11 +3068,19 @@ def create_app(
             start_time=start_time,
             end_time=end_time,
         )
+        billing_unit, billing_version = _report_billing_metadata(
+            session,
+            company_id=company_id,
+            unit_versions=unit_versions,
+        )
         return ConsumptionReportPage(
             page=page,
             page_size=page_size,
             total=total,
+            billing_unit=billing_unit,
+            billing_version=billing_version,
             total_amount_cents=total_amount_cents,
+            total_amount_points=total_amount_points,
             items=items,
         )
 
@@ -3472,9 +3252,416 @@ def create_app(
             ) from exc
         if read.catalog is None or read.not_modified:
             raise HTTPException(status_code=502, detail="Relay 模型目录响应不完整")
+        release_evidence, evidence_error = read_relay_model_release_evidence(
+            request_id=request.state.request_id,
+            required=False,
+        )
+        if release_evidence is not None:
+            require_matching_relay_release_snapshot(
+                catalog=read.catalog,
+                evidence=release_evidence,
+            )
         response.headers["Cache-Control"] = "private, no-store"
-        audit = RelayCapabilityService.audit_catalog(session, catalog=read.catalog)
+        audit = RelayCapabilityService.audit_catalog(
+            session,
+            catalog=read.catalog,
+            release_evidence=release_evidence,
+            release_evidence_error=evidence_error,
+        )
         return {**audit, "etag": read.etag}
+
+    @app.post(
+        "/api/v1/platform-admin/relay-models/reconcile",
+        response_model=RelayModelReconcileResponse,
+    )
+    def admin_reconcile_relay_model_catalog(
+        request: Request,
+        response: Response,
+        admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        client = app.state.relay_client
+        if client is None:
+            raise HTTPException(status_code=503, detail="Relay 客户端未配置")
+        try:
+            read = client.get_model_catalog(
+                request_id=request.state.request_id
+            )
+        except RelayTemporaryError as exc:
+            raise HTTPException(
+                status_code=503, detail="Relay 模型目录暂时不可用"
+            ) from exc
+        except RelayPermanentError as exc:
+            raise HTTPException(
+                status_code=502, detail="Relay 模型目录响应无效"
+            ) from exc
+        if read.catalog is None or read.not_modified:
+            raise HTTPException(
+                status_code=502, detail="Relay 模型目录响应不完整"
+            )
+
+        release_evidence, evidence_error = read_relay_model_release_evidence(
+            request_id=request.state.request_id,
+            required=True,
+        )
+        assert release_evidence is not None
+        require_matching_relay_release_snapshot(
+            catalog=read.catalog,
+            evidence=release_evidence,
+        )
+        reconciliation = RelayCatalogReconciliationService.reconcile(
+            session,
+            catalog=read.catalog,
+            actor=ReconciliationAuditActor.user(admin.user_id),
+            request_id=request.state.request_id,
+            source="relay_catalog_reconcile",
+            trigger="platform_admin_request",
+        )
+        audit = RelayCapabilityService.audit_catalog(
+            session,
+            catalog=read.catalog,
+            release_evidence=release_evidence,
+            release_evidence_error=evidence_error,
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return {
+            **audit,
+            "etag": read.etag,
+            "created_count": reconciliation.created_count,
+            "synced_count": reconciliation.synced_count,
+            "invalidated_count": reconciliation.invalidated_count,
+            "unchanged_count": reconciliation.unchanged_count,
+            "created_model_ids": list(reconciliation.created_model_ids),
+            "synced_model_ids": list(reconciliation.synced_model_ids),
+            "invalidated_model_ids": list(
+                reconciliation.invalidated_model_ids
+            ),
+            "reconciliation_audit_id": (
+                reconciliation.reconciliation_audit_id
+            ),
+        }
+
+    @app.get(
+        "/api/v1/platform-admin/model-commercial-releases",
+        response_model=list[ModelCommercialReleasePlanResponse],
+    )
+    def admin_list_model_commercial_releases(
+        _: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        return ModelCommercialReleaseService.list_plans(session)
+
+    @app.put(
+        "/api/v1/platform-admin/models/{model_id}/commercial-release-plan",
+        response_model=ModelCommercialReleasePlanResponse,
+    )
+    def admin_approve_model_commercial_release_plan(
+        model_id: str,
+        body: ModelCommercialReleasePlanRequest,
+        request: Request,
+        admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        client = app.state.relay_client
+        if client is None:
+            raise HTTPException(status_code=503, detail="Relay 客户端未配置")
+        try:
+            read = client.get_model_catalog(request_id=request.state.request_id)
+        except RelayTemporaryError as exc:
+            raise HTTPException(
+                status_code=503, detail="Relay 模型目录暂时不可用"
+            ) from exc
+        except RelayPermanentError as exc:
+            raise HTTPException(
+                status_code=502, detail="Relay 模型目录响应无效"
+            ) from exc
+        if read.catalog is None or read.not_modified:
+            raise HTTPException(status_code=502, detail="Relay 模型目录响应不完整")
+        release_evidence, _ = read_relay_model_release_evidence(
+            request_id=request.state.request_id,
+            required=True,
+        )
+        if release_evidence is None:  # pragma: no cover - required reader fails first
+            raise HTTPException(status_code=503, detail="Relay 路由发布证据不可用")
+        require_matching_relay_release_snapshot(
+            catalog=read.catalog,
+            evidence=release_evidence,
+        )
+        relay_model = RelayCapabilityService.relay_model(
+            read.catalog,
+            model_slug=ModelCatalogService.get_model(
+                session, model_id=model_id
+            ).slug,
+        )
+        RelayCapabilityService.require_customer_callable_model(relay_model)
+        plan, _ = ModelCommercialReleaseService.approve_plan(
+            session,
+            model_id=model_id,
+            expected_capability_version=body.expected_capability_version,
+            expected_candidate_revision=body.expected_candidate_revision,
+            expected_catalog_revision=body.expected_catalog_revision,
+            expected_routing_release_sha256=body.expected_routing_release_sha256,
+            provider_cost_currency=body.provider_cost_currency,
+            provider_cost_formula=body.provider_cost_formula.model_dump(
+                mode="json"
+            ),
+            provider_cost_evidence_kind=body.provider_cost_evidence_kind,
+            provider_cost_evidence_reference=(
+                body.provider_cost_evidence_reference
+            ),
+            provider_cost_evidence_sha256=(
+                body.provider_cost_evidence_sha256
+            ),
+            provider_cost_effective_at=body.provider_cost_effective_at,
+            fx_cny_micros_per_currency_unit=(
+                body.fx_cny_micros_per_currency_unit
+            ),
+            fx_source=body.fx_source,
+            fx_version=body.fx_version,
+            fx_evidence_sha256=body.fx_evidence_sha256,
+            fx_effective_at=body.fx_effective_at,
+            personal_price_points=body.personal_price_points,
+            enterprise_price_points=body.enterprise_price_points,
+            personal_config_override=body.personal_config_override,
+            enterprise_config_override=body.enterprise_config_override,
+            approval_reason=body.approval_reason,
+            idempotency_key=body.idempotency_key,
+            approved_by_user_id=admin.user_id,
+            request_id=request.state.request_id,
+            release_evidence=release_evidence,
+            supersedes_plan_id=body.supersedes_plan_id,
+        )
+        return plan
+
+    @app.post(
+        "/api/v1/platform-admin/model-commercial-releases/reconcile",
+        response_model=ModelCommercialReleaseReconcileResponse,
+    )
+    def admin_reconcile_model_commercial_releases(
+        request: Request,
+        _: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        client = app.state.relay_client
+        if client is None:
+            raise HTTPException(status_code=503, detail="Relay 客户端未配置")
+        try:
+            read = client.get_model_catalog(request_id=request.state.request_id)
+        except RelayTemporaryError as exc:
+            raise HTTPException(
+                status_code=503, detail="Relay 模型目录暂时不可用"
+            ) from exc
+        except RelayPermanentError as exc:
+            raise HTTPException(
+                status_code=502, detail="Relay 模型目录响应无效"
+            ) from exc
+        if read.catalog is None or read.not_modified:
+            raise HTTPException(status_code=502, detail="Relay 模型目录响应不完整")
+        release_evidence, _ = read_relay_model_release_evidence(
+            request_id=request.state.request_id,
+            required=True,
+        )
+        assert release_evidence is not None
+        require_matching_relay_release_snapshot(
+            catalog=read.catalog,
+            evidence=release_evidence,
+        )
+        # Catalog materialization remains a separate fail-closed step. It does
+        # not approve or distribute anything by itself.
+        locked_companies = ModelCommercialReleaseService.lock_distribution_companies(session)
+        RelayCatalogReconciliationService.reconcile(
+            session,
+            catalog=read.catalog,
+            actor=ReconciliationAuditActor.system("relay-catalog-sync"),
+            request_id=request.state.request_id,
+            source="commercial_release_reconcile",
+            trigger="platform_admin_request",
+        )
+        result = ModelCommercialReleaseService.reconcile(
+            session,
+            locked_companies=locked_companies,
+            catalog=read.catalog,
+            release_evidence=release_evidence,
+            request_id=request.state.request_id,
+            trigger="platform_admin_request",
+        )
+        return {
+            "catalog_revision": result.catalog_revision,
+            "planned_count": result.planned_count,
+            "released_count": result.released_count,
+            "blocked_count": result.blocked_count,
+            "unchanged_count": result.unchanged_count,
+            "items": list(result.items),
+        }
+
+    # ------------------------------------------------------------------
+    # Commercial release batches
+    #
+    # One approval action covers several models, and one activation
+    # transaction releases them together or not at all.  Approval semantics
+    # are unchanged: every plan still comes from approve_plan().
+    # ------------------------------------------------------------------
+
+    def _batch_relay_snapshot(request_id: str):
+        """Read the live Relay catalog plus its matching release evidence."""
+
+        client = app.state.relay_client
+        if client is None:
+            raise HTTPException(status_code=503, detail="Relay 客户端未配置")
+        try:
+            read = client.get_model_catalog(request_id=request_id)
+        except RelayTemporaryError as exc:
+            raise HTTPException(
+                status_code=503, detail="Relay 模型目录暂时不可用"
+            ) from exc
+        except RelayPermanentError as exc:
+            raise HTTPException(
+                status_code=502, detail="Relay 模型目录响应无效"
+            ) from exc
+        if read.catalog is None or read.not_modified:
+            raise HTTPException(status_code=502, detail="Relay 模型目录响应不完整")
+        release_evidence, _ = read_relay_model_release_evidence(
+            request_id=request_id,
+            required=True,
+        )
+        if release_evidence is None:
+            raise HTTPException(status_code=503, detail="Relay 路由发布证据不可用")
+        require_matching_relay_release_snapshot(
+            catalog=read.catalog,
+            evidence=release_evidence,
+        )
+        return read.catalog, release_evidence
+
+    def _batch_relay_snapshot_reader(request_id: str):
+        """Resolve the Relay snapshot on first use instead of up front.
+
+        Batch endpoints must be able to reject an unknown batch id (404) or a
+        malformed item list (409) without a Relay round trip.  Resolving
+        eagerly would report a Relay outage for what is really a client error.
+        """
+
+        resolved: list[tuple[object, object]] = []
+
+        def read():
+            if not resolved:
+                resolved.append(_batch_relay_snapshot(request_id))
+            return resolved[0]
+
+        return read
+
+    @app.post(
+        "/api/v1/platform-admin/model-commercial-release-batches/preflight",
+        response_model=ModelCommercialReleaseBatchPreflightResponse,
+    )
+    def admin_preflight_model_commercial_release_batch(
+        body: ModelCommercialReleaseBatchPreflightRequest,
+        request: Request,
+        _: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        return ModelCommercialReleaseService.preflight_batch(
+            session,
+            model_ids=body.model_ids,
+            relay_snapshot=_batch_relay_snapshot_reader(request.state.request_id),
+        )
+
+    @app.get(
+        "/api/v1/platform-admin/model-commercial-release-batches",
+        response_model=list[ModelCommercialReleaseBatchResponse],
+    )
+    def admin_list_model_commercial_release_batches(
+        _: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        return ModelCommercialReleaseService.list_batches(session)
+
+    @app.post(
+        "/api/v1/platform-admin/model-commercial-release-batches",
+        response_model=ModelCommercialReleaseBatchResponse,
+        status_code=201,
+    )
+    def admin_create_model_commercial_release_batch(
+        body: ModelCommercialReleaseBatchCreateRequest,
+        request: Request,
+        admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        return ModelCommercialReleaseService.create_batch(
+            session,
+            idempotency_key=body.idempotency_key,
+            items=[item.model_dump(mode="python") for item in body.items],
+            relay_snapshot=_batch_relay_snapshot_reader(request.state.request_id),
+            approved_by_user_id=admin.user_id,
+            request_id=request.state.request_id,
+        )
+
+    @app.post(
+        "/api/v1/platform-admin/model-commercial-release-batches/{batch_id}/activate",
+        response_model=ModelCommercialReleaseBatchActivateResponse,
+    )
+    def admin_activate_model_commercial_release_batch(
+        batch_id: str,
+        request: Request,
+        admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        try:
+            return ModelCommercialReleaseService.activate_release_batch(
+                session,
+                batch_id=batch_id,
+                relay_snapshot=_batch_relay_snapshot_reader(
+                    request.state.request_id
+                ),
+                activated_by_user_id=admin.user_id,
+                request_id=request.state.request_id,
+            )
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ConflictError as exc:
+            # The activation transaction rolled back leaving no partial trace,
+            # so record the reason in its own transaction.  Without this the
+            # batch would silently stay 'approved' and the operator would have
+            # no idea why.
+            session.rollback()
+            failure_session = app.state.session_factory()
+            try:
+                ModelCommercialReleaseService.record_batch_activation_failure(
+                    failure_session,
+                    batch_id=batch_id,
+                    failure_code="batch_activation_blocked",
+                    failure_summary={"message": str(exc)[:500]},
+                    request_id=request.state.request_id,
+                )
+                failure_session.commit()
+            except Exception:  # pragma: no cover - diagnostics must not mask
+                failure_session.rollback()
+            finally:
+                failure_session.close()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "BATCH_ACTIVATION_BLOCKED",
+                    "message": str(exc),
+                    "batch_id": batch_id,
+                },
+            ) from exc
+
+    @app.post(
+        "/api/v1/platform-admin/model-commercial-release-batches/{batch_id}/abandon",
+        response_model=ModelCommercialReleaseBatchResponse,
+    )
+    def admin_abandon_model_commercial_release_batch(
+        batch_id: str,
+        request: Request,
+        admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        return ModelCommercialReleaseService.abandon_batch(
+            session,
+            batch_id=batch_id,
+            abandoned_by_user_id=admin.user_id,
+            request_id=request.state.request_id,
+        )
 
     @app.post(
         "/api/v1/platform-admin/models",
@@ -3544,6 +3731,7 @@ def create_app(
                 (capability.key, capability.config) for capability in body.capabilities
             ],
             expected_capability_version=body.expected_capability_version,
+            capability_schema_downgrade_reason=body.capability_schema_downgrade_reason,
         )
         after = ModelCatalogService.response(session, model=model)
         if changed:
@@ -3554,18 +3742,23 @@ def create_app(
                 target_type="model_definition",
                 target_id=model.id,
                 before_summary=_model_audit_summary(before),
-                after_summary=_model_audit_summary(after),
+                after_summary={
+                    **_model_audit_summary(after),
+                    **({
+                        "capability_schema_downgrade_reason": body.capability_schema_downgrade_reason.strip(),
+                    } if body.capability_schema_downgrade_reason is not None else {}),
+                },
                 request_id=request.state.request_id,
             )
         return after
 
     @app.post(
-        "/api/v1/platform-admin/models/{model_id}/relay-capability",
-        response_model=RelayCapabilityApprovalResponse,
+        "/api/v1/platform-admin/models/{model_id}/relay-capability/sync",
+        response_model=RelayCapabilityCandidateResponse,
     )
-    def admin_approve_relay_capability(
+    def admin_sync_relay_capability_candidate(
         model_id: str,
-        body: RelayCapabilityApprovalRequest,
+        body: RelayCapabilityCandidateSyncRequest,
         request: Request,
         admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
         session: Annotated[Session, Depends(get_db, scope="function")],
@@ -3589,30 +3782,210 @@ def create_app(
         relay_model = RelayCapabilityService.relay_model(
             read.catalog, model_slug=model.slug
         )
-        before, locked_model, changed, compatibility = (
-            RelayCapabilityService.approve_model_revision(
+        before_state, locked_model, changed, compatibility = (
+            RelayCapabilityService.sync_candidate(
                 session,
                 model_id=model_id,
                 expected_capability_version=body.expected_capability_version,
+                expected_catalog_revision=body.expected_catalog_revision,
+                expected_candidate_revision=body.expected_capability_revision,
+                catalog=read.catalog,
                 relay_model=relay_model,
             )
         )
-        after = ModelCatalogService.response(session, model=locked_model)
+        state = RelayCapabilityService.candidate_state(locked_model)
         if changed:
             AuditService.append(
+                session,
+                actor_user_id=admin.user_id,
+                action="model.relay_capability.candidate_sync",
+                target_type="model_definition",
+                target_id=locked_model.id,
+                before_summary={
+                    "candidate_revision": before_state["candidate_revision"],
+                    "approved_revision": before_state["approved_revision"],
+                },
+                after_summary={
+                    "relay_capability_decision": {
+                        "reason": body.reason,
+                        "before_revision": before_state["candidate_revision"],
+                        "after_revision": state["candidate_revision"],
+                        "catalog_revision": state[
+                            "candidate_catalog_revision"
+                        ],
+                        "capability_diff": state["capability_diff"],
+                    }
+                },
+                request_id=request.state.request_id,
+            )
+        return {
+            "model": ModelCatalogService.response(
+                session, model=locked_model
+            ),
+            "compatibility": compatibility,
+            "candidate_revision": state["candidate_revision"],
+            "approved_revision": state["approved_revision"],
+            "approval_status": state["approval_status"],
+            "requires_approval": state["requires_approval"],
+            "capability_diff": state["capability_diff"],
+            "changed": changed,
+        }
+
+    @app.get(
+        "/api/v1/platform-admin/models/{model_id}/relay-capability-history",
+        response_model=RelayCapabilityHistoryResponse,
+    )
+    def admin_relay_capability_history(
+        model_id: str,
+        _: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        model = ModelCatalogService.get_model(session, model_id=model_id)
+        state = RelayCapabilityService.candidate_state(model)
+        return {
+            "model_id": model.id,
+            "candidate_revision": state["candidate_revision"],
+            "approved_revision": state["approved_revision"],
+            "approval_status": state["approval_status"],
+            "requires_approval": state["requires_approval"],
+            "capability_diff": state["capability_diff"],
+            "items": RelayCapabilityService.approval_history(
+                session, model_id=model.id
+            ),
+        }
+
+    @app.post(
+        "/api/v1/platform-admin/models/{model_id}/relay-capability",
+        response_model=RelayCapabilityApprovalResponse,
+    )
+    def admin_approve_relay_capability(
+        model_id: str,
+        body: RelayCapabilityApprovalRequest,
+        request: Request,
+        admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        client = app.state.relay_client
+        if client is None:
+            raise HTTPException(status_code=503, detail="Relay 客户端未配置")
+        model = ModelCatalogService.get_model(session, model_id=model_id)
+        stored_candidate_state = RelayCapabilityService.candidate_state(model)
+        if stored_candidate_state["candidate_revision"] is None:
+            raise HTTPException(
+                status_code=409,
+                detail="请先同步并审阅 Relay 模型能力候选版本",
+            )
+        try:
+            read = client.get_model_catalog(request_id=request.state.request_id)
+        except RelayTemporaryError as exc:
+            raise HTTPException(
+                status_code=503, detail="Relay 模型目录暂时不可用"
+            ) from exc
+        except RelayPermanentError as exc:
+            raise HTTPException(
+                status_code=502, detail="Relay 模型目录响应无效"
+            ) from exc
+        if read.catalog is None or read.not_modified:
+            raise HTTPException(status_code=502, detail="Relay 模型目录响应不完整")
+        relay_model = RelayCapabilityService.relay_model(
+            read.catalog, model_slug=model.slug
+        )
+        RelayCapabilityService.require_customer_callable_model(relay_model)
+        if read.catalog.catalog_revision != body.expected_catalog_revision:
+            raise HTTPException(
+                status_code=409,
+                detail="Relay 模型目录版本已变化，请重新同步并审阅候选版本",
+            )
+        if relay_model.capability_revision != body.expected_capability_revision:
+            raise HTTPException(
+                status_code=409,
+                detail="Relay 模型能力版本已变化，请重新同步并审阅候选版本",
+            )
+        release_evidence, evidence_error = read_relay_model_release_evidence(
+            request_id=request.state.request_id,
+            required=True,
+        )
+        assert release_evidence is not None
+        require_matching_relay_release_snapshot(
+            catalog=read.catalog,
+            evidence=release_evidence,
+        )
+        route_evidence = RelayCapabilityService.require_route_evidence_ready(
+            public_model_id=model.slug,
+            capability_revision=relay_model.capability_revision,
+            evidence=release_evidence,
+            evidence_error=evidence_error,
+        )
+        if (
+            route_evidence.routing_release_sha256
+            != body.expected_routing_release_sha256
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Relay 路由发布版本已变化，请重新刷新路由测试证据后审批"
+                ),
+            )
+        before, locked_model, changed, compatibility, approval_diff = (
+            RelayCapabilityService.approve_candidate(
+                session,
+                model_id=model_id,
+                expected_capability_version=body.expected_capability_version,
+                expected_catalog_revision=body.expected_catalog_revision,
+                expected_candidate_revision=body.expected_capability_revision,
+                live_catalog_revision=read.catalog.catalog_revision,
+                live_candidate_revision=relay_model.capability_revision,
+                live_candidate=relay_model.capabilities.contract_dump(),
+            )
+        )
+        locked_candidate_state = RelayCapabilityService.candidate_state(
+            locked_model
+        )
+        after = ModelCatalogService.response(session, model=locked_model)
+        approval_audit_id = None
+        if changed:
+            approval = AuditService.append(
                 session,
                 actor_user_id=admin.user_id,
                 action="model.relay_capability.approve",
                 target_type="model_definition",
                 target_id=locked_model.id,
                 before_summary=_model_audit_summary(before),
-                after_summary=_model_audit_summary(after),
+                after_summary={
+                    **_model_audit_summary(after),
+                    "relay_capability_decision": {
+                        "reason": body.reason,
+                        "before_revision": before[
+                            "relay_capability_revision"
+                        ],
+                        "after_revision": after[
+                            "relay_capability_revision"
+                        ],
+                        "catalog_revision": (
+                            locked_model.relay_capability_approved_catalog_revision
+                        ),
+                        "expected_routing_release_sha256": (
+                            body.expected_routing_release_sha256
+                        ),
+                        "capability_diff": approval_diff,
+                        "route_release_evidence": route_evidence.model_dump(
+                            mode="json"
+                        ),
+                    },
+                },
                 request_id=request.state.request_id,
             )
+            approval_audit_id = approval.id
         return {
             "model": after,
             "compatibility": compatibility,
-            "capability_revision": relay_model.capability_revision,
+            "capability_revision": after["relay_capability_revision"],
+            "candidate_revision": locked_candidate_state["candidate_revision"],
+            "approved_revision": after["relay_capability_revision"],
+            "approval_status": "approved",
+            "requires_approval": False,
+            "capability_diff": approval_diff,
+            "approval_audit_id": approval_audit_id,
             "changed": changed,
         }
 
@@ -3626,10 +3999,34 @@ def create_app(
         admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
         session: Annotated[Session, Depends(get_db, scope="function")],
     ):
+        current_model = ModelCatalogService.get_model(session, model_id=model_id)
+        if current_model.active:
+            return ModelCatalogService.response(session, model=current_model)
+        if app.state.relay_client is not None and (
+            current_model.relay_capability_revision is None
+            or current_model.relay_capability_approved_ceiling is None
+            or not ModelCatalogService.relay_candidate_is_approved(
+                current_model
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="请先同步并批准中转站模型能力版本，再发布模型",
+            )
+        release_evidence = require_models_release_ready(
+            session,
+            model_ids={model_id},
+            request_id=request.state.request_id,
+        )
         before, model, changed = ModelCatalogService.publish(
             session,
             model_id=model_id,
             require_relay_capability_revision=(app.state.relay_client is not None),
+            expected_release_snapshot=(
+                release_evidence[model_id].expected_snapshot
+                if model_id in release_evidence
+                else None
+            ),
         )
         after = ModelCatalogService.response(session, model=model)
         if changed:
@@ -3640,7 +4037,14 @@ def create_app(
                 target_type="model_definition",
                 target_id=model.id,
                 before_summary=_model_audit_summary(before),
-                after_summary=_model_audit_summary(after),
+                after_summary={
+                    **_model_audit_summary(after),
+                    "route_release_evidence": release_evidence.get(
+                        model_id
+                    ).evidence
+                    if model_id in release_evidence
+                    else None,
+                },
                 request_id=request.state.request_id,
             )
         return after
@@ -3693,6 +4097,186 @@ def create_app(
         )
 
     @app.get(
+        "/api/v1/platform-admin/personal-model-grants",
+        response_model=list[AdminPersonalModelGrantResponse],
+    )
+    def admin_list_personal_model_grants(
+        _: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        return PersonalRetailGrantService.list_all(session)
+
+    @app.post(
+        "/api/v1/platform-admin/personal-model-grants/batch/preview",
+    )
+    def admin_preview_personal_model_grant_batch(
+        body: AdminPersonalModelGrantBatchPreviewRequest,
+        request: Request,
+        _: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        changes = [item.model_dump(exclude_unset=True) for item in body.changes]
+        release_readiness = require_models_release_ready(
+            session,
+            model_ids={item["model_id"] for item in changes if CommercialPricingPolicy.needs_live_evidence(session, model_id=item["model_id"], change=item)},
+            request_id=request.state.request_id,
+        )
+        return PersonalRetailGrantService.preview_batch(
+            session,
+            changes=changes,
+            require_relay_approval=(app.state.relay_client is not None),
+            expected_release_snapshots={
+                model_id: readiness.expected_snapshot
+                for model_id, readiness in release_readiness.items()
+            },
+        )
+
+    @app.post(
+        "/api/v1/platform-admin/personal-model-grants/batch/execute",
+    )
+    def admin_execute_personal_model_grant_batch(
+        body: AdminPersonalModelGrantBatchExecuteRequest,
+        request: Request,
+        admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        # Nested Pydantic fields retain their own fields-set state. Dumping with
+        # exclude_unset preserves the distinction between an omitted limit and
+        # an explicit JSON null all the way into the batch fingerprint.
+        changes = [item.model_dump(exclude_unset=True) for item in body.changes]
+        claim = PersonalRetailGrantService.claim_batch(
+            session,
+            changes=changes,
+            expected_snapshot=body.expected_snapshot,
+            actor_user_id=admin.user_id,
+            reason=body.reason,
+            request_id=request.state.request_id,
+            idempotency_key=body.idempotency_key,
+        )
+        replay = claim.get("replay")
+        if isinstance(replay, dict):
+            return replay
+        release_readiness = (
+            require_models_release_ready(
+                session,
+                model_ids={item["model_id"] for item in changes if CommercialPricingPolicy.needs_live_evidence(session, model_id=item["model_id"], change=item)},
+                request_id=request.state.request_id,
+            )
+        )
+        result = PersonalRetailGrantService.execute_batch(
+            session,
+            changes=changes,
+            expected_snapshot=body.expected_snapshot,
+            actor_user_id=admin.user_id,
+            reason=body.reason,
+            request_id=request.state.request_id,
+            idempotency_key=body.idempotency_key,
+            require_relay_approval=(app.state.relay_client is not None),
+            claim=claim,
+            expected_release_snapshots={
+                model_id: readiness.expected_snapshot
+                for model_id, readiness in release_readiness.items()
+            },
+        )
+        if not result.get("idempotent_replay") and release_readiness:
+            AuditService.append(
+                session,
+                actor_user_id=admin.user_id,
+                action="personal_model_grant.route_evidence",
+                target_type="personal_model_grant_batch",
+                target_id=body.idempotency_key,
+                before_summary={},
+                after_summary={
+                    "models": {
+                        model_id: readiness.evidence
+                        for model_id, readiness in release_readiness.items()
+                    }
+                },
+                request_id=request.state.request_id,
+            )
+        return result
+
+    @app.put(
+        "/api/v1/platform-admin/personal-model-grants/{model_id}",
+        response_model=AdminPersonalModelGrantResponse,
+    )
+    def admin_upsert_personal_model_grant(
+        model_id: str,
+        body: AdminPersonalModelGrantRequest,
+        request: Request,
+        admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        release_readiness = (
+            require_models_release_ready(
+                session,
+                model_ids={model_id},
+                request_id=request.state.request_id,
+            )
+            if CommercialPricingPolicy.needs_live_evidence(session, model_id=model_id, change=body.model_dump())
+            else {}
+        )
+        limit_changes = {
+            field: getattr(body, field)
+            for field in ("call_quota", "concurrency_limit")
+            if field in body.model_fields_set
+        }
+        before, after, changed = PersonalRetailGrantService.upsert(
+            session,
+            model_id=model_id,
+            expected_capability_version=body.expected_capability_version,
+            expected_quote_revision=body.expected_quote_revision,
+            enabled=body.enabled,
+            price_per_second_points=body.price_per_second_points,
+            price_per_item_points=body.price_per_item_points,
+            config_override=body.config_override,
+            require_relay_approval=(app.state.relay_client is not None),
+            expected_release_snapshot=(
+                release_readiness[model_id].expected_snapshot
+                if model_id in release_readiness
+                else None
+            ),
+            **limit_changes,
+        )
+        if changed:
+            audit_fields = (
+                "model_id",
+                "model_slug",
+                "capability_version",
+                "relay_capability_revision",
+                "grant_id",
+                "enabled",
+                "price_per_second_points",
+                "price_per_item_points",
+                "call_quota",
+                "concurrency_limit",
+                "config_override",
+                "quote_revision",
+            )
+            AuditService.append(
+                session,
+                actor_user_id=admin.user_id,
+                action="personal_model_grant.upsert",
+                target_type="personal_retail_model_grant",
+                target_id=model_id,
+                before_summary={
+                    **{field: before[field] for field in audit_fields},
+                    "reason": body.reason,
+                },
+                after_summary={
+                    **{field: after[field] for field in audit_fields},
+                    "reason": body.reason,
+                    "route_release_evidence": (
+                        release_readiness[model_id].evidence
+                        if model_id in release_readiness
+                        else None
+                    ),
+                },
+                request_id=request.state.request_id,
+            )
+        return after
+
+    @app.get(
         "/api/v1/platform-admin/companies",
         response_model=AdminCompanyPage,
     )
@@ -3728,6 +4312,8 @@ def create_app(
                     "id": company.id,
                     "name": company.name,
                     "status": company.status,
+                    "billing_unit": company.billing_unit,
+                    "billing_version": company.billing_version,
                     "created_at": company.created_at,
                     "updated_at": company.updated_at,
                     "owner_activation_required": bool(
@@ -3811,6 +4397,8 @@ def create_app(
             "id": company.id,
             "name": company.name,
             "status": company.status,
+            "billing_unit": company.billing_unit,
+            "billing_version": company.billing_version,
             "created_at": company.created_at,
             "updated_at": company.updated_at,
             "owner_activation_required": owner_membership.status
@@ -3861,6 +4449,66 @@ def create_app(
         )
 
     @app.post(
+        "/api/v1/platform-admin/companies/{company_id}/billing/migrate-to-points",
+        response_model=CompanyPointsMigrationResponse,
+    )
+    def admin_migrate_company_to_points(
+        company_id: str,
+        body: CompanyPointsMigrationRequest,
+        request: Request,
+        admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ):
+        if not admin.is_platform_owner:
+            raise HTTPException(status_code=403, detail="仅平台所有者可迁移企业计费")
+        result = CompanyPointBillingService.migrate(
+            session,
+            company_id=company_id,
+            expected_available_cents=body.expected_available_cents,
+            idempotency_key=body.idempotency_key,
+        )
+        if result.changed:
+            AuditService.append(
+                session,
+                actor_user_id=admin.user_id,
+                action="company.billing.migrate_to_points",
+                target_type="company",
+                target_id=company_id,
+                before_summary={
+                    "billing_unit": BillingUnit.CNY_CENT.value,
+                    "billing_version": 1,
+                    "available_cents": result.conversion.source_cents,
+                },
+                after_summary={
+                    "billing_unit": BillingUnit.POINT.value,
+                    "billing_version": 2,
+                    "available_points": result.wallet.available_points,
+                    "rounding_remainder_cents": (
+                        result.conversion.rounding_remainder_cents
+                    ),
+                    "rounding_subsidy_cents": (
+                        result.conversion.rounding_subsidy_cents
+                    ),
+                    "generation_enabled": False,
+                },
+                request_id=request.state.request_id,
+            )
+        return {
+            "company_id": company_id,
+            "source_cents": result.conversion.source_cents,
+            "converted_points": result.conversion.converted_points,
+            "legacy_points": result.conversion.legacy_points,
+            "rounding_remainder_cents": (
+                result.conversion.rounding_remainder_cents
+            ),
+            "rounding_grant_points": result.conversion.rounding_grant_points,
+            "rounding_subsidy_cents": result.conversion.rounding_subsidy_cents,
+            "generation_enabled": False,
+            "changed": result.changed,
+            "wallet": _company_wallet_payload(session, company_id=company_id),
+        }
+
+    @app.post(
         "/api/v1/platform-admin/companies/{company_id}/recharge",
         response_model=WalletOperationResponse,
     )
@@ -3895,7 +4543,10 @@ def create_app(
                 },
                 request_id=request.state.request_id,
             )
-        return WalletOperationResponse(wallet=account, ledger_entry=entry)
+        return WalletOperationResponse(
+            wallet=_company_wallet_payload(session, company_id=company_id),
+            ledger_entry=_legacy_ledger_payload(entry),
+        )
 
     @app.get(
         "/api/v1/platform-admin/companies/{company_id}/recharges",
@@ -3911,7 +4562,13 @@ def create_app(
         end_time: datetime | None = None,
     ) -> RechargeRecordPage:
         _validate_report_time_range(start_time, end_time)
-        total, total_amount_cents, items = WalletService.recharge_page(
+        (
+            total,
+            total_amount_cents,
+            total_amount_points,
+            items,
+            unit_versions,
+        ) = WalletService.funding_page(
             session,
             company_id=company_id,
             page=page,
@@ -3919,11 +4576,19 @@ def create_app(
             start_time=start_time,
             end_time=end_time,
         )
+        billing_unit, billing_version = _report_billing_metadata(
+            session,
+            company_id=company_id,
+            unit_versions=unit_versions,
+        )
         return RechargeRecordPage(
             page=page,
             page_size=page_size,
             total=total,
+            billing_unit=billing_unit,
+            billing_version=billing_version,
             total_amount_cents=total_amount_cents,
+            total_amount_points=total_amount_points,
             items=items,
         )
 
@@ -3938,46 +4603,37 @@ def create_app(
         admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
         session: Annotated[Session, Depends(get_db, scope="function")],
     ):
-        existing = session.scalar(
-            select(CompanyModelGrant).where(
-                CompanyModelGrant.company_id == company_id,
-                CompanyModelGrant.model_id == body.model_id,
+        release_readiness = (
+            require_models_release_ready(
+                session,
+                model_ids={body.model_id},
+                request_id=request.state.request_id,
             )
-        )
-        before = (
-            {
-                "enabled": existing.enabled,
-                "price_per_second_cents": existing.price_per_second_cents,
-                "price_per_item_cents": existing.price_per_item_cents,
-                "config_override": existing.config_override,
-                "call_quota": existing.call_quota,
-                "concurrency_limit": existing.concurrency_limit,
-                "effective_at": (
-                    existing.effective_at.isoformat()
-                    if existing.effective_at is not None
-                    else None
-                ),
-                "expires_at": (
-                    existing.expires_at.isoformat()
-                    if existing.expires_at is not None
-                    else None
-                ),
-            }
-            if existing
+            if CommercialPricingPolicy.needs_live_evidence(session, model_id=body.model_id, company_id=company_id, change=body.model_dump())
             else {}
         )
-        grant = ModelGrantService.upsert_grant(
+        before, grant = ModelGrantService.upsert_grant(
             session,
             company_id=company_id,
             model_id=body.model_id,
             enabled=body.enabled,
             price_per_second_cents=body.price_per_second_cents,
             price_per_item_cents=body.price_per_item_cents,
+            price_per_second_points=body.price_per_second_points,
+            price_per_item_points=body.price_per_item_points,
+            actor_user_id=admin.user_id,
             config_override=body.config_override,
             call_quota=body.call_quota,
             concurrency_limit=body.concurrency_limit,
             effective_at=body.effective_at,
             expires_at=body.expires_at,
+            expected_updated_at=body.expected_updated_at,
+            return_before=True,
+            expected_release_snapshot=(
+                release_readiness[body.model_id].expected_snapshot
+                if body.model_id in release_readiness
+                else None
+            ),
         )
         AuditService.append(
             session,
@@ -3992,6 +4648,9 @@ def create_app(
                 "enabled": grant.enabled,
                 "price_per_second_cents": grant.price_per_second_cents,
                 "price_per_item_cents": grant.price_per_item_cents,
+                "price_per_second_points": grant.price_per_second_points,
+                "price_per_item_points": grant.price_per_item_points,
+                "point_price_active_version_id": grant.point_price_active_version_id,
                 "config_override": grant.config_override,
                 "call_quota": grant.call_quota,
                 "concurrency_limit": grant.concurrency_limit,
@@ -4005,10 +4664,21 @@ def create_app(
                     if grant.expires_at is not None
                     else None
                 ),
+                "updated_at": grant.updated_at.isoformat(),
+                "route_release_evidence": (
+                    release_readiness[body.model_id].evidence
+                    if body.model_id in release_readiness
+                    else None
+                ),
             },
             request_id=request.state.request_id,
         )
-        return grant
+        company = session.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="公司不存在")
+        return ModelGrantService.response(
+            grant, billing_version=company.billing_version
+        )
 
     @app.get(
         "/api/v1/platform-admin/resources",
@@ -4186,7 +4856,13 @@ def create_app(
         end_time: datetime | None = None,
     ) -> ConsumptionReportPage:
         _validate_report_time_range(start_time, end_time)
-        total, total_amount_cents, items = ReportService.consumption_page(
+        (
+            total,
+            total_amount_cents,
+            total_amount_points,
+            items,
+            unit_versions,
+        ) = ReportService.consumption_page(
             session,
             company_id=company_id,
             page=page,
@@ -4198,11 +4874,19 @@ def create_app(
             start_time=start_time,
             end_time=end_time,
         )
+        billing_unit, billing_version = _report_billing_metadata(
+            session,
+            company_id=company_id,
+            unit_versions=unit_versions,
+        )
         return ConsumptionReportPage(
             page=page,
             page_size=page_size,
             total=total,
+            billing_unit=billing_unit,
+            billing_version=billing_version,
             total_amount_cents=total_amount_cents,
+            total_amount_points=total_amount_points,
             items=items,
         )
 
@@ -4341,6 +5025,25 @@ def create_app(
     ):
         total, items = AuditService.page(session, page=page, page_size=page_size)
         return AuditLogPage(page=page, page_size=page_size, total=total, items=items)
+
+    @app.post(
+        "/internal/relay/provider-onboarding-status",
+        response_model=ProviderOnboardingStatusBatchResponse,
+    )
+    def provider_onboarding_status(
+        body: ProviderOnboardingStatusBatchRequest,
+        response: Response,
+        _: Annotated[None, Depends(require_internal_service)],
+        session: Annotated[Session, Depends(get_db, scope="function")],
+    ) -> ProviderOnboardingStatusBatchResponse:
+        # This endpoint is deliberately projection-only. Platform catalog
+        # reconciliation, commercial approval, pricing, and grant mutations
+        # remain explicit workflows with their existing authorities.
+        response.headers["Cache-Control"] = "no-store"
+        return ProviderOnboardingStatusProjectionService.project(
+            session,
+            body=body,
+        )
 
     @app.post(
         "/internal/channel-costs",
@@ -4601,10 +5304,15 @@ def create_app(
     app.include_router(platform_admin_access_router)
     app.include_router(admin_operations_router)
     app.include_router(admin_relay_native_console_router)
+    app.include_router(admin_task_content_router)
     app.include_router(relay_telemetry_router)
     app.include_router(personal_workspace_router)
     app.include_router(authentication_router)
     app.include_router(showcase_router)
+    app.include_router(payments_router)
+    app.include_router(finance_router)
+    app.include_router(enterprise_billing_router)
+    app.include_router(director_shot_packages_router)
     return app
 
 

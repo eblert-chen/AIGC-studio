@@ -47,7 +47,7 @@ def test_sqlite_0037_upgrade_downgrade_and_auth_history_guards(
         tmp_path / "production-auth.sqlite",
     )
     config = _config()
-    command.upgrade(config, "head")
+    command.upgrade(config, "0037_production_auth_lifecycle")
     engine = create_engine(database_url)
     try:
         inspector = inspect(engine)
@@ -205,6 +205,8 @@ def test_sqlite_0037_upgrade_downgrade_and_auth_history_guards(
         }
     finally:
         engine.dispose()
+    command.upgrade(config, "head")
+    command.check(config)
 
 
 def test_0037_rejects_casefold_duplicates_before_any_schema_mutation(

@@ -16,6 +16,10 @@ func TestPlatformArtifactCleanupWorkerRecoversFromTransientStoreInitFailureAndPa
 	truncate(t)
 	resetPlatformArtifactCleanupWorkerStatusForTest()
 	t.Cleanup(resetPlatformArtifactCleanupWorkerStatusForTest)
+	resetPlatformArtifactReadinessForTest()
+	t.Cleanup(resetPlatformArtifactReadinessForTest)
+	t.Setenv("RELAY_COMPAT_ENABLED", "true")
+	t.Setenv("RELAY_COMPAT_WORKER_ENABLED", "true")
 
 	store := &cleanupRecordingArtifactStore{objects: map[string]bool{}}
 	var attempts atomic.Int32
@@ -89,6 +93,9 @@ func TestPlatformArtifactCleanupSupervisorDynamicallyActivatesForDisabledCompat(
 	truncate(t)
 	resetPlatformArtifactCleanupWorkerStatusForTest()
 	t.Cleanup(resetPlatformArtifactCleanupWorkerStatusForTest)
+	resetPlatformArtifactReadinessForTest()
+	t.Cleanup(resetPlatformArtifactReadinessForTest)
+	require.NoError(t, publishPlatformArtifactReadinessProof(false, nil))
 
 	store := &cleanupRecordingArtifactStore{objects: map[string]bool{}}
 	var factoryCalls atomic.Int32
@@ -137,6 +144,8 @@ func TestPlatformArtifactCleanupSupervisorDynamicallyActivatesForDisabledCompat(
 
 func TestArtifactCleanupMaintenanceValidationRequiresStoreOnlyForHistoricalIntent(t *testing.T) {
 	truncate(t)
+	resetPlatformArtifactReadinessForTest()
+	t.Cleanup(resetPlatformArtifactReadinessForTest)
 	t.Setenv("RELAY_COMPAT_ENABLED", "false")
 	t.Setenv("RELAY_COMPAT_WORKER_ENABLED", "false")
 	t.Setenv("RELAY_COMPAT_ENVIRONMENT", "development")
@@ -147,6 +156,9 @@ func TestArtifactCleanupMaintenanceValidationRequiresStoreOnlyForHistoricalInten
 	_, _, _, _ = appendPlatformArtifactCleanupServiceIntent(t, store)
 	require.Error(t, ValidatePlatformArtifactCleanupMaintenanceConfiguration())
 
+	// Provisioning the storage tuple is a process configuration change. A new
+	// process validates and binds that tuple before taking over maintenance.
+	resetPlatformArtifactReadinessForTest()
 	t.Setenv("RELAY_ARTIFACT_STORE", PlatformArtifactFilesystemKind)
 	t.Setenv("RELAY_ARTIFACT_FILESYSTEM_ROOT", t.TempDir())
 	t.Setenv("RELAY_ARTIFACT_PUBLIC_BASE_URL", "https://relay-artifacts.example.test")

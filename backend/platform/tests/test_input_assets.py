@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,19 +8,86 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from sqlalchemy import select
+from sqlalchemy.dialects import postgresql, sqlite
 
 from platform_api.asset_storage import (
     HuaweiObsInputAssetStore,
     InputAssetStorageError,
 )
 from platform_api.config import Settings
-from platform_api.models import InputAsset, RelaySubmissionOutbox, TaskInputAsset
-from platform_api.services.input_assets import _content_signature_matches
+from platform_api.models import (
+    GenerationTask,
+    InputAsset,
+    RelaySubmissionOutbox,
+    TaskInputAsset,
+    TaskStatus,
+)
+from platform_api.services.input_assets import (
+    _apply_input_asset_row_lock,
+    _content_signature_matches,
+)
+from platform_api.services.errors import ConflictError, NotFoundError
+from platform_api.services.input_assets import InputAssetService
 from .conftest import bootstrap
+from .media_fixtures import valid_png_bytes, valid_webm_bytes
 from .test_relay_boundary import accepted_response
 from .test_wallet_and_tasks import seed_model
 
-PNG_BYTES = b"\x89PNG\r\n\x1a\nprivate-input"
+PNG_BYTES = valid_png_bytes()
+
+
+def test_input_asset_lock_intent_is_postgres_for_update_and_sqlite_compatible():
+    statement = select(InputAsset).order_by(InputAsset.id)
+    postgres_statement = _apply_input_asset_row_lock(
+        statement,
+        dialect_name="postgresql",
+    )
+    sqlite_statement = _apply_input_asset_row_lock(
+        statement,
+        dialect_name="sqlite",
+    )
+    postgres_sql = str(
+        postgres_statement.compile(dialect=postgresql.dialect())
+    ).upper()
+    sqlite_sql = str(sqlite_statement.compile(dialect=sqlite.dialect())).upper()
+    assert "ORDER BY INPUT_ASSETS.ID" in postgres_sql
+    assert "FOR UPDATE" in postgres_sql
+    assert "ORDER BY INPUT_ASSETS.ID" in sqlite_sql
+    assert "FOR UPDATE" not in sqlite_sql
+
+
+def test_dispatch_resolution_keeps_the_postgres_read_only_contract():
+    class _EmptyScalars:
+        @staticmethod
+        def all():
+            return []
+
+    class _CaptureSession:
+        statement = None
+
+        def scalars(self, statement):
+            self.statement = statement
+            return _EmptyScalars()
+
+    session = _CaptureSession()
+    with pytest.raises(NotFoundError):
+        InputAssetService.normalize_task_payload(
+            session,  # type: ignore[arg-type]
+            company_id="11111111-1111-4111-8111-111111111111",
+            request_payload={
+                "assets": [
+                    {
+                        "asset_id": "22222222-2222-4222-8222-222222222222",
+                        "media_type": "image",
+                    }
+                ]
+            },
+            lock_for_task_admission=False,
+        )
+    assert session.statement is not None
+    sql = str(session.statement.compile(dialect=postgresql.dialect())).upper()
+    assert "ORDER BY INPUT_ASSETS.ID" in sql
+    assert "FOR UPDATE" not in sql
 
 
 @pytest.mark.parametrize(
@@ -92,6 +160,10 @@ def test_upload_list_short_signed_access_disable_and_idempotency(
     assert asset["content_type"] == "image/png"
     assert asset["size_bytes"] == len(PNG_BYTES)
     assert len(asset["sha256"]) == 64
+    assert asset["media_metadata_version"] == 1
+    assert asset["width_px"] == 16
+    assert asset["height_px"] == 9
+    assert asset["media_container"] is None
     assert asset["status"] == "active"
     assert "object_key" not in asset
     assert "storage_backend" not in asset
@@ -296,6 +368,214 @@ def test_upload_rejects_oversize_unsupported_and_mismatched_media(
     assert invalid_key.status_code == 422
 
 
+def test_upload_rejects_signature_valid_but_truncated_png(
+    client, tenant, tenant_headers
+):
+    response = upload_asset(
+        client,
+        tenant,
+        tenant_headers,
+        content=PNG_BYTES[:24],
+        idempotency_key="asset-truncated-png",
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Uploaded media could not be fully decoded"
+
+
+def test_company_webm_stays_previewable_but_never_becomes_provider_input(
+    app, client, tenant, tenant_headers
+):
+    content = valid_webm_bytes()
+    uploaded = upload_asset(
+        client,
+        tenant,
+        tenant_headers,
+        filename="local-director-previs.webm",
+        content=content,
+        content_type="video/webm",
+        media_type="video",
+        idempotency_key="company-local-webm-0001",
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    asset = uploaded.json()
+    preview = client.get(
+        f"/api/v1/companies/{tenant['company_id']}/assets/{asset['id']}/preview",
+        headers=tenant_headers,
+    )
+    assert preview.status_code == 200, preview.text
+    opened = client.get(preview.json()["url"])
+    assert opened.status_code == 200
+    assert opened.content == content
+    assert opened.headers["content-type"].startswith("video/webm")
+
+    with app.state.session_factory() as session:
+        for role in (None, "reference_video", "director_previs"):
+            reference = {
+                "asset_id": asset["id"],
+                "media_type": "video",
+            }
+            if role is not None:
+                reference["role"] = role
+            with pytest.raises(ConflictError, match="local-only"):
+                InputAssetService.normalize_task_payload(
+                    session,
+                    company_id=tenant["company_id"],
+                    request_payload={
+                        "aspect_ratio": "16:9",
+                        "assets": [reference],
+                    },
+                )
+
+    with pytest.raises(ConflictError, match="local-only"):
+        app.state.input_asset_relay_resolver.resolve(
+            company_id=tenant["company_id"],
+            personal_workspace_id=None,
+            references=[
+                {"asset_id": asset["id"], "media_type": "video"}
+            ],
+            aspect_ratio="16:9",
+        )
+
+
+@pytest.mark.parametrize("role", ["first_frame", "last_frame"])
+def test_dispatch_revalidates_temporal_frame_output_and_private_scope(
+    app, client, tenant, tenant_headers, role
+):
+    asset_response = upload_asset(
+        client,
+        tenant,
+        tenant_headers,
+        content=valid_png_bytes(160, 90),
+        idempotency_key=f"dispatch-temporal-{role}",
+    )
+    assert asset_response.status_code == 201, asset_response.text
+    references = [
+        {"asset_id": asset_response.json()["id"], "media_type": "image", "role": role}
+    ]
+    resolver = app.state.input_asset_relay_resolver
+    resolved = resolver.resolve(
+        company_id=tenant["company_id"],
+        personal_workspace_id=None,
+        references=references,
+        aspect_ratio="16:9",
+    )
+    assert len(resolved) == 1
+    assert resolved[0]["role"] == role
+    assert resolved[0]["url"].startswith("http://platform-internal:8000/")
+    for invalid_ratio in (None, "9:16"):
+        with pytest.raises(ConflictError, match="aspect_ratio"):
+            resolver.resolve(
+                company_id=tenant["company_id"],
+                personal_workspace_id=None,
+                references=references,
+                aspect_ratio=invalid_ratio,
+            )
+    with pytest.raises(NotFoundError):
+        resolver.resolve(
+            company_id="33333333-3333-4333-8333-333333333333",
+            personal_workspace_id=None,
+            references=references,
+            aspect_ratio="16:9",
+        )
+
+
+def test_temporal_frames_require_trusted_matching_task_aspect_ratio(
+    app, client, tenant, tenant_headers
+):
+    first = upload_asset(
+        client,
+        tenant,
+        tenant_headers,
+        filename="first.png",
+        content=valid_png_bytes(160, 90),
+        idempotency_key="temporal-first-frame-0001",
+    ).json()
+    last = upload_asset(
+        client,
+        tenant,
+        tenant_headers,
+        filename="last.png",
+        content=valid_png_bytes(90, 160),
+        idempotency_key="temporal-last-frame-0001",
+    ).json()
+    near = upload_asset(
+        client,
+        tenant,
+        tenant_headers,
+        filename="near.png",
+        content=valid_png_bytes(177, 100),
+        idempotency_key="temporal-near-frame-0001",
+    ).json()
+    with app.state.session_factory() as session:
+        # Both examples sat inside the retired 0.5% float tolerance. Exact
+        # integer cross multiplication rejects them.
+        with pytest.raises(ConflictError, match="aspect_ratio"):
+            InputAssetService.normalize_task_payload(
+                session,
+                company_id=tenant["company_id"],
+                request_payload={
+                    "aspect_ratio": "1777:1000",
+                    "assets": [
+                        {
+                            "asset_id": first["id"],
+                            "media_type": "image",
+                            "role": "first_frame",
+                        }
+                    ],
+                },
+            )
+        with pytest.raises(ConflictError, match="aspect_ratio"):
+            InputAssetService.normalize_task_payload(
+                session,
+                company_id=tenant["company_id"],
+                request_payload={
+                    "aspect_ratio": "16:9",
+                    "assets": [
+                        {
+                            "asset_id": near["id"],
+                            "media_type": "image",
+                            "role": "last_frame",
+                        }
+                    ],
+                },
+            )
+        with pytest.raises(ConflictError, match="aspect_ratio"):
+            InputAssetService.normalize_task_payload(
+                session,
+                company_id=tenant["company_id"],
+                request_payload={
+                    "aspect_ratio": "16:9",
+                    "assets": [
+                        {
+                            "asset_id": last["id"],
+                            "media_type": "image",
+                            "role": "last_frame",
+                        }
+                    ],
+                },
+            )
+        with pytest.raises(ConflictError, match="aspect ratios|aspect_ratio"):
+            InputAssetService.normalize_task_payload(
+                session,
+                company_id=tenant["company_id"],
+                request_payload={
+                    "aspect_ratio": "16:9",
+                    "assets": [
+                        {
+                            "asset_id": first["id"],
+                            "media_type": "image",
+                            "role": "first_frame",
+                        },
+                        {
+                            "asset_id": last["id"],
+                            "media_type": "image",
+                            "role": "last_frame",
+                        },
+                    ],
+                },
+            )
+
+
 @pytest.mark.parametrize(
     ("claimed_type", "media_type", "content"),
     [
@@ -336,7 +616,12 @@ class CaptureRelayClient:
 
     def submit(self, payload, *, idempotency_key, request_id=None):
         self.calls.append((payload, idempotency_key, request_id))
-        return accepted_response("77777777-7777-4777-8777-777777777777")
+        return accepted_response("77777777-7777-4777-8777-777777777777").model_copy(
+            update={
+                "expected_capability_revision": payload.expected_capability_revision,
+                "capability_revision": payload.expected_capability_revision,
+            }
+        )
 
 
 def test_task_keeps_private_ids_and_dispatches_fresh_restricted_urls(
@@ -461,14 +746,92 @@ def test_task_keeps_private_ids_and_dispatches_fresh_restricted_urls(
     assert raw_url.status_code == 409
 
 
+def test_exact_task_replay_survives_later_input_asset_disable(
+    app, client, tenant, tenant_headers
+) -> None:
+    asset = upload_asset(
+        client,
+        tenant,
+        tenant_headers,
+        idempotency_key="asset-replay-after-disable-upload",
+    ).json()
+    model_id = seed_model(
+        app,
+        tenant["company_id"],
+        capability_key="image-to-video",
+        capability_config={
+            "durations": [5],
+            "ratios": ["16:9"],
+            "input_media_types": ["image"],
+            "max_images": 1,
+        },
+    )
+    assert client.post(
+        f"/api/v1/companies/{tenant['company_id']}/wallet/recharge",
+        headers=tenant_headers,
+        json={
+            "amount_cents": 1000,
+            "idempotency_key": "asset-replay-after-disable-recharge",
+        },
+    ).status_code == 200
+    request_body = {
+        "model_id": model_id,
+        "idempotency_key": "asset-replay-after-disable-task",
+        "request_payload": {
+            "mode": "image_to_video",
+            "prompt": "Keep exact replay stable",
+            "duration_seconds": 5,
+            "assets": [{"asset_id": asset["id"], "media_type": "image"}],
+        },
+    }
+    created = client.post(
+        f"/api/v1/companies/{tenant['company_id']}/tasks",
+        headers=tenant_headers,
+        json=request_body,
+    )
+    assert created.status_code == 201, created.text
+
+    # The public disable contract correctly blocks while a task is active.
+    # Simulate its later terminal state, then disable the retained input.
+    with app.state.session_factory.begin() as session:
+        task = session.get(GenerationTask, created.json()["id"])
+        assert task is not None
+        task.status = TaskStatus.FAILED
+    disabled = client.delete(
+        f"/api/v1/companies/{tenant['company_id']}/assets/{asset['id']}",
+        headers=tenant_headers,
+    )
+    assert disabled.status_code == 204, disabled.text
+
+    replayed = client.post(
+        f"/api/v1/companies/{tenant['company_id']}/tasks",
+        headers=tenant_headers,
+        json=request_body,
+    )
+    assert replayed.status_code == 201, replayed.text
+    assert replayed.json()["id"] == created.json()["id"]
+
+    changed = deepcopy(request_body)
+    changed["request_payload"]["prompt"] = "Different request"
+    conflict = client.post(
+        f"/api/v1/companies/{tenant['company_id']}/tasks",
+        headers=tenant_headers,
+        json=changed,
+    )
+    assert conflict.status_code == 409
+
+
 def test_huawei_obs_adapter_forces_private_upload_and_https_signing(
     monkeypatch, tmp_path
 ):
     captured = {}
 
     class PutObjectHeader:
-        def __init__(self, **kwargs):
-            captured["headers"] = kwargs
+        def __init__(self, *, contentType=None, acl=None):
+            captured["headers"] = {
+                "contentType": contentType,
+                "acl": acl,
+            }
 
     monkeypatch.setitem(
         __import__("sys").modules,
@@ -479,7 +842,16 @@ def test_huawei_obs_adapter_forces_private_upload_and_https_signing(
     digest = hashlib.sha256(PNG_BYTES).hexdigest()
 
     class FakeObsClient:
-        def putFile(self, bucket, key, path, metadata, headers):
+        def putFile(
+            self,
+            bucket,
+            key,
+            path,
+            metadata,
+            headers,
+            *,
+            extensionHeaders,
+        ):
             captured.update(
                 {
                     "bucket": bucket,
@@ -487,6 +859,7 @@ def test_huawei_obs_adapter_forces_private_upload_and_https_signing(
                     "path": path,
                     "metadata": metadata,
                     "upload": headers,
+                    "extension_headers": extensionHeaders,
                 }
             )
             return SimpleNamespace(status=200)
@@ -536,7 +909,9 @@ def test_huawei_obs_adapter_forces_private_upload_and_https_signing(
     assert captured["headers"] == {
         "contentType": "image/png",
         "acl": "private",
-        "cacheControl": "private, no-store",
+    }
+    assert captured["extension_headers"] == {
+        "Cache-Control": "private, no-store",
     }
     assert captured["metadata"] == {
         "sha256": digest,
@@ -575,7 +950,7 @@ def test_huawei_obs_adapter_uses_signed_head_when_sdk_drops_custom_metadata(
     )
 
     class FakeObsClient:
-        def putFile(self, *_):
+        def putFile(self, *_, **__):
             return SimpleNamespace(status=200)
 
         def getObjectMetadata(self, *_):
@@ -654,7 +1029,7 @@ def test_huawei_obs_adapter_rejects_remote_integrity_or_signed_url_drift(
     digest = hashlib.sha256(PNG_BYTES).hexdigest()
 
     class DriftedObsClient:
-        def putFile(self, *_):
+        def putFile(self, *_, **__):
             return SimpleNamespace(status=200)
 
         def getObjectMetadata(self, *_):

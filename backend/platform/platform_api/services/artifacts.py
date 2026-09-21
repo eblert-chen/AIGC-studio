@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..models import (
+    BillingUnit,
     DownloadCompletion,
     DownloadRecord,
     GenerationTask,
@@ -144,7 +145,7 @@ class TaskArtifactService:
         query: str | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
-    ) -> tuple[int, list[dict[str, Any]]]:
+    ) -> tuple[int, list[dict[str, Any]], set[tuple[str, int]]]:
         artifact_counts = (
             select(
                 TaskArtifact.task_id.label("artifact_task_id"),
@@ -165,11 +166,16 @@ class TaskArtifactService:
                 ModelDefinition.display_name.label("model_display_name"),
                 GenerationTask.status,
                 GenerationTask.request_payload,
+                GenerationTask.billing_unit,
+                GenerationTask.billing_version,
                 GenerationTask.quote_cents,
+                GenerationTask.quote_points,
                 GenerationTask.pricing_snapshot,
                 GenerationTask.capability_snapshot,
                 GenerationTask.reserved_cents,
+                GenerationTask.reserved_points,
                 GenerationTask.actual_cost_cents,
+                GenerationTask.actual_cost_points,
                 GenerationTask.output_artifacts,
                 func.coalesce(artifact_counts.c.artifact_count, 0).label(
                     "artifact_count"
@@ -207,12 +213,13 @@ class TaskArtifactService:
         if status is not None:
             statement = statement.where(GenerationTask.status == status)
         if media_type is not None:
-            expected_mode = "text_to_image"
             mode_expression = GenerationTask.request_payload["mode"].as_string()
             statement = statement.where(
-                mode_expression == expected_mode
+                mode_expression.in_(["text_to_image", "image_to_image"])
                 if media_type == "image"
-                else mode_expression != expected_mode
+                else mode_expression.in_(
+                    ["text_to_video", "image_to_video", "video_to_video"]
+                )
             )
         if query is not None:
             normalized_query = query.strip().lower()
@@ -231,6 +238,19 @@ class TaskArtifactService:
         total = int(
             session.scalar(select(func.count()).select_from(statement.subquery())) or 0
         )
+        filtered = statement.subquery("filtered_task_history")
+        unit_versions = {
+            (
+                unit.value if isinstance(unit, BillingUnit) else str(unit),
+                int(version),
+            )
+            for unit, version in session.execute(
+                select(
+                    filtered.c.billing_unit,
+                    filtered.c.billing_version,
+                ).distinct()
+            ).all()
+        }
         rows = list(session.execute(
             statement.order_by(
                 GenerationTask.created_at.desc(), GenerationTask.id.desc()
@@ -266,7 +286,7 @@ class TaskArtifactService:
             if item["id"] in canonical_by_task:
                 item["output_artifacts"] = canonical_by_task[item["id"]]
             items.append(item)
-        return total, items
+        return total, items, unit_versions
 
     @classmethod
     def artwork_page(
@@ -283,7 +303,7 @@ class TaskArtifactService:
         downloaded: bool | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
-    ) -> tuple[int, list[dict[str, Any]]]:
+    ) -> tuple[int, list[dict[str, Any]], set[tuple[str, int]]]:
         download_counts = cls._artifact_download_counts()
         completed_count = func.coalesce(
             download_counts.c.download_completed_count, 0
@@ -305,7 +325,10 @@ class TaskArtifactService:
                 GenerationTask.model_id,
                 ModelDefinition.display_name.label("model_display_name"),
                 GenerationTask.request_payload,
+                GenerationTask.billing_unit,
+                GenerationTask.billing_version,
                 GenerationTask.actual_cost_cents,
+                GenerationTask.actual_cost_points,
                 func.coalesce(
                     download_counts.c.download_issue_count, 0
                 ).label("download_issue_count"),
@@ -326,7 +349,16 @@ class TaskArtifactService:
                 TaskArtifact.company_id == company_id,
                 GenerationTask.company_id == company_id,
                 GenerationTask.status == TaskStatus.SUCCEEDED,
-                GenerationTask.actual_cost_cents.is_not(None),
+                or_(
+                    (
+                        (GenerationTask.billing_unit == BillingUnit.CNY_CENT)
+                        & GenerationTask.actual_cost_cents.is_not(None)
+                    ),
+                    (
+                        (GenerationTask.billing_unit == BillingUnit.POINT)
+                        & GenerationTask.actual_cost_points.is_not(None)
+                    ),
+                ),
             )
         )
         if visible_user_id is not None:
@@ -349,6 +381,19 @@ class TaskArtifactService:
         total = int(
             session.scalar(select(func.count()).select_from(statement.subquery())) or 0
         )
+        filtered = statement.subquery("filtered_artworks")
+        unit_versions = {
+            (
+                unit.value if isinstance(unit, BillingUnit) else str(unit),
+                int(version),
+            )
+            for unit, version in session.execute(
+                select(
+                    filtered.c.billing_unit,
+                    filtered.c.billing_version,
+                ).distinct()
+            ).all()
+        }
         rows = session.execute(
             statement.order_by(
                 TaskArtifact.created_at.desc(),
@@ -361,7 +406,10 @@ class TaskArtifactService:
         items = []
         for row in rows:
             item = dict(row)
-            item["actual_cost_cents"] = int(item["actual_cost_cents"])
+            if item["actual_cost_cents"] is not None:
+                item["actual_cost_cents"] = int(item["actual_cost_cents"])
+            if item["actual_cost_points"] is not None:
+                item["actual_cost_points"] = int(item["actual_cost_points"])
             item["download_issue_count"] = int(
                 item["download_issue_count"] or 0
             )
@@ -370,4 +418,4 @@ class TaskArtifactService:
             )
             item["downloaded"] = item["download_completed_count"] > 0
             items.append(item)
-        return total, items
+        return total, items, unit_versions

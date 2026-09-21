@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -123,6 +124,9 @@ func GetStatus(c *gin.Context) {
 		"user_agreement_enabled":      legalSetting.UserAgreement != "",
 		"privacy_policy_enabled":      legalSetting.PrivacyPolicy != "",
 		"checkin_enabled":             operation_setting.GetCheckinSetting().Enabled,
+	}
+	if platformConsoleURL := platformConsoleURLFromBaseURL(os.Getenv("PLATFORM_PUBLIC_BASE_URL")); platformConsoleURL != "" {
+		data["platform_console_url"] = platformConsoleURL
 	}
 
 	// 根据启用状态注入可选内容

@@ -369,6 +369,9 @@ func updateChannelMoonshotBalance(channel *model.Channel) (float64, error) {
 }
 
 func updateChannelBalance(channel *model.Channel) (float64, error) {
+	if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
+		return 0, model.ErrProviderOnboardingManagedChannel
+	}
 	baseURL := constant.ChannelBaseURLs[channel.Type]
 	if channel.GetBaseURL() == "" {
 		channel.BaseURL = &baseURL
@@ -439,6 +442,9 @@ func UpdateChannelBalance(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if rejectNativeManagedProviderChannel(c, id) {
+		return
+	}
 	channel, err := model.CacheGetChannel(id)
 	if err != nil {
 		common.ApiError(c, err)
@@ -464,11 +470,16 @@ func UpdateChannelBalance(c *gin.Context) {
 }
 
 func updateAllChannelsBalance() error {
-	channels, err := model.GetAllChannels(0, 0, true, false)
-	if err != nil {
+	var channels []*model.Channel
+	if err := model.ExcludeProviderOnboardingManagedChannels(
+		model.DB.Model(&model.Channel{}),
+	).Find(&channels).Error; err != nil {
 		return err
 	}
 	for _, channel := range channels {
+		if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
+			continue
+		}
 		if channel.Status != common.ChannelStatusEnabled {
 			continue
 		}

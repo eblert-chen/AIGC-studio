@@ -3,7 +3,9 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
@@ -29,6 +31,7 @@ func setupPlatformChannelControlModelTest(t *testing.T) {
 	require.NoError(t, database.AutoMigrate(&Channel{}, &ProviderChannelCredentialSetVersion{}))
 	require.NoError(t, MigrateProviderChannelCredentialVaultStorage())
 	require.NoError(t, MigratePlatformChannelControlStorage())
+	require.NoError(t, MigratePlatformChannelControlStorageV6WithDB(database))
 	require.NoError(t, database.AutoMigrate(&Ability{}))
 }
 
@@ -48,14 +51,123 @@ func createPlatformChannelControlTestChannel(t *testing.T, status int) Channel {
 
 func platformChannelControlTestIntent(channelID int, operationID string) PlatformChannelControlIntent {
 	return PlatformChannelControlIntent{
-		OperationID: operationID,
-		TenantID:    "51bdf7c4-93a6-4b7c-a4a1-03f616a10f30",
-		ChannelID:   channelID,
-		Kind:        PlatformChannelControlOperationKindTest,
-		RequestID:   "channel-control-request-0001",
-		Actor:       "platform-owner-1",
-		Reason:      "Verify Relay channel health",
+		OperationID:                 operationID,
+		TenantID:                    "51bdf7c4-93a6-4b7c-a4a1-03f616a10f30",
+		ChannelID:                   channelID,
+		Kind:                        PlatformChannelControlOperationKindTest,
+		RequestID:                   "channel-control-request-0001",
+		Actor:                       "platform-owner-1",
+		Reason:                      "Verify Relay channel health",
+		Model:                       "provider-model",
+		PublicModelID:               "public-provider-model",
+		RouteID:                     "route-provider-model-1",
+		UpstreamModel:               "provider-model",
+		CapabilityProfileID:         "test-profile-v1",
+		CapabilityProfileRevision:   "sha256:" + strings.Repeat("a", 64),
+		CapabilityRevision:          "sha256:" + strings.Repeat("b", 64),
+		RoutingReleaseSHA256:        "sha256:" + strings.Repeat("c", 64),
+		RouteBindingSHA256:          "sha256:" + strings.Repeat("d", 64),
+		CredentialFingerprintSHA256: strings.Repeat("e", 64),
+		TransportRevision:           "sha256:" + strings.Repeat("f", 64),
+		TransportSHA256:             "sha256:" + strings.Repeat("1", 64),
 	}
+}
+
+func TestPlatformChannelTestReconciliationTextRejectsSecretsAndControls(t *testing.T) {
+	assert.True(t, isSafePlatformChannelTestReconciliationText("已在供应商控制台确认没有创建任务"))
+	assert.True(t, isSafePlatformChannelTestReconciliationText("Provider console checked; no task was created"))
+
+	unsafe := []string{
+		"provider response\nraw body",
+		"operator\u007fmarker",
+		"hidden\u202Etext",
+		"https://provider.invalid/task/1?token=secret",
+		"custom+scheme://provider/task/1",
+		"Bearer provider-secret",
+		"Authorization : provider-secret",
+		"token: provider-secret",
+		"key = provider-secret",
+		"password=provider-secret",
+		"secret : provider-secret",
+		"sig=provider-secret",
+		"checked console?X-Amz-Signature=provider-secret",
+		"checked console&signature=provider-secret",
+	}
+	for _, value := range unsafe {
+		t.Run(fmt.Sprintf("unsafe-%x", len(value)), func(t *testing.T) {
+			assert.False(t, isSafePlatformChannelTestReconciliationText(value), value)
+		})
+	}
+}
+
+func TestPlatformChannelControlV6DatabaseRequiresTransportEvidence(t *testing.T) {
+	setupPlatformChannelControlModelTest(t)
+	channel := createPlatformChannelControlTestChannel(t, common.ChannelStatusEnabled)
+	tests := []struct {
+		name   string
+		mutate func(*PlatformChannelControlOperation)
+	}{
+		{name: "both missing", mutate: func(operation *PlatformChannelControlOperation) {
+			operation.IntentTransportRevision = ""
+			operation.IntentTransportSHA256 = ""
+		}},
+		{name: "revision missing", mutate: func(operation *PlatformChannelControlOperation) {
+			operation.IntentTransportRevision = ""
+		}},
+		{name: "digest missing", mutate: func(operation *PlatformChannelControlOperation) {
+			operation.IntentTransportSHA256 = ""
+		}},
+		{name: "revision malformed", mutate: func(operation *PlatformChannelControlOperation) {
+			operation.IntentTransportRevision = "sha256:not-a-digest"
+		}},
+		{name: "digest malformed", mutate: func(operation *PlatformChannelControlOperation) {
+			operation.IntentTransportSHA256 = "SHA256:" + strings.Repeat("a", 64)
+		}},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			intent := platformChannelControlTestIntent(channel.Id, fmt.Sprintf("channel-test-db-transport-guard-%04d", index+1))
+			payload, digest, err := platformChannelControlIntentPayload(intent)
+			require.NoError(t, err)
+			operation := newPlatformChannelControlOperation(intent, payload, digest, time.Now().UTC())
+			test.mutate(&operation)
+
+			err = DB.Session(&gorm.Session{SkipHooks: true}).Create(&operation).Error
+			require.Error(t, err, "a direct database writer must not bypass the v6 transport binding")
+		})
+	}
+}
+
+func TestPlatformChannelTestIntentRequiresExactGenerationRouteBinding(t *testing.T) {
+	setupPlatformChannelControlModelTest(t)
+	channel := createPlatformChannelControlTestChannel(t, common.ChannelStatusEnabled)
+	valid := platformChannelControlTestIntent(channel.Id, "channel-test-route-binding-0001")
+
+	tests := []struct {
+		name   string
+		mutate func(*PlatformChannelControlIntent)
+	}{
+		{name: "missing public model", mutate: func(intent *PlatformChannelControlIntent) { intent.PublicModelID = "" }},
+		{name: "missing route", mutate: func(intent *PlatformChannelControlIntent) { intent.RouteID = "" }},
+		{name: "missing upstream model", mutate: func(intent *PlatformChannelControlIntent) { intent.UpstreamModel = "" }},
+		{name: "model is not the bound upstream", mutate: func(intent *PlatformChannelControlIntent) { intent.Model = "other-model" }},
+		{name: "missing transport evidence", mutate: func(intent *PlatformChannelControlIntent) {
+			intent.TransportRevision = ""
+		}},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			intent := valid
+			intent.OperationID = fmt.Sprintf("channel-test-route-binding-%04d", index+2)
+			test.mutate(&intent)
+			_, _, _, err := BeginPlatformChannelTestOperation(intent)
+			require.ErrorContains(t, err, "route binding")
+		})
+	}
+
+	var count int64
+	require.NoError(t, DB.Model(&PlatformChannelControlOperation{}).Count(&count).Error)
+	assert.Zero(t, count, "invalid or partial route bindings must fail before durable execution intent is created")
 }
 
 func TestPlatformChannelTestIntentIsAtMostOnceAndTerminalReceiptIsImmutable(t *testing.T) {
@@ -80,23 +192,197 @@ func TestPlatformChannelTestIntentIsAtMostOnceAndTerminalReceiptIsImmutable(t *t
 	_, _, _, err = BeginPlatformChannelTestOperation(conflictIntent)
 	assert.ErrorIs(t, err, ErrPlatformChannelControlOperationConflict)
 
-	completed, err := CompletePlatformChannelTestOperation(intent.TenantID, intent.OperationID, false, 42, PlatformChannelControlErrorTestFailed)
+	completed, err := CompletePlatformChannelRouteTestFailure(intent.TenantID, intent.OperationID, 42, PlatformChannelControlErrorTestFailed, false)
 	require.NoError(t, err)
 	assert.Equal(t, PlatformChannelControlOperationFailed, completed.State)
 	require.NotNil(t, completed.ResultSuccess)
 	assert.False(t, *completed.ResultSuccess)
 
 	// A late duplicate completion cannot replace the first terminal result.
-	terminal, err := CompletePlatformChannelTestOperation(intent.TenantID, intent.OperationID, true, 7, "")
-	require.NoError(t, err)
-	assert.Equal(t, PlatformChannelControlOperationFailed, terminal.State)
-	require.NotNil(t, terminal.ResultSuccess)
-	assert.False(t, *terminal.ResultSuccess)
+	_, err = CompletePlatformChannelRouteTestFailure(intent.TenantID, intent.OperationID, 7, PlatformChannelControlErrorTestFailed, false)
+	assert.ErrorIs(t, err, ErrPlatformChannelControlOperationConflict)
 
 	err = DB.Model(&PlatformChannelControlOperation{}).Where("id = ?", completed.ID).Update("actor", "tampered").Error
 	assert.ErrorIs(t, err, ErrPlatformChannelControlOperationImmutable)
 	err = DB.Delete(&PlatformChannelControlOperation{}, "id = ?", completed.ID).Error
 	assert.ErrorIs(t, err, ErrPlatformChannelControlOperationImmutable)
+}
+
+func TestPlatformChannelTestClaimedProviderRejectionClosesWithoutInventingTaskID(t *testing.T) {
+	setupPlatformChannelControlModelTest(t)
+	channel := createPlatformChannelControlTestChannel(t, common.ChannelStatusEnabled)
+	intent := platformChannelControlTestIntent(channel.Id, "channel-test-provider-rejected-0001")
+
+	_, execute, _, err := BeginPlatformChannelTestOperation(intent)
+	require.NoError(t, err)
+	require.True(t, execute)
+	_, claimed, err := ClaimPlatformChannelTestSubmission(intent.TenantID, intent.OperationID)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	completed, err := CompletePlatformChannelRouteTestProvenNoCreation(
+		intent.TenantID,
+		intent.OperationID,
+		19,
+		PlatformChannelControlErrorTestValidation,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, PlatformChannelControlOperationFailed, completed.State)
+	assert.Equal(t, PlatformChannelTestSubmissionProviderRejected, completed.ProviderSubmissionState)
+	assert.Empty(t, completed.ProviderTaskID, "a rejected provider request must never invent a task identity")
+	require.NotNil(t, completed.ResultSuccess)
+	assert.False(t, *completed.ResultSuccess)
+	assert.Equal(t, PlatformChannelControlErrorTestValidation, completed.ResultErrorCode)
+
+	unknown := platformChannelControlTestIntent(channel.Id, "channel-test-transport-unknown-0001")
+	_, execute, _, err = BeginPlatformChannelTestOperation(unknown)
+	require.NoError(t, err)
+	require.True(t, execute)
+	_, claimed, err = ClaimPlatformChannelTestSubmission(unknown.TenantID, unknown.OperationID)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	for _, errorCode := range []string{
+		PlatformChannelControlErrorTestFailed,
+		PlatformChannelControlErrorTestUnavailable,
+		PlatformChannelControlErrorTestArtifact,
+		PlatformChannelControlErrorTestRouteDrift,
+	} {
+		_, err = CompletePlatformChannelRouteTestProvenNoCreation(
+			unknown.TenantID,
+			unknown.OperationID,
+			19,
+			errorCode,
+		)
+		require.ErrorContains(t, err, "proven no-creation")
+	}
+}
+
+func TestPlatformChannelTestSubmittedAcceptanceBlockerCannotReleaseRoute(t *testing.T) {
+	setupPlatformChannelControlModelTest(t)
+	channel := createPlatformChannelControlTestChannel(t, common.ChannelStatusEnabled)
+	intent := platformChannelControlTestIntent(channel.Id, "channel-test-artifact-blocked-0001")
+
+	_, execute, _, err := BeginPlatformChannelTestOperation(intent)
+	require.NoError(t, err)
+	require.True(t, execute)
+	_, claimed, err := ClaimPlatformChannelTestSubmission(intent.TenantID, intent.OperationID)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	_, err = RecordPlatformChannelTestSubmitted(intent.TenantID, intent.OperationID, "provider-task-artifact-blocked-1")
+	require.NoError(t, err)
+	_, err = RecordPlatformChannelTestBlocker(
+		intent.TenantID,
+		intent.OperationID,
+		PlatformChannelControlErrorTestArtifact,
+	)
+	require.NoError(t, err)
+
+	_, err = CompletePlatformChannelRouteTestFailure(
+		intent.TenantID,
+		intent.OperationID,
+		31,
+		PlatformChannelControlErrorTestArtifact,
+		true,
+	)
+	require.ErrorContains(t, err, "not provider-terminal")
+
+	sticky, err := GetPlatformChannelControlOperation(intent.TenantID, channel.Id, intent.OperationID)
+	require.NoError(t, err)
+	assert.Equal(t, PlatformChannelControlOperationPending, sticky.State)
+	assert.Equal(t, PlatformChannelTestSubmissionSubmitted, sticky.ProviderSubmissionState)
+	assert.Equal(t, PlatformChannelControlErrorTestArtifact, sticky.ProviderBlockerCode)
+	assert.Equal(t, "provider-task-artifact-blocked-1", sticky.ProviderTaskID)
+	assert.Nil(t, sticky.CompletedAt)
+
+	replay, execute, idempotentReplay, err := BeginPlatformChannelTestOperation(intent)
+	require.NoError(t, err)
+	assert.False(t, execute, "the model layer never authorizes a second POST on replay")
+	assert.True(t, idempotentReplay)
+	assert.Equal(t, sticky.ID, replay.ID)
+
+	other := intent
+	other.OperationID = "channel-test-artifact-blocked-0002"
+	_, _, _, err = BeginPlatformChannelTestOperation(other)
+	assert.ErrorIs(t, err, ErrPlatformChannelTestRouteBlocked)
+
+	_, err = RecordPlatformChannelTestBlocker(intent.TenantID, intent.OperationID, "SECRET_PROVIDER_BODY")
+	require.ErrorContains(t, err, "blocker is invalid")
+}
+
+func TestManagedPlatformChannelTestCompletionRevalidatesCurrentCredentialAndRouteTuple(t *testing.T) {
+	setupPlatformChannelControlModelTest(t)
+	require.NoError(t, DB.AutoMigrate(&PlatformGenerationProviderRoute{}))
+	channel := createPlatformChannelControlTestChannel(t, common.ChannelStatusEnabled)
+	managedTag := ProviderOnboardingManagedChannelTag
+	require.NoError(t, DB.Model(&Channel{}).Where("id = ?", channel.Id).Update("tag", managedTag).Error)
+	intent := platformChannelControlTestIntent(channel.Id, "managed-channel-test-route-drift-0001")
+	intent.Mode = "text_to_video"
+	intent.CredentialFingerprintSHA256 = providerChannelCredentialFingerprint("provider-secret")
+	require.NoError(t, DB.Create(&PlatformGenerationProviderRoute{
+		RouteKey: intent.RouteID, Model: intent.PublicModelID, Mode: intent.Mode,
+		ProviderName: "managed-provider", AccountID: "primary", ChannelID: channel.Id,
+		KeyIndex: 0, KeyFingerprint: intent.CredentialFingerprintSHA256,
+		ChannelClass: "official", UpstreamModel: intent.UpstreamModel,
+		CapabilityProfileID:       intent.CapabilityProfileID,
+		CapabilityProfileRevision: intent.CapabilityProfileRevision,
+		Enabled:                   true,
+	}).Error)
+
+	_, execute, _, err := BeginPlatformChannelTestOperation(intent)
+	require.NoError(t, err)
+	require.True(t, execute)
+	_, claimed, err := ClaimPlatformChannelTestSubmission(intent.TenantID, intent.OperationID)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	_, err = RecordPlatformChannelTestSubmitted(intent.TenantID, intent.OperationID, "managed-provider-task-drift-1")
+	require.NoError(t, err)
+	require.NoError(t, DB.Model(&PlatformGenerationProviderRoute{}).
+		Where("route_key = ? AND mode = ?", intent.RouteID, intent.Mode).
+		Update("capability_profile_revision", "sha256:"+strings.Repeat("9", 64)).Error)
+
+	_, err = CompletePlatformChannelRouteTestSuccess(intent.TenantID, intent.OperationID, 23, PlatformChannelTestArtifactEvidence{
+		SHA256: strings.Repeat("a", 64), SizeBytes: 128, ContentType: "video/mp4",
+	})
+	assert.ErrorIs(t, err, ErrPlatformChannelControlOperationConflict)
+	stored, err := GetPlatformChannelControlOperation(intent.TenantID, channel.Id, intent.OperationID)
+	require.NoError(t, err)
+	assert.Equal(t, PlatformChannelControlOperationPending, stored.State)
+	assert.Equal(t, PlatformChannelTestSubmissionSubmitted, stored.ProviderSubmissionState)
+	assert.Nil(t, stored.CompletedAt)
+}
+
+func TestPlatformChannelTestReceiptAcceptsOnlyClosedSecretFreeFailureTaxonomy(t *testing.T) {
+	accepted := []string{
+		PlatformChannelControlErrorTestFailed,
+		PlatformChannelControlErrorTestUnavailable,
+		PlatformChannelControlErrorTestValidation,
+		PlatformChannelControlErrorTestAuth,
+		PlatformChannelControlErrorTestQuota,
+		PlatformChannelControlErrorTestTerminal,
+	}
+	for _, errorCode := range accepted {
+		t.Run(errorCode, func(t *testing.T) {
+			setupPlatformChannelControlModelTest(t)
+			channel := createPlatformChannelControlTestChannel(t, common.ChannelStatusEnabled)
+			intent := platformChannelControlTestIntent(channel.Id, "channel-test-taxonomy-"+fmt.Sprintf("%x", len(errorCode))+"-0001")
+			_, execute, _, err := BeginPlatformChannelTestOperation(intent)
+			require.NoError(t, err)
+			require.True(t, execute)
+
+			completed, err := CompletePlatformChannelRouteTestFailure(intent.TenantID, intent.OperationID, 11, errorCode, false)
+			require.NoError(t, err)
+			require.Equal(t, errorCode, completed.ResultErrorCode)
+		})
+	}
+
+	setupPlatformChannelControlModelTest(t)
+	channel := createPlatformChannelControlTestChannel(t, common.ChannelStatusEnabled)
+	intent := platformChannelControlTestIntent(channel.Id, "channel-test-taxonomy-reject-0001")
+	_, execute, _, err := BeginPlatformChannelTestOperation(intent)
+	require.NoError(t, err)
+	require.True(t, execute)
+	_, err = CompletePlatformChannelRouteTestFailure(intent.TenantID, intent.OperationID, 11, "SECRET_RAW_PROVIDER_ERROR", false)
+	require.ErrorContains(t, err, "channel test route failure is invalid")
 }
 
 func TestPlatformChannelStatusUsesRevisionCASAndPersistsFailedReceipt(t *testing.T) {
@@ -159,6 +445,117 @@ func TestPlatformChannelStatusUsesRevisionCASAndPersistsFailedReceipt(t *testing
 	wrongSemantic.TargetStatus = common.ChannelStatusManuallyDisabled
 	_, _, err = ApplyPlatformChannelStatusOperation(wrongSemantic)
 	assert.True(t, errors.Is(err, ErrPlatformChannelControlOperationConflict))
+}
+
+func TestPlatformChannelStatusRejectsReservedAndManagedOnboardingChannels(t *testing.T) {
+	setupPlatformChannelControlModelTest(t)
+	tag := ProviderOnboardingManagedChannelTag
+	tests := []struct {
+		name      string
+		channelID int
+		tag       *string
+		otherInfo string
+	}{
+		{name: "reserved identity", channelID: ProviderOnboardingGoogleChannelID},
+		{name: "managed tag", channelID: 880001, tag: &tag},
+		{
+			name: "durable lifecycle marker without tag", channelID: 880002,
+			otherInfo: `{"credential_late_provider":{"schema_version":1,"provider":"google","account_id":"primary","channel_id":880002,"public_model_ids":["provider-model"],"state":"route_test_ready"}}`,
+		},
+		{
+			name: "malformed lifecycle marker fails closed", channelID: 880003,
+			otherInfo: `{"credential_late_provider":`,
+		},
+		{
+			name: "escaped malformed lifecycle marker fails closed", channelID: 880004,
+			otherInfo: `{"credential_late_provide\u0072":`,
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			channel := Channel{
+				Id: test.channelID, Name: "managed-status-guard", Key: "managed-provider-secret",
+				Status: common.ChannelStatusManuallyDisabled, Models: "provider-model", Tag: test.tag,
+				OtherInfo: test.otherInfo,
+			}
+			require.NoError(t, DB.Create(&channel).Error)
+			require.NoError(t, DB.Create(&Ability{
+				Group: "default", Model: "provider-model", ChannelId: channel.Id, Enabled: false,
+			}).Error)
+			require.NoError(t, DB.First(&channel, channel.Id).Error)
+
+			_, replay, err := ApplyPlatformChannelStatusOperation(PlatformChannelControlIntent{
+				OperationID: fmt.Sprintf("managed-channel-status-guard-%04d", index+1),
+				TenantID:    "51bdf7c4-93a6-4b7c-a4a1-03f616a10f30", ChannelID: channel.Id,
+				Kind: PlatformChannelControlOperationKindStatus, RequestID: "managed-channel-status-request",
+				Actor: "platform-owner-1", Reason: "Must use the dedicated provider onboarding lifecycle",
+				ExpectedRevision: PlatformChannelControlRevision(channel), TargetStatus: common.ChannelStatusEnabled,
+			})
+			assert.ErrorIs(t, err, ErrProviderOnboardingManagedChannel)
+			assert.False(t, replay)
+
+			var persisted Channel
+			require.NoError(t, DB.First(&persisted, channel.Id).Error)
+			assert.Equal(t, common.ChannelStatusManuallyDisabled, persisted.Status)
+			var ability Ability
+			require.NoError(t, DB.First(&ability, "channel_id = ?", channel.Id).Error)
+			assert.False(t, ability.Enabled)
+			var receipts int64
+			require.NoError(t, DB.Model(&PlatformChannelControlOperation{}).
+				Where("channel_id = ?", channel.Id).Count(&receipts).Error)
+			assert.Zero(t, receipts)
+		})
+	}
+}
+
+func TestProviderOnboardingMarkerFenceDoesNotClaimOrdinaryOtherInfo(t *testing.T) {
+	ordinary := []Channel{
+		{Id: 880010, OtherInfo: `{"status_reason":"operator disabled"}`},
+		{Id: 880011, OtherInfo: `{"legacy_metadata":`},
+		{Id: 880012},
+	}
+	for index := range ordinary {
+		assert.False(t, IsProviderOnboardingManagedChannel(&ordinary[index]))
+	}
+}
+
+func TestPlatformChannelStatusReplayRechecksManagedTagButKeepsDeletedOrdinaryReceipt(t *testing.T) {
+	setupPlatformChannelControlModelTest(t)
+	channel := createPlatformChannelControlTestChannel(t, common.ChannelStatusManuallyDisabled)
+	intent := PlatformChannelControlIntent{
+		OperationID: "channel-status-managed-replay-fence-0001",
+		TenantID:    "51bdf7c4-93a6-4b7c-a4a1-03f616a10f30", ChannelID: channel.Id,
+		Kind: PlatformChannelControlOperationKindStatus, RequestID: "managed-replay-request",
+		Actor: "platform-owner-1", Reason: "Verify managed replay fence",
+		ExpectedRevision: PlatformChannelControlRevision(channel), TargetStatus: common.ChannelStatusEnabled,
+	}
+	receipt, replay, err := ApplyPlatformChannelStatusOperation(intent)
+	require.NoError(t, err)
+	assert.False(t, replay)
+	require.NotNil(t, receipt)
+
+	managedTag := ProviderOnboardingManagedChannelTag
+	require.NoError(t, DB.Model(&Channel{}).Where("id = ?", channel.Id).Update("tag", managedTag).Error)
+	_, replay, err = ApplyPlatformChannelStatusOperation(intent)
+	assert.ErrorIs(t, err, ErrProviderOnboardingManagedChannel)
+	assert.False(t, replay)
+	var operations int64
+	require.NoError(t, DB.Model(&PlatformChannelControlOperation{}).Count(&operations).Error)
+	assert.Equal(t, int64(1), operations)
+
+	ordinary := createPlatformChannelControlTestChannel(t, common.ChannelStatusManuallyDisabled)
+	ordinaryIntent := intent
+	ordinaryIntent.OperationID = "channel-status-deleted-replay-0001"
+	ordinaryIntent.ChannelID = ordinary.Id
+	ordinaryIntent.ExpectedRevision = PlatformChannelControlRevision(ordinary)
+	receipt, replay, err = ApplyPlatformChannelStatusOperation(ordinaryIntent)
+	require.NoError(t, err)
+	assert.False(t, replay)
+	require.NoError(t, DB.Exec("DELETE FROM channels WHERE id = ?", ordinary.Id).Error)
+	replayed, replay, err := ApplyPlatformChannelStatusOperation(ordinaryIntent)
+	require.NoError(t, err)
+	assert.True(t, replay)
+	assert.Equal(t, receipt.ID, replayed.ID)
 }
 
 func TestPlatformChannelControlRevisionTracksNativeMutationsWithoutHealthNoise(t *testing.T) {

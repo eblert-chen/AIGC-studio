@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 from datetime import timedelta
+import hashlib
+import json
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -30,15 +32,32 @@ from ..relay_client import (
     RelayTemporaryError,
 )
 from ..request_ids import normalize_request_id, stable_request_id
+from ..relay_identity import NEW_API_RELAY_BACKEND_ID, NEW_API_RELAY_CONTRACT_REVISION
 from .billing import WalletService
 from .personal_billing import PersonalWalletService
 from .errors import ConflictError, DomainError, NotFoundError
 from .relay_status import RelayStatusService
+from .execution_contracts import freeze_execution_contract, require_execution_digest
+from ..execution_contract import ExecutionContract
+
+
+_MATERIALIZED_DIGEST_KEY = "_platform_materialized_payload_sha256"
+
+
+def _materialized_payload_sha256(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class InputAssetReferenceResolver(Protocol):
     def resolve(
-        self, *, company_id: str, references: list[dict[str, Any]]
+        self,
+        *,
+        company_id: str | None,
+        personal_workspace_id: str | None,
+        references: list[dict[str, Any]],
+        aspect_ratio: str | None,
     ) -> list[dict[str, str]]: ...
 
 
@@ -56,6 +75,31 @@ def _submit_error_snapshot(
 
 
 class RelayPayloadMapper:
+    _IMAGE_OUTPUT_MODES = frozenset({"text_to_image", "image_to_image"})
+
+    @classmethod
+    def _duration_seconds(
+        cls, task: GenerationTask, source: dict[str, Any]
+    ) -> Any:
+        if "duration_seconds" in source:
+            return source["duration_seconds"]
+        mode = source.get("mode", "text_to_video")
+        if mode not in cls._IMAGE_OUTPUT_MODES:
+            return 5
+        snapshot = getattr(task, "capability_snapshot", None) or {}
+        effective = snapshot.get("effective_capabilities", {})
+        modes = effective.get("modes", {}) if isinstance(effective, dict) else {}
+        selected = modes.get(mode, {}) if isinstance(modes, dict) else {}
+        limits = selected.get("limits", {}) if isinstance(selected, dict) else {}
+        durations = limits.get("duration_seconds", []) if isinstance(limits, dict) else []
+        if (
+            isinstance(durations, list)
+            and durations
+            and all(type(value) is int and value > 0 for value in durations)
+        ):
+            return durations[0]
+        raise ConflictError("Image generation duration sentinel is unavailable")
+
     @staticmethod
     def from_task(
         task: GenerationTask,
@@ -63,8 +107,12 @@ class RelayPayloadMapper:
         *,
         request_id: str | None = None,
         resolved_assets: list[dict[str, str]] | None = None,
+        director_shot: dict[str, Any] | None = None,
+        director_motion: dict[str, Any] | None = None,
         callback_url: str | None = None,
+        execution_contract: ExecutionContract | None = None,
     ) -> RelayGenerationRequest:
+        require_execution_digest(task, execution_contract.content_sha256() if execution_contract else None)
         source = task.request_payload
         asset_references = source.get("assets", [])
         if asset_references and resolved_assets is None:
@@ -88,6 +136,7 @@ class RelayPayloadMapper:
             )
         try:
             return RelayGenerationRequest(
+                execution_contract=execution_contract,
                 client_reference_id=task.id,
                 model=model.slug,
                 expected_capability_revision=(
@@ -97,9 +146,19 @@ class RelayPayloadMapper:
                 inputs={
                     "prompt": source.get("prompt"),
                     "assets": resolved_assets or [],
+                    **(
+                        {"director_shot": director_shot}
+                        if director_shot is not None
+                        else {}
+                    ),
+                    **(
+                        {"director_motion": director_motion}
+                        if director_motion is not None
+                        else {}
+                    ),
                 },
                 output={
-                    "duration_seconds": source.get("duration_seconds", 5),
+                    "duration_seconds": RelayPayloadMapper._duration_seconds(task, source),
                     "aspect_ratio": source.get("aspect_ratio", "16:9"),
                     "resolution": source.get("resolution", "720p"),
                     "count": source.get("output_count", 1),
@@ -133,14 +192,26 @@ class RelayOutboxService:
         model: ModelDefinition,
         request_id: str | None = None,
         resolved_assets: list[dict[str, str]] | None = None,
+        director_shot: dict[str, Any] | None = None,
+        director_motion: dict[str, Any] | None = None,
         callback_url: str | None = None,
+        expected_commercial_release_snapshot: dict[str, Any] | None = None,
     ) -> RelaySubmissionOutbox:
+        contract = (
+            freeze_execution_contract(
+                expected_snapshot=expected_commercial_release_snapshot,
+                request_payload=task.request_payload,
+            ) if (task.pricing_snapshot or {}).get("execution_contract_sha256") else None
+        )
         payload = RelayPayloadMapper.from_task(
             task,
             model,
             request_id=request_id,
             resolved_assets=resolved_assets,
+            director_shot=director_shot,
+            director_motion=director_motion,
             callback_url=callback_url,
+            execution_contract=contract,
         )
         outbox = RelaySubmissionOutbox(
             company_id=task.company_id,
@@ -198,6 +269,10 @@ class RelayOutboxDispatcher:
             metadata = payload_data.get("metadata")
             if not isinstance(metadata, dict):
                 raise ConflictError("Relay outbox metadata is invalid")
+            # This evidence is server-owned and must never be a wire field or
+            # an input from customer metadata (which lives under client_metadata).
+            if _MATERIALIZED_DIGEST_KEY in metadata:
+                raise ConflictError("Unmaterialized Relay payload already has a digest")
             references = metadata.pop("_platform_input_assets", [])
             if references:
                 if not isinstance(references, list):
@@ -208,10 +283,15 @@ class RelayOutboxDispatcher:
                         "input_asset_resolver_unavailable",
                         503,
                     )
+                output = payload_data.get("output")
+                if not isinstance(output, dict):
+                    raise ConflictError("Relay outbox output is invalid")
                 payload_data.setdefault("inputs", {})["assets"] = (
                     self.asset_reference_resolver.resolve(
                         company_id=claimed.company_id,
+                        personal_workspace_id=claimed.personal_workspace_id,
                         references=references,
+                        aspect_ratio=output.get("aspect_ratio"),
                     )
                 )
             materialized = RelayGenerationRequest.model_validate(payload_data)
@@ -241,10 +321,33 @@ class RelayOutboxDispatcher:
                 outbox.relay_contract_revision,
             ):
                 raise ConflictError("Relay task and outbox affinities do not match")
+            task = session.get(GenerationTask, outbox.task_id)
+            checked = RelayGenerationRequest.model_validate(materialized_data)
+            require_execution_digest(task, checked.execution_contract.content_sha256()
+                                     if checked.execution_contract is not None else None)
             if outbox.materialized_relay_payload is None:
                 outbox.materialized_relay_payload = materialized_data
             else:
                 materialized_data = copy.deepcopy(outbox.materialized_relay_payload)
+            stored_payload = copy.deepcopy(outbox.relay_payload)
+            stored_metadata = stored_payload.get("metadata")
+            if not isinstance(stored_metadata, dict) or _MATERIALIZED_DIGEST_KEY in materialized_data.get("metadata", {}):
+                raise ConflictError("Relay materialization metadata is invalid")
+            try:
+                digest = _materialized_payload_sha256(materialized_data)
+            except (TypeError, ValueError) as exc:
+                raise ConflictError("Relay materialization cannot be canonically encoded") from exc
+            previous_digest = stored_metadata.get(_MATERIALIZED_DIGEST_KEY)
+            if previous_digest is not None and previous_digest != digest:
+                raise ConflictError("Relay materialized payload differs from its original digest")
+            if previous_digest is None:
+                if (outbox.relay_submit_attempted_at is not None
+                        or outbox.submission_outcome_uncertain_at is not None):
+                    raise ConflictError("Unknown Relay submission lacks an original payload digest")
+                # Commit the first digest together with materialization, before
+                # the first submit marker/HTTP. Never manufacture it in recovery.
+                stored_metadata[_MATERIALIZED_DIGEST_KEY] = digest
+                outbox.relay_payload = stored_payload
         return RelayGenerationRequest.model_validate(materialized_data)
 
     def _mark_submit_attempt_started(
@@ -373,6 +476,13 @@ class RelayOutboxDispatcher:
         claimed = self._claim()
         if claimed is None:
             return DispatchResult(processed=False)
+        if (
+            claimed.relay_submit_attempted_at is not None
+            or claimed.submission_outcome_uncertain_at is not None
+        ):
+            recovery = self._prepare_crashed_submit_replay(claimed)
+            if recovery is not None:
+                return recovery
         if claimed.attempt_count > self.max_attempts:
             return self._mark_attempt_limit(
                 claimed.id,
@@ -387,13 +497,15 @@ class RelayOutboxDispatcher:
             if exc.status_code >= 500:
                 return self._mark_retry(claimed.id, claimed.attempt_count, exc.message)
             return self._mark_permanent_failure(
-                claimed.id, claimed.attempt_count, exc.message
+                claimed.id, claimed.attempt_count, exc.message,
+                pre_submit_validation_failure=True,
             )
         except (ValidationError, TypeError):
             return self._mark_permanent_failure(
                 claimed.id,
                 claimed.attempt_count,
                 "Relay outbox payload is invalid",
+                pre_submit_validation_failure=True,
             )
         try:
             client = self.relay_backends.resolve(
@@ -421,6 +533,7 @@ class RelayOutboxDispatcher:
                 claimed.attempt_count,
                 str(exc),
                 submission_outcome_unknown=exc.submission_outcome_unknown,
+                confirmed_not_created=not exc.submission_outcome_unknown,
                 error_snapshot=_submit_error_snapshot(exc),
             )
         except RelayIdempotencyConflictError as exc:
@@ -450,7 +563,86 @@ class RelayOutboxDispatcher:
                 claimed.attempt_count,
                 "Relay accepted a different capability revision",
             )
+        expected_execution = (payload.execution_contract.content_sha256()
+                              if payload.execution_contract is not None else None)
+        if accepted.execution_contract_sha256 != expected_execution:
+            return self._mark_reconciliation_required(
+                claimed.id, claimed.attempt_count,
+                "Relay accepted a different execution contract; submission outcome is unknown",
+            )
         return self._mark_sent(claimed.id, claimed.attempt_count, accepted)
+
+    def _prepare_crashed_submit_replay(
+        self, claimed: RelaySubmissionOutbox,
+    ) -> DispatchResult | None:
+        """Commit uncertainty before replaying any historical native submission.
+
+        The code-owned New API contract persists a unique (tenant, key) job and
+        creates its submit outbox only on INSERT, never on replay. This is not
+        permission to repeat a provider POST or to use an arbitrary compatible
+        gateway. Operators must preserve the backend's tenant/database identity.
+        """
+        with self.session_factory.begin() as session:
+            task, outbox = self._lock_task_and_outbox(
+                session, outbox_id=claimed.id, include_wallet=False,
+            )
+            if not self._owns_claim(outbox, claimed.attempt_count):
+                return self._result_for_outbox(outbox)
+            # This must survive even if recovery validation or a later HTTP
+            # 401/404/422 fails. That reply cannot disprove the earlier POST.
+            outbox.submission_outcome_uncertain_at = (
+                outbox.submission_outcome_uncertain_at or utcnow()
+            )
+            reason = "Historical Relay submission lacks exact durable replay evidence"
+            try:
+                if (
+                    task.status not in {TaskStatus.QUEUED, TaskStatus.PROCESSING}
+                    or task.relay_job_id != outbox.relay_job_id
+                    or (outbox.relay_backend_id, outbox.relay_contract_revision)
+                    != (NEW_API_RELAY_BACKEND_ID, NEW_API_RELAY_CONTRACT_REVISION)
+                    or (task.relay_backend_id, task.relay_contract_revision)
+                    != (outbox.relay_backend_id, outbox.relay_contract_revision)
+                    or (claimed.relay_backend_id, claimed.relay_contract_revision)
+                    != (outbox.relay_backend_id, outbox.relay_contract_revision)
+                    or outbox.idempotency_key != f"platform-task-{task.id}"
+                    or outbox.idempotency_key != claimed.idempotency_key
+                    or outbox.materialized_relay_payload is None
+                    or outbox.materialized_relay_payload != claimed.materialized_relay_payload
+                    or outbox.relay_payload != claimed.relay_payload
+                    or not isinstance(outbox.relay_payload.get("metadata"), dict)
+                    or outbox.relay_payload["metadata"].get(_MATERIALIZED_DIGEST_KEY)
+                    != _materialized_payload_sha256(outbox.materialized_relay_payload)
+                ):
+                    raise ValueError(reason)
+                payload = RelayGenerationRequest.model_validate(outbox.materialized_relay_payload)
+                if (
+                    payload.model_dump(mode="json") != outbox.materialized_relay_payload
+                    or payload.client_reference_id != task.id
+                    or payload.metadata.get("platform_task_id") != task.id
+                    or payload.metadata.get("platform_user_id") != task.user_id
+                    or payload.metadata.get("platform_billing_scope")
+                    != ("company" if task.company_id is not None else "personal")
+                    or payload.metadata.get("platform_billing_scope_id")
+                    != (task.company_id or task.personal_workspace_id)
+                    or payload.expected_capability_revision
+                    != (task.capability_snapshot or {}).get("relay_capability_revision")
+                ):
+                    raise ValueError(reason)
+                self.relay_backends.resolve(
+                    backend_id=outbox.relay_backend_id,
+                    contract_revision=outbox.relay_contract_revision,
+                )
+            except (ValidationError, ValueError, TypeError, RelayBackendResolutionError):
+                return self._apply_reconciliation_required(session, task, outbox, reason)
+            if outbox.attempt_count > self.max_attempts:
+                return self._apply_reconciliation_required(
+                    session, task, outbox,
+                    f"Relay dispatch attempt limit ({self.max_attempts}) exhausted",
+                )
+            # No new quote, URL materialization, route selection or key is
+            # produced here. Leaving this transaction commits the unknown fact
+            # before dispatch_once may send the original persisted request.
+            return None
 
     def _mark_sent(
         self,
@@ -496,6 +688,7 @@ class RelayOutboxDispatcher:
         error: str,
         *,
         submission_outcome_unknown: bool = False,
+        confirmed_not_created: bool = False,
         error_snapshot: dict[str, Any] | None = None,
     ) -> DispatchResult:
         with self.session_factory.begin() as session:
@@ -518,6 +711,14 @@ class RelayOutboxDispatcher:
                 outbox.submission_outcome_uncertain_at = (
                     outbox.submission_outcome_uncertain_at or utcnow()
                 )
+            elif (
+                confirmed_not_created
+                and outbox.submission_outcome_uncertain_at is None
+            ):
+                # This timestamp marks an unresolved POST, not immutable
+                # submission history. Only an explicit non-creation reply can
+                # discharge it. Never erase an earlier uncertain submission.
+                outbox.relay_submit_attempted_at = None
             if outbox.attempt_count >= self.max_attempts:
                 exhausted_error = (
                     f"Relay dispatch attempt limit ({self.max_attempts}) "
@@ -554,6 +755,7 @@ class RelayOutboxDispatcher:
         error: str,
         *,
         error_snapshot: dict[str, Any] | None = None,
+        pre_submit_validation_failure: bool = False,
     ) -> DispatchResult:
         with self.session_factory.begin() as session:
             task, outbox = self._lock_task_and_outbox(
@@ -561,6 +763,17 @@ class RelayOutboxDispatcher:
             )
             if not self._owns_claim(outbox, expected_attempt):
                 return self._result_for_outbox(outbox)
+            if (
+                pre_submit_validation_failure
+                and outbox.relay_submit_attempted_at is not None
+            ):
+                # The previous worker may have crashed after POST but before
+                # recording its outcome. A local validation failure is not
+                # provider evidence of non-creation; keep its exact request
+                # and reservation for reconciliation, without another POST.
+                outbox.submission_outcome_uncertain_at = (
+                    outbox.submission_outcome_uncertain_at or utcnow()
+                )
             if outbox.submission_outcome_uncertain_at is not None:
                 return self._apply_reconciliation_required(
                     session,

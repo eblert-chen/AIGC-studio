@@ -1,17 +1,29 @@
 export const GENERATION_MODES = [
   { id: "text_to_video", label: "文生视频", output: "video" },
   { id: "image_to_video", label: "图生视频", output: "video", requiredMedia: "image" },
-  { id: "video_to_video", label: "视频重绘", output: "video", requiredMedia: "video" },
+  { id: "video_to_video", label: "视频参考", output: "video", requiredMedia: "video" },
   { id: "text_to_image", label: "文生图", output: "image" },
 ];
 
 export const MODE_IDS = GENERATION_MODES.map((item) => item.id);
+
+// Platform (Python len) and Relay (Go runes) count Unicode code points, not
+// UTF-16 units. Keep prompt limits identical without splitting emoji pairs.
+export function generationPromptLength(value) {
+  return Array.from(String(value ?? "")).length;
+}
+
+export function truncateGenerationPrompt(value, limit) {
+  return Array.from(String(value ?? "")).slice(0, limit).join("");
+}
 
 const MODE_BY_ID = new Map(GENERATION_MODES.map((item) => [item.id, item]));
 const DEFAULT_RATIOS = ["16:9"];
 const DEFAULT_RESOLUTIONS = ["720p"];
 const DEFAULT_DURATIONS = [5];
 const DEFAULT_OUTPUT_COUNTS = [1];
+const RESOURCE_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{1,118}[a-z0-9]$/;
+const INPUT_MEDIA_TYPES = new Set(["image", "video", "audio"]);
 
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -22,12 +34,30 @@ function modeId(value) {
   return MODE_BY_ID.has(normalized) ? normalized : "";
 }
 
+export function modeUsesDuration(value) {
+  return modeId(value) !== "text_to_image";
+}
+
 function uniqueStrings(value, fallback = []) {
   if (!Array.isArray(value)) return [...fallback];
   const result = value
     .map((item) => String(item ?? "").trim())
     .filter(Boolean);
   return result.length ? [...new Set(result)] : [...fallback];
+}
+
+function strictResourceKeys(value, { allowEmpty = true } = {}) {
+  if (!Array.isArray(value)) return null;
+  if (!allowEmpty && value.length === 0) return null;
+  if (
+    value.some(
+      (item) => typeof item !== "string" || !RESOURCE_KEY_PATTERN.test(item),
+    )
+  ) {
+    return null;
+  }
+  const unique = new Set(value);
+  return unique.size === value.length ? [...value] : null;
 }
 
 function uniqueIntegers(value, fallback = [], { min = 1, max = 10_000 } = {}) {
@@ -62,6 +92,7 @@ function modeDefaults(id) {
     inputMediaTypes: definition.requiredMedia ? [definition.requiredMedia] : [],
     supportsFace: false,
     requiredResourceKeys: [],
+    conditionalRequiredResourceKeys: { faceEnabled: [] },
     limits: {
       maxPromptLength: 10_000,
       maxImages: definition.requiredMedia === "image" ? 1 : 0,
@@ -84,6 +115,11 @@ function normalizeModeConfig(id, value, inherited = {}) {
   const limits = { ...inheritedLimits, ...sourceLimits };
   const defaults = modeDefaults(id);
   const definition = MODE_BY_ID.get(id);
+  const conditionalRequiredResources = isObject(
+    combined.conditional_required_resource_keys ?? combined.conditionalRequiredResourceKeys,
+  )
+    ? combined.conditional_required_resource_keys ?? combined.conditionalRequiredResourceKeys
+    : {};
 
   const maxImages = nonnegativeInteger(
     valueFrom(combined, limits, ["max_images", "maxImages", "image"]),
@@ -123,6 +159,12 @@ function normalizeModeConfig(id, value, inherited = {}) {
       combined.required_resource_keys ?? combined.requiredResourceKeys,
       [],
     ),
+    conditionalRequiredResourceKeys: {
+      faceEnabled: uniqueStrings(
+        conditionalRequiredResources.face_enabled ?? conditionalRequiredResources.faceEnabled,
+        [],
+      ),
+    },
     limits: {
       maxPromptLength: positiveInteger(
         valueFrom(combined, limits, ["max_prompt_length", "maxPromptLength"]),
@@ -158,36 +200,57 @@ function normalizeModeConfig(id, value, inherited = {}) {
   };
 }
 
-function strictNonnegativeInteger(value, max = 15) {
-  const number = Number(value);
-  return Number.isInteger(number) && number >= 0 && number <= max ? number : 0;
+function strictIntegerList(value, { min = 1, max = 10_000 } = {}) {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  if (value.some((item) => !Number.isInteger(item) || item < min || item > max)) return null;
+  return [...new Set(value)].sort((left, right) => left - right);
 }
 
-function normalizeEffectiveModeConfig(id, value) {
+function strictOptionStrings(value, pattern) {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  if (value.some((item) => typeof item !== "string" || item !== item.trim() || !pattern.test(item))) return null;
+  return [...new Set(value)];
+}
+
+function strictInputMediaTypes(value) {
+  if (!Array.isArray(value)) return null;
+  if (value.some((item) => typeof item !== "string" || !INPUT_MEDIA_TYPES.has(item))) {
+    return null;
+  }
+  const unique = new Set(value);
+  return unique.size === value.length ? [...value] : null;
+}
+
+function normalizeEffectiveModeConfig(id, value, schemaVersion = 1) {
   if (!isObject(value) || !isObject(value.limits)) return null;
 
+  const hasConditionalRequirements = Object.hasOwn(
+    value,
+    "conditional_required_resource_keys",
+  );
+  // Personal discovery explicitly removes face requirements with an empty
+  // map, including for v1 retail models. A nonempty v1 map is still invalid.
+  if (schemaVersion === 1 && hasConditionalRequirements && (
+    !isObject(value.conditional_required_resource_keys)
+    || Object.keys(value.conditional_required_resource_keys).length > 0
+  )) return null;
+
   const limits = value.limits;
-  const declaredMediaTypes = Array.isArray(value.input_media_types)
-    ? [...new Set(
-        value.input_media_types
-          .map((item) => String(item ?? "").trim())
-          .filter((item) => ["image", "video", "audio"].includes(item)),
-      )]
-    : [];
+  const declaredMediaTypes = strictInputMediaTypes(value.input_media_types);
+  if (declaredMediaTypes === null || typeof value.supports_face !== "boolean") return null;
   const declaredMaximums = {
-    image: strictNonnegativeInteger(limits.max_images),
-    video: strictNonnegativeInteger(limits.max_videos),
-    audio: strictNonnegativeInteger(limits.max_audio),
+    image: limits.max_images,
+    video: limits.max_videos,
+    audio: limits.max_audio,
   };
-  const maximums = Object.fromEntries(
-    Object.entries(declaredMaximums).map(([mediaType, maximum]) => [
-      mediaType,
-      declaredMediaTypes.includes(mediaType) ? maximum : 0,
-    ]),
-  );
-  const inputMediaTypes = declaredMediaTypes.filter(
-    (mediaType) => maximums[mediaType] > 0,
-  );
+  if (Object.values(declaredMaximums).some(
+    (maximum) => !Number.isInteger(maximum) || maximum < 0 || maximum > 15,
+  )) return null;
+  if (Object.entries(declaredMaximums).some(
+    ([mediaType, maximum]) => declaredMediaTypes.includes(mediaType) !== (maximum > 0),
+  )) return null;
+  const maximums = declaredMaximums;
+  const inputMediaTypes = declaredMediaTypes;
   const definition = MODE_BY_ID.get(id);
   if (
     (definition?.requiredMedia && !inputMediaTypes.includes(definition.requiredMedia)) ||
@@ -196,31 +259,61 @@ function normalizeEffectiveModeConfig(id, value) {
     return null;
   }
 
-  const maxPromptLength = positiveInteger(limits.max_prompt_length, 0);
-  const durations = uniqueIntegers(limits.duration_seconds, [], {
+  const maxPromptLength = limits.max_prompt_length;
+  const durations = strictIntegerList(limits.duration_seconds, {
     min: 1,
     max: 3600,
   });
-  const aspectRatios = uniqueStrings(limits.aspect_ratios, []);
-  const resolutions = uniqueStrings(limits.resolutions, []);
-  const outputCounts = uniqueIntegers(limits.output_counts, [], {
+  const aspectRatios = strictOptionStrings(limits.aspect_ratios, /^[1-9][0-9]{0,3}:[1-9][0-9]{0,3}$/);
+  const resolutions = strictOptionStrings(limits.resolutions, /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/);
+  const outputCounts = strictIntegerList(limits.output_counts, {
     min: 1,
     max: 16,
   });
   if (
-    !maxPromptLength ||
-    !durations.length ||
-    !aspectRatios.length ||
-    !resolutions.length ||
-    !outputCounts.length
+    !Number.isInteger(maxPromptLength) || maxPromptLength < 1 || maxPromptLength > 10_000 ||
+    !durations || !aspectRatios || !resolutions || !outputCounts
+  ) {
+    return null;
+  }
+  const conditionalRequiredResources = hasConditionalRequirements
+    ? value.conditional_required_resource_keys
+    : {};
+  if (hasConditionalRequirements && !isObject(conditionalRequiredResources)) {
+    return null;
+  }
+  if (
+    Object.keys(conditionalRequiredResources).some(
+      (condition) => condition !== "face_enabled",
+    )
+  ) {
+    return null;
+  }
+  const supportsFace = value.supports_face === true;
+  const requiredResourceKeys = strictResourceKeys(value.required_resource_keys);
+  const hasFaceResourceCondition = Object.hasOwn(
+    conditionalRequiredResources,
+    "face_enabled",
+  );
+  const faceResourceKeys = hasFaceResourceCondition
+    ? strictResourceKeys(conditionalRequiredResources.face_enabled, { allowEmpty: false })
+    : [];
+  if (
+    requiredResourceKeys === null ||
+    faceResourceKeys === null ||
+    (faceResourceKeys.length > 0 && !supportsFace) ||
+    faceResourceKeys.some((key) => requiredResourceKeys.includes(key))
   ) {
     return null;
   }
 
   return {
     inputMediaTypes,
-    supportsFace: value.supports_face === true,
-    requiredResourceKeys: uniqueStrings(value.required_resource_keys, []),
+    supportsFace,
+    requiredResourceKeys,
+    conditionalRequiredResourceKeys: {
+      faceEnabled: faceResourceKeys,
+    },
     limits: {
       maxPromptLength,
       maxImages: maximums.image,
@@ -306,22 +399,36 @@ function applyLegacyOverride(modes, override) {
 }
 
 export function resolveEffectiveCapabilities(source) {
+  const hasEffectiveDeclaration = isObject(source)
+    && Object.hasOwn(source, "effective_capabilities");
   const effective = isObject(source?.effective_capabilities)
     ? source.effective_capabilities
     : null;
   const effectiveModes = isObject(effective?.modes) ? effective.modes : null;
-  if (effectiveModes) {
+  if (hasEffectiveDeclaration) {
+    const schemaVersion = effective?.schema_version;
+    if (!effectiveModes || ![1, 2].includes(schemaVersion)) {
+      return { schemaVersion, modes: {} };
+    }
+    const normalizedEntries = Object.entries(effectiveModes).map(([key, value]) => {
+      const id = modeId(key);
+      const normalized = id
+        ? normalizeEffectiveModeConfig(id, value, schemaVersion)
+        : null;
+      return id && normalized ? [id, normalized] : null;
+    });
+    const normalizedIds = normalizedEntries
+      .filter(Boolean)
+      .map(([id]) => id);
+    if (
+      normalizedEntries.some((entry) => entry === null)
+      || new Set(normalizedIds).size !== normalizedIds.length
+    ) {
+      return { schemaVersion, modes: {} };
+    }
     return {
-      schemaVersion: Number(effective.schema_version) || 1,
-      modes: Object.fromEntries(
-        Object.entries(effectiveModes)
-          .map(([key, value]) => {
-            const id = modeId(key);
-            const normalized = id ? normalizeEffectiveModeConfig(id, value) : null;
-            return id && normalized ? [id, normalized] : null;
-          })
-          .filter(Boolean),
-      ),
+      schemaVersion,
+      modes: Object.fromEntries(normalizedEntries),
     };
   }
 
@@ -361,6 +468,121 @@ export function capabilityControlVisibility(capability) {
     video: mediaTypes.includes("video") && capability?.limits?.maxVideos > 0,
     audio: mediaTypes.includes("audio") && capability?.limits?.maxAudio > 0,
     face: capability?.supportsFace === true,
+  };
+}
+
+export function capabilityMediaLimits(capability) {
+  const visible = capabilityControlVisibility(capability);
+  return {
+    image: visible.image ? capability.limits.maxImages : 0,
+    video: visible.video ? capability.limits.maxVideos : 0,
+    audio: visible.audio ? capability.limits.maxAudio : 0,
+  };
+}
+
+export function capabilitySpecificationFields(capability, mode) {
+  if (!capability) return [];
+  return [
+    { key: "aspectRatio", label: "画面比例", values: capability.limits.aspectRatios, unit: "" },
+    { key: "resolution", label: "分辨率", values: capability.limits.resolutions, unit: "" },
+    ...(modeUsesDuration(mode)
+      ? [{ key: "duration", label: "镜头时长", values: capability.limits.durations, unit: " 秒" }]
+      : []),
+    { key: "outputCount", label: "作品数量", values: capability.limits.outputCounts, unit: " 个" },
+  ].filter((field) => Array.isArray(field.values) && field.values.length > 0);
+}
+
+function normalizeReadinessBlocker(value) {
+  if (!isObject(value)) return null;
+  const code = String(value.code ?? "").trim();
+  const message = String(value.message ?? "").trim();
+  const resourceKey = String(value.resource_key ?? value.resourceKey ?? "").trim();
+  const resourceName = String(value.resource_name ?? value.resourceName ?? "").trim();
+  if (!code && !message && !resourceKey && !resourceName) return null;
+  return {
+    code,
+    message,
+    resourceKey,
+    resourceName,
+    retryable: value.retryable === true,
+  };
+}
+
+function normalizeReadinessState(value, { option = false } = {}) {
+  if (!isObject(value)) return null;
+  const ready = value.ready === true;
+  const supported = option ? value.supported === true : true;
+  const declaredStatus = String(value.status ?? "").trim().toLowerCase();
+  const status = option && !supported
+    ? "unsupported"
+    : ready
+      ? "ready"
+      : declaredStatus === "blocked"
+        ? "blocked"
+        : "blocked";
+  return {
+    ready: supported && ready,
+    status,
+    supported,
+    blockers: Array.isArray(value.blockers)
+      ? value.blockers.map(normalizeReadinessBlocker).filter(Boolean)
+      : [],
+  };
+}
+
+export function normalizeModeReadiness(source) {
+  if (!isObject(source)) return {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([key, value]) => {
+        const id = modeId(key);
+        if (!id || !isObject(value)) return null;
+        const defaultState = normalizeReadinessState(value.default);
+        const rawOptions = isObject(value.options) ? value.options : {};
+        const faceEnabled = normalizeReadinessState(
+          rawOptions.face_enabled ?? rawOptions.faceEnabled,
+          { option: true },
+        );
+        return [
+          id,
+          {
+            default: defaultState,
+            options: { faceEnabled },
+          },
+        ];
+      })
+      .filter(Boolean),
+  );
+}
+
+export function resolveGenerationReadiness(
+  modeReadiness,
+  requestedMode,
+  { faceEnabled = false } = {},
+) {
+  const entry = modeReadiness?.[modeId(requestedMode)];
+  if (!entry) {
+    return {
+      status: "unverified",
+      ready: false,
+      supported: true,
+      blockers: [],
+    };
+  }
+  const selected = faceEnabled ? entry.options?.faceEnabled : entry.default;
+  if (!selected) {
+    return {
+      status: "unverified",
+      ready: false,
+      supported: true,
+      blockers: [],
+    };
+  }
+  return {
+    status: selected.status,
+    ready: selected.ready === true,
+    supported: selected.supported !== false,
+    blockers: Array.isArray(selected.blockers) ? selected.blockers : [],
   };
 }
 
@@ -433,7 +655,7 @@ export function reconcileGenerationDraft(capabilities, requestedMode, draft = {}
     0,
   );
   const prompt = String(draft.prompt ?? "");
-  const nextPrompt = prompt.slice(0, limits.maxPromptLength);
+  const nextPrompt = truncateGenerationPrompt(prompt, limits.maxPromptLength);
   const nextDraft = {
     ...draft,
     prompt: nextPrompt,
@@ -514,7 +736,7 @@ export function buildCapabilityRequestPayload(
     reconciled.mode === "video_to_video" &&
     !assets.some((asset) => asset.media_type === "video")
   ) {
-    return { ok: false, payload: null, error: "视频重绘至少需要 1 个参考视频。", reconciled };
+    return { ok: false, payload: null, error: "视频参考至少需要 1 个参考视频。", reconciled };
   }
 
   const payload = {
@@ -545,7 +767,7 @@ export function capabilitySummary(source) {
     const parameters = [
       limits.aspectRatios.join("/"),
       limits.resolutions.join("/"),
-      `${limits.durations.join("/")} 秒`,
+      ...(modeUsesDuration(id) ? [`${limits.durations.join("/")} 秒`] : []),
       `${limits.outputCounts.join("/")} 个产物`,
     ];
     return {
@@ -557,8 +779,11 @@ export function capabilitySummary(source) {
 }
 
 export function toCanonicalGenerationConfig(modes) {
+  const hasConditionalRequirements = Object.values(modes).some(
+    (capability) => capability.conditionalRequiredResourceKeys?.faceEnabled?.length > 0,
+  );
   return {
-    schema_version: 1,
+    schema_version: hasConditionalRequirements ? 2 : 1,
     modes: Object.fromEntries(
       Object.entries(modes).map(([id, capability]) => [
         id,
@@ -566,6 +791,13 @@ export function toCanonicalGenerationConfig(modes) {
           input_media_types: [...capability.inputMediaTypes],
           supports_face: Boolean(capability.supportsFace),
           required_resource_keys: [...capability.requiredResourceKeys],
+          ...(capability.conditionalRequiredResourceKeys?.faceEnabled?.length
+            ? {
+                conditional_required_resource_keys: {
+                  face_enabled: [...capability.conditionalRequiredResourceKeys.faceEnabled],
+                },
+              }
+            : {}),
           limits: {
             max_prompt_length: capability.limits.maxPromptLength,
             max_images: capability.limits.maxImages,

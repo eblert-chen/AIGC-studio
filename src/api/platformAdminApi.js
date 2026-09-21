@@ -1,3 +1,6 @@
+const RELAY_ROUTE_IDENTITY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+export const RELAY_CHANNEL_TEST_TIMEOUT_MS = 11 * 60 * 1000;
+
 export function createPlatformAdminApi(core) {
   const { request, companyPath, makeRequestId, withQuery, PlatformApiError } = core;
 
@@ -26,6 +29,39 @@ export function createPlatformAdminApi(core) {
         companyContext: false,
       },
     ),
+    grantPersonalUserPoints: (
+      userId,
+      { amountPoints, note, idempotencyKey },
+      { signal } = {},
+    ) => {
+      if (!idempotencyKey) {
+        throw new PlatformApiError("赠送积分缺少稳定的幂等键，请重新打开操作窗口", {
+          code: "IDEMPOTENCY_KEY_REQUIRED",
+        });
+      }
+      return request(
+        `/api/v1/platform-admin/users/${encodeURIComponent(userId)}/points-grants`,
+        {
+          method: "POST",
+          body: {
+            amount_points: amountPoints,
+            note,
+            idempotency_key: idempotencyKey,
+          },
+          idempotencyKey,
+          signal,
+          companyContext: false,
+        },
+      );
+    },
+    listPersonalUserPointGrants: (userId, filters = {}, { signal } = {}) =>
+      request(
+        withQuery(
+          `/api/v1/platform-admin/users/${encodeURIComponent(userId)}/points-grants`,
+          filters,
+        ),
+        { signal, companyContext: false },
+      ),
     getPlatformDashboard: (filters = {}, { signal } = {}) =>
       request(withQuery("/api/v1/platform-admin/dashboard", filters), { signal }),
     listAdminCompanies: (filters = {}, { signal } = {}) =>
@@ -77,6 +113,30 @@ export function createPlatformAdminApi(core) {
         `/api/v1/platform-admin/companies/${encodeURIComponent(companyId)}/status`,
         { method: "PATCH", body: { status }, signal },
       ),
+    migrateAdminCompanyBillingToPoints: (
+      companyId,
+      { expectedAvailableCents, idempotencyKey },
+      { signal } = {},
+    ) => {
+      if (!idempotencyKey) {
+        throw new PlatformApiError("计费迁移缺少稳定的幂等键，请重新打开企业管理窗口", {
+          code: "IDEMPOTENCY_KEY_REQUIRED",
+        });
+      }
+      return request(
+        `/api/v1/platform-admin/companies/${encodeURIComponent(companyId)}/billing/migrate-to-points`,
+        {
+          method: "POST",
+          body: {
+            expected_available_cents: expectedAvailableCents,
+            idempotency_key: idempotencyKey,
+          },
+          idempotencyKey,
+          signal,
+          companyContext: false,
+        },
+      );
+    },
     rechargeAdminCompany: (
       companyId,
       { amountCents, note = "", idempotencyKey },
@@ -116,18 +176,128 @@ export function createPlatformAdminApi(core) {
       ),
     listAdminModels: ({ signal } = {}) =>
       request("/api/v1/platform-admin/models", { signal }),
+    reconcileAdminRelayModels: ({ signal } = {}) =>
+      request("/api/v1/platform-admin/relay-models/reconcile", {
+        method: "POST",
+        signal,
+        companyContext: false,
+      }),
     listAdminRelayModels: ({ signal } = {}) =>
       request("/api/v1/platform-admin/relay-models", { signal }),
+    listAdminPersonalModelGrants: ({ signal } = {}) =>
+      request("/api/v1/platform-admin/personal-model-grants", { signal }),
+    previewAdminPersonalModelGrantBatch: (changes, { signal } = {}) =>
+      request("/api/v1/platform-admin/personal-model-grants/batch/preview", {
+        method: "POST",
+        body: { changes },
+        signal,
+      }),
+    executeAdminPersonalModelGrantBatch: (
+      { changes, expectedSnapshot, reason, idempotencyKey },
+      { signal } = {},
+    ) =>
+      request("/api/v1/platform-admin/personal-model-grants/batch/execute", {
+        method: "POST",
+        body: {
+          changes,
+          expected_snapshot: expectedSnapshot,
+          reason: String(reason || "").trim(),
+          idempotency_key: idempotencyKey,
+        },
+        idempotencyKey,
+        signal,
+      }),
+    upsertAdminPersonalModelGrant: (
+      modelId,
+      {
+        expectedCapabilityVersion,
+        expectedQuoteRevision = null,
+        enabled,
+        pricePerSecondPoints = null,
+        pricePerItemPoints = null,
+        configOverride = {},
+        reason,
+      },
+      { signal } = {},
+    ) =>
+      request(
+        `/api/v1/platform-admin/personal-model-grants/${encodeURIComponent(modelId)}`,
+        {
+          method: "PUT",
+          body: {
+            expected_capability_version: expectedCapabilityVersion,
+            expected_quote_revision: expectedQuoteRevision,
+            enabled: Boolean(enabled),
+            price_per_second_points: pricePerSecondPoints,
+            price_per_item_points: pricePerItemPoints,
+            config_override: configOverride,
+            reason: String(reason || "").trim(),
+          },
+          signal,
+        },
+      ),
+    syncAdminRelayCapabilityCandidate: (
+      modelId,
+      {
+        expectedCapabilityVersion,
+        expectedCatalogRevision,
+        expectedCapabilityRevision,
+        reason,
+      },
+      { signal } = {},
+    ) =>
+      request(
+        `/api/v1/platform-admin/models/${encodeURIComponent(modelId)}/relay-capability/sync`,
+        {
+          method: "POST",
+          body: {
+            expected_capability_version: expectedCapabilityVersion,
+            ...(expectedCatalogRevision
+              ? { expected_catalog_revision: expectedCatalogRevision }
+              : {}),
+            ...(expectedCapabilityRevision
+              ? { expected_capability_revision: expectedCapabilityRevision }
+              : {}),
+            reason: String(reason || "").trim(),
+          },
+          signal,
+        },
+      ),
+    listAdminRelayCapabilityHistory: (modelId, { signal } = {}) =>
+      request(
+        `/api/v1/platform-admin/models/${encodeURIComponent(modelId)}/relay-capability-history`,
+        { signal },
+      ),
     approveAdminRelayCapability: (
       modelId,
-      { expectedCapabilityVersion },
+      {
+        expectedCapabilityVersion,
+        expectedCatalogRevision,
+        expectedCapabilityRevision,
+        expectedRoutingReleaseSha256,
+        reason,
+      },
       { signal } = {},
     ) =>
       request(
         `/api/v1/platform-admin/models/${encodeURIComponent(modelId)}/relay-capability`,
         {
           method: "POST",
-          body: { expected_capability_version: expectedCapabilityVersion },
+          body: {
+            expected_capability_version: expectedCapabilityVersion,
+            ...(expectedCatalogRevision
+              ? { expected_catalog_revision: expectedCatalogRevision }
+              : {}),
+            ...(expectedCapabilityRevision
+              ? { expected_capability_revision: expectedCapabilityRevision }
+              : {}),
+            ...(expectedRoutingReleaseSha256
+              ? { expected_routing_release_sha256: expectedRoutingReleaseSha256 }
+              : {}),
+            ...(String(reason || "").trim()
+              ? { reason: String(reason).trim() }
+              : {}),
+          },
           signal,
         },
       ),
@@ -226,6 +396,11 @@ export function createPlatformAdminApi(core) {
       ),
     listAdminAuditLogs: (filters = {}, { signal } = {}) =>
       request(withQuery("/api/v1/platform-admin/audit-logs", filters), { signal }),
+    listAdminTaskContent: (filters = {}, { signal } = {}) =>
+      request(withQuery("/api/v1/platform-admin/task-content", filters), {
+        signal,
+        companyContext: false,
+      }),
     getAdminConsumptionReport: (filters = {}, { signal } = {}) =>
       request(
         withQuery("/api/v1/platform-admin/reports/consumption", filters),
@@ -329,10 +504,22 @@ export function createPlatformAdminApi(core) {
       ),
     testAdminRelayChannel: (
       channelId,
-      { operationId, reason, approved },
+      { operationId, reason, approved, publicModelId, routeId, mode },
       { signal } = {},
-    ) =>
-      request(
+    ) => {
+      const normalizedPublicModelId = String(publicModelId || "").trim();
+      const normalizedRouteId = String(routeId || "").trim();
+      const normalizedMode = String(mode || "").trim();
+      if (
+        !RELAY_ROUTE_IDENTITY_PATTERN.test(normalizedPublicModelId)
+        || !RELAY_ROUTE_IDENTITY_PATTERN.test(normalizedRouteId)
+      ) {
+        throw new PlatformApiError(
+          "Relay 渠道测试必须选择 Platform 发布证据中的受控模型与路由",
+          { code: "RELAY_ROUTE_IDENTITY_REQUIRED" },
+        );
+      }
+      return request(
         `/api/v1/platform-admin/relay/channels/${encodeURIComponent(channelId)}/test`,
         {
           method: "POST",
@@ -340,11 +527,16 @@ export function createPlatformAdminApi(core) {
             operation_id: operationId,
             reason,
             approved,
+            public_model_id: normalizedPublicModelId,
+            route_id: normalizedRouteId,
+            ...(normalizedMode ? { mode: normalizedMode } : {}),
           },
           idempotencyKey: operationId,
           signal,
+          timeoutMs: RELAY_CHANNEL_TEST_TIMEOUT_MS,
         },
-      ),
+      );
+    },
     setAdminRelayChannelStatus: (
       channelId,
       {
@@ -381,6 +573,16 @@ export function createPlatformAdminApi(core) {
         `/api/v1/platform-admin/relay/submission-unknown/${encodeURIComponent(jobId)}`,
         { signal },
       ),
+    listAdminRelayProviderResultReconciliations: (filters = {}, { signal } = {}) =>
+      request(
+        withQuery("/api/v1/platform-admin/relay/provider-result-reconciliation", filters),
+        { signal },
+      ),
+    getAdminRelayProviderResultReconciliation: (jobId, { signal } = {}) =>
+      request(
+        `/api/v1/platform-admin/relay/provider-result-reconciliation/${encodeURIComponent(jobId)}`,
+        { signal },
+      ),
     getAdminRelayUnknownSubmissionResult: (
       jobId,
       { operationId } = {},
@@ -402,6 +604,7 @@ export function createPlatformAdminApi(core) {
         expected_reconciliation_token,
         verification_reference,
         reason,
+        synchronous_result,
       },
       { signal } = {},
     ) => request(
@@ -418,6 +621,7 @@ export function createPlatformAdminApi(core) {
           expected_reconciliation_token,
           verification_reference,
           reason,
+          ...(synchronous_result ? { synchronous_result } : {}),
         },
         signal,
       },

@@ -2,6 +2,10 @@
 .git
 .gitignore
 .pytest_cache
+.pytest-*
+.codex-audit-*
+.review-*
+.tmp
 __pycache__
 *.py[cod]
 *.db

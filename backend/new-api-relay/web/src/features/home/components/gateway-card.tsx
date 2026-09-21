@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useTranslation } from 'react-i18next'
 
 import { Separator } from '@/components/ui/separator'
+import { SystemBrandLockup } from '@/components/layout/components/system-brand-lockup'
 
 import { getGatewayFeatures } from '../constants'
 
@@ -45,14 +46,13 @@ export function GatewayCard({ logo, systemName }: GatewayCardProps) {
       <div className='relative'>
         {/* Gateway Header */}
         <div className='mb-8 flex items-center justify-center gap-3'>
-          <img
-            src={logo}
-            alt={systemName}
-            className='h-12 w-12 rounded-lg object-cover'
+          <SystemBrandLockup
+            systemName={systemName}
+            logo={logo}
+            variant='wordmark'
+            imageClassName='h-12 max-w-[12rem]'
+            nameClassName='text-2xl font-bold'
           />
-          <h3 className='from-foreground to-foreground/70 bg-gradient-to-r bg-clip-text text-2xl font-bold text-transparent'>
-            {systemName}
-          </h3>
         </div>
 
         {/* Features Grid */}

@@ -40,7 +40,10 @@ func SetPlatformGenerationRouter(router *gin.Engine) {
 		operationsRouter.POST("/channels/:channel_id/test", controller.TestPlatformChannelControlChannel)
 		operationsRouter.POST("/channels/:channel_id/status", controller.UpdatePlatformChannelControlStatus)
 		operationsRouter.GET("/channels/:channel_id/operations/:operation_id", controller.GetPlatformChannelControlOperation)
+		operationsRouter.POST("/channels/:channel_id/operations/:operation_id/reconcile-no-creation", controller.ReconcilePlatformChannelControlTestNoCreation)
 		operationsRouter.GET("/submission-unknown", controller.ListPlatformGenerationSubmissionUnknown)
+		operationsRouter.GET("/provider-result-reconciliation", controller.ListPlatformGenerationProviderResultReconciliations)
+		operationsRouter.GET("/:job_id/provider-result-reconciliation", controller.GetPlatformGenerationProviderResultReconciliation)
 		operationsRouter.GET("/:job_id/reconciliation", controller.GetPlatformGenerationSubmissionUnknown)
 		operationsRouter.GET("/:job_id/reconciliation-result", controller.GetPlatformGenerationSubmissionUnknownResult)
 		operationsRouter.POST("/:job_id/reconciliation", controller.ResolvePlatformGenerationSubmissionUnknown)
@@ -55,6 +58,7 @@ func SetPlatformGenerationRouter(router *gin.Engine) {
 	runtimeIdentityRouter.Use(middleware.PlatformRelayRequestID())
 	{
 		runtimeIdentityRouter.GET("/runtime-build-identity", controller.PlatformRelayRuntimeBuildIdentity)
+		runtimeIdentityRouter.GET("/model-release-evidence", controller.PlatformRelayModelReleaseEvidence)
 	}
 
 	nativeRouter := router.Group("/internal/platform-generations")

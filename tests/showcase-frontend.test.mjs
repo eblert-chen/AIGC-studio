@@ -16,10 +16,7 @@ import {
   showcaseMutationPayload,
   validateShowcaseDraft,
 } from "../src/admin/showcase/showcaseModel.js";
-import {
-  createShowcaseDemoSnapshot,
-  SHOWCASE_DEMO_ARTWORKS,
-} from "../src/admin/showcase/showcaseDemoData.js";
+import { createShowcaseDemoSnapshot } from "../src/admin/showcase/showcaseDemoData.js";
 
 function jsonResponse(payload, { status = 200, headers = {} } = {}) {
   return new Response(JSON.stringify(payload), {
@@ -259,9 +256,6 @@ test("development showcase data is complete, explicit, and owner-operable in mem
   assert.ok(snapshot.liveRelease);
   assert.equal(snapshot.media.length, snapshot.draft.items.length);
   assert.ok(snapshot.releases.every((release) => release.publishedBy.includes("演示")));
-  assert.ok(SHOWCASE_DEMO_ARTWORKS.every((item) => (
-    /^[0-9a-f-]{36}$/u.test(item.artifact_id) && item.preview_url.startsWith("/")
-  )));
 });
 
 test("demo rollback manifest comparison leaves draft data intact", () => {
@@ -271,7 +265,7 @@ test("demo rollback manifest comparison leaves draft data intact", () => {
   assert.equal(showcaseManifestsEqual(draftBefore.items, structuredClone(draftBefore.items)), true);
 });
 
-test("direct uploads fail early for video while verified artwork imports remain available", () => {
+test("showcase drafts reject video uploads and personal artifact sources", () => {
   const values = {
     title: "视频案例",
     section: "视频",
@@ -281,12 +275,12 @@ test("direct uploads fail early for video while verified artwork imports remain 
     file: new Blob(["video"], { type: "video/mp4" }),
   };
   assert.match(validateShowcaseDraft(values), /本地上传仅支持 JPEG、PNG 或 WebP 图片/);
-  assert.equal(validateShowcaseDraft({
+  assert.match(validateShowcaseDraft({
     ...values,
     mediaSource: "artifact",
     file: null,
     sourceTaskArtifactId: "00000000-0000-0000-0000-000000000071",
-  }), "");
+  }), /请选择有效的媒体来源/);
   assert.match(validateShowcaseDraft({
     ...values,
     file: new Blob(["image"], { type: "image/png" }),
@@ -325,7 +319,7 @@ test("showcase facade preserves ETag, same-origin media, strict bodies, and rele
     if (path === "/api/v1/platform-admin/showcase/media") {
       return jsonResponse({
         id: "media-imported",
-        source_task_artifact_id: "00000000-0000-0000-0000-000000000071",
+        source_task_artifact_id: null,
         content_url: "/api/v1/showcase/media/media-imported/content",
       }, { status: 201 });
     }
@@ -429,26 +423,24 @@ test("showcase facade preserves ETag, same-origin media, strict bodies, and rele
   assert.equal(calls[5].options.headers["Idempotency-Key"], "rollback-stable-key");
 
   const imported = await client.uploadAdminShowcaseMedia(
-    { sourceTaskArtifactId: "00000000-0000-0000-0000-000000000071" },
-    { idempotencyKey: "artifact-import-stable-key" },
+    { file: new Blob(["image"], { type: "image/png" }) },
+    { idempotencyKey: "showcase-upload-stable-key" },
   );
-  assert.equal(
-    calls[6].options.body.get("source_task_artifact_id"),
-    "00000000-0000-0000-0000-000000000071",
-  );
-  assert.equal(calls[6].options.body.get("file"), null);
-  assert.equal(calls[6].options.headers["Idempotency-Key"], "artifact-import-stable-key");
+  assert.ok(calls[6].options.body.get("file") instanceof Blob);
+  assert.equal(calls[6].options.body.get("source_task_artifact_id"), null);
+  assert.equal(calls[6].options.headers["Idempotency-Key"], "showcase-upload-stable-key");
   assert.equal(
     imported.content_url,
     "https://platform.example/api/v1/showcase/media/media-imported/content",
   );
   await assert.rejects(
     () => client.uploadAdminShowcaseMedia({
-      sourceTaskArtifactId: "https://storage.example/not-an-artifact-id.mp4",
+      sourceTaskArtifactId: "00000000-0000-0000-0000-000000000071",
     }),
     (error) => error instanceof PlatformApiError
-      && error.code === "INVALID_SHOWCASE_ARTIFACT_ID",
+      && error.code === "SHOWCASE_ARTIFACT_IMPORT_UNAVAILABLE",
   );
+  assert.equal(calls.length, 7, "personal artifact rejection must not issue a request");
   await assert.rejects(
     () => client.uploadAdminShowcaseMedia(new Blob(["video"], { type: "video/mp4" })),
     (error) => error instanceof PlatformApiError
@@ -516,7 +508,9 @@ test("owner-only Operations module and responsive route stay explicit", async ()
   assert.match(consoleSource, /item\.id !== "showcase" \|\| isPlatformOwner === true/);
   assert.match(containerSource, /identity\?\.is_platform_owner === true/);
   assert.match(containerSource, /<ShowcaseOperationsContainer/);
-  assert.match(showcaseContainerSource, /sourceTaskArtifactId: artifactId/);
+  assert.doesNotMatch(showcaseContainerSource, /listPersonalArtworks|ownedArtworks/);
+  assert.doesNotMatch(showcaseContainerSource, /sourceTaskArtifactId: artifactId/);
+  assert.doesNotMatch(showcaseScreenSource, /本人作品|Artifact ID/);
   assert.match(showcaseContainerSource, /client\.unpublishAdminShowcase/);
   assert.match(showcaseContainerSource, /expectedPublicationVersion: snapshot\.publicationVersion/);
   assert.match(showcaseContainerSource, /showcase-unpublish/);
@@ -534,7 +528,7 @@ test("owner-only Operations module and responsive route stay explicit", async ()
   assert.match(identitySource, /label: "平台所有者 · 周宁"/);
   assert.match(identitySource, /is_platform_owner: true/);
   const demoSaveBranch = showcaseContainerSource.match(
-    /const artifactId = [\s\S]*?if \(demoMode\) \{([\s\S]*?)\n    \}\n    const fileSignature/,
+    /const save = useCallback[\s\S]*?if \(demoMode\) \{([\s\S]*?)\n    \}\n    const fileSignature/,
   );
   assert.ok(demoSaveBranch, "demo save branch must stay explicit");
   assert.doesNotMatch(demoSaveBranch[1], /client\./);

@@ -320,6 +320,40 @@ func TestPlatformProviderReadinessDoesNotTreatEmptyCostLedgerAsComplete(t *testi
 	assert.True(t, summary.Degraded)
 }
 
+func TestPlatformProviderReadinessBlocksOnProviderResultReconciliationBacklog(t *testing.T) {
+	setPlatformProviderRuntimeTestEnvironment(t)
+	preparePlatformProviderMonitorCostServiceTest(t)
+	claim, err := model.ClaimPlatformProviderMonitorLease("runtime-worker", 30*time.Second)
+	require.NoError(t, err)
+	won, err := model.CompletePlatformProviderMonitorCycle(claim.Token, "")
+	require.NoError(t, err)
+	require.True(t, won)
+
+	now := time.Now().UTC()
+	job := model.PlatformGenerationJob{
+		ID:               uuid.NewString(),
+		TenantID:         uuid.NewString(),
+		SourceClientID:   "platform-readiness-test",
+		RequestID:        uuid.NewString(),
+		IdempotencyKey:   uuid.NewString(),
+		RequestHash:      strings.Repeat("a", 64),
+		RequestJSON:      `{}`,
+		Model:            "video-model",
+		Mode:             "text_to_video",
+		Status:           model.PlatformGenerationStatusReconciliationRequired,
+		ErrorCode:        model.PlatformGenerationErrorProviderPollReconciliationRequired,
+		ErrorDetailsJSON: model.PlatformGenerationProviderReconciliationDetailsJSON(model.PlatformGenerationProviderReconciliationKindProviderResultProof),
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	require.NoError(t, model.DB.Create(&job).Error)
+
+	summary, err := GetPlatformProviderReadinessSummary(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), summary.ProviderResultReconciliationBacklog)
+	assert.True(t, summary.Degraded)
+}
+
 func TestPlatformProviderRuntimeCoordinatorCancelsAndJoinsEveryWorker(t *testing.T) {
 	var coordinator platformProviderRuntimeCoordinator
 	started := make(chan struct{}, 2)

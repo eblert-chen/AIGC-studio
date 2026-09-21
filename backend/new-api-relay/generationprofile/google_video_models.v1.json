@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-09-01",
+  "models": [
+    {
+      "provider_model_id": "gemini-omni-1.1-flash",
+      "public_model_id": "gemini-omni-1.1-flash",
+      "display_name": "Gemini Omni 1.1 Flash",
+      "product_family": "omni",
+      "access_surface": "gemini_api",
+      "native_channel_type": 24,
+      "lifecycle": "acceptance_candidate",
+      "evidence_status": "route_acceptance_required",
+      "new_routes_allowed": true,
+      "adapter_profile_id": "google.gemini.omni-1.1-flash.basic-video.v1",
+      "official_sources": [
+        "https://ai.google.dev/gemini-api/docs/models/gemini-omni-flash",
+        "https://ai.google.dev/gemini-api/docs/omni"
+      ],
+      "provider_semantics": [
+        "text_to_video",
+        "image_to_video",
+        "reference_to_video",
+        "edit",
+        "extend"
+      ],
+      "published_semantics": [
+        "text_to_video",
+        "image_to_video"
+      ],
+      "blocked_semantics": [
+        "reference_to_video",
+        "edit",
+        "extend"
+      ],
+      "generates_audio": true,
+      "notes": [
+        "This reviewed entry is an acceptance candidate only. It does not prove account access, pricing, paid generation, artifact storage, provider-cost reconciliation or production route readiness.",
+        "The exact stable Gemini Developer API model ID is gemini-omni-1.1-flash. It uses POST /v1beta/interactions; it is not a Veo predictLongRunning alias.",
+        "The provider supports text, image and video input, conversational editing with previous_interaction_id, reference generation and tail-only extension. The frozen public generation contract cannot bind an interaction lineage or distinguish edit from extend, so only stateless text-to-video and image-to-video are published here.",
+        "The effective implementation ceiling accepts at most two images and one output, 3 through 10 seconds, 16:9 or 9:16, and 360p, 720p, 1080p or 4k. One image is ordinary image-to-video; two images can express the documented first/last-frame or subject-reference case through the Interactions input. The 2000-character prompt limit is a conservative product admission limit, not a claim of the provider maximum.",
+        "Omni generates a video with audio and returns MP4 content. Audio references are not accepted by the current API. All generated videos include SynthID; artifact verification and durable storage are still required before terminal success.",
+        "Uploaded videos for edit or extension are limited to ten seconds and extension appends only at the end. Those semantics require a versioned interaction/task contract and are blocked rather than being mislabeled as generic video_to_video."
+      ],
+      "capability": {
+        "schema_version": 1,
+        "modes": {
+          "text_to_video": {
+            "input_media_types": [],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 2000,
+              "max_images": 0,
+              "max_videos": 0,
+              "max_audio": 0,
+              "duration_seconds": [3, 4, 5, 6, 7, 8, 9, 10],
+              "aspect_ratios": ["16:9", "9:16"],
+              "resolutions": ["360p", "720p", "1080p", "4k"],
+              "output_counts": [1]
+            }
+          },
+          "image_to_video": {
+            "input_media_types": ["image"],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 2000,
+              "max_images": 2,
+              "max_videos": 0,
+              "max_audio": 0,
+              "duration_seconds": [3, 4, 5, 6, 7, 8, 9, 10],
+              "aspect_ratios": ["16:9", "9:16"],
+              "resolutions": ["360p", "720p", "1080p", "4k"],
+              "output_counts": [1]
+            }
+          }
+        }
+      }
+    },
+    {
+      "provider_model_id": "veo-3.1-generate-preview",
+      "public_model_id": "veo-3.1",
+      "display_name": "Veo 3.1",
+      "product_family": "veo",
+      "access_surface": "gemini_api",
+      "native_channel_type": 24,
+      "lifecycle": "acceptance_candidate",
+      "evidence_status": "route_acceptance_required",
+      "new_routes_allowed": true,
+      "adapter_profile_id": "google.gemini.veo-3.1.video.v1",
+      "official_sources": [
+        "https://ai.google.dev/gemini-api/docs/veo"
+      ],
+      "provider_semantics": [
+        "text_to_video",
+        "image_to_video",
+        "interpolation",
+        "reference_to_video",
+        "extend"
+      ],
+      "published_semantics": ["text_to_video", "image_to_video"],
+      "blocked_semantics": ["interpolation", "reference_to_video", "extend"],
+      "generates_audio": true,
+      "notes": [
+        "This is the exact Gemini Developer API preview ID, not the Vertex GA -001 ID. It remains route-acceptance-required and is not production evidence.",
+        "The existing converter preserves one prompt, at most one initial image, duration, aspect ratio, resolution, sampleCount=1 and one MP4 result. It does not preserve lastFrame, referenceImages or a prior Veo video, so interpolation, reference generation and extension remain blocked.",
+        "The provider allows 4, 6 or 8 seconds, but 1080p and 4k require eight seconds. Since capability v1 cannot express a duration-resolution dependency, the executable subset publishes eight seconds with 720p, 1080p and 4k so every advertised combination is valid.",
+        "The provider prompt ceiling is 1024 tokens while the public schema counts characters. The 512-character limit is a conservative UI guard and does not replace provider-token admission at submission time.",
+        "Gemini API Veo 3.1 always generates audio with the video. The current public capability has no audio-output toggle and therefore must not display one."
+      ],
+      "capability": {
+        "schema_version": 1,
+        "modes": {
+          "text_to_video": {
+            "input_media_types": [],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 512,
+              "max_images": 0,
+              "max_videos": 0,
+              "max_audio": 0,
+              "duration_seconds": [8],
+              "aspect_ratios": ["16:9", "9:16"],
+              "resolutions": ["720p", "1080p", "4k"],
+              "output_counts": [1]
+            }
+          },
+          "image_to_video": {
+            "input_media_types": ["image"],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 512,
+              "max_images": 1,
+              "max_videos": 0,
+              "max_audio": 0,
+              "duration_seconds": [8],
+              "aspect_ratios": ["16:9", "9:16"],
+              "resolutions": ["720p", "1080p", "4k"],
+              "output_counts": [1]
+            }
+          }
+        }
+      }
+    },
+    {
+      "provider_model_id": "veo-3.1-fast-generate-preview",
+      "public_model_id": "veo-3.1-fast",
+      "display_name": "Veo 3.1 Fast",
+      "product_family": "veo",
+      "access_surface": "gemini_api",
+      "native_channel_type": 24,
+      "lifecycle": "acceptance_candidate",
+      "evidence_status": "route_acceptance_required",
+      "new_routes_allowed": true,
+      "adapter_profile_id": "google.gemini.veo-3.1.video.v1",
+      "official_sources": [
+        "https://ai.google.dev/gemini-api/docs/veo"
+      ],
+      "provider_semantics": [
+        "text_to_video",
+        "image_to_video",
+        "interpolation",
+        "reference_to_video",
+        "extend"
+      ],
+      "published_semantics": ["text_to_video", "image_to_video"],
+      "blocked_semantics": ["interpolation", "reference_to_video", "extend"],
+      "generates_audio": true,
+      "notes": [
+        "This is the exact Gemini Developer API Fast preview ID, not the Vertex GA -001 ID. It remains route-acceptance-required and is not production evidence.",
+        "The existing converter preserves only stateless text-to-video and one-initial-image image-to-video. First/last-frame interpolation, reference images and Veo-video extension are blocked until their distinct request fields and artifact lineage are preserved.",
+        "The safe public rectangle is one eight-second MP4 at 720p, 1080p or 4k in 16:9 or 9:16. The model's shorter durations are intentionally withheld because capability v1 cannot couple them to the resolution constraint.",
+        "The 512-character prompt guard does not replace the provider's 1024-token limit. Gemini API Veo audio is always on and is not exposed as a user-selectable option."
+      ],
+      "capability": {
+        "schema_version": 1,
+        "modes": {
+          "text_to_video": {
+            "input_media_types": [],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 512,
+              "max_images": 0,
+              "max_videos": 0,
+              "max_audio": 0,
+              "duration_seconds": [8],
+              "aspect_ratios": ["16:9", "9:16"],
+              "resolutions": ["720p", "1080p", "4k"],
+              "output_counts": [1]
+            }
+          },
+          "image_to_video": {
+            "input_media_types": ["image"],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 512,
+              "max_images": 1,
+              "max_videos": 0,
+              "max_audio": 0,
+              "duration_seconds": [8],
+              "aspect_ratios": ["16:9", "9:16"],
+              "resolutions": ["720p", "1080p", "4k"],
+              "output_counts": [1]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from ..models import (
+    BillingUnit,
     Company,
     CompanyMembership,
     CompanyModelGrant,
@@ -12,9 +15,32 @@ from ..models import (
     ModelDefinition,
     ResourceDefinition,
     User,
+    UserAccountType,
 )
 from .companies import CompanyService
 from .errors import ConflictError, NotFoundError
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _next_platform_admin_timestamp(session: Session) -> datetime:
+    """Keep development bootstrap ownership ordered even on a frozen clock."""
+
+    candidate = datetime.now(timezone.utc)
+    latest = _as_utc(
+        session.scalar(
+            select(func.max(User.created_at)).where(
+                User.is_platform_admin.is_(True)
+            )
+        )
+    )
+    if latest is not None and candidate <= latest:
+        return latest + timedelta(microseconds=1)
+    return candidate
 
 
 class PlatformAdminService:
@@ -25,14 +51,44 @@ class PlatformAdminService:
         normalized = email.strip().lower()
         if session.scalar(select(User).where(User.email == normalized)):
             raise ConflictError("该邮箱已经存在")
+        created_at = _next_platform_admin_timestamp(session)
         user = User(
             email=normalized,
             display_name=display_name.strip(),
             is_platform_admin=True,
+            account_type=UserAccountType.PLATFORM_ADMIN,
+            created_at=created_at,
+            updated_at=created_at,
         )
         session.add(user)
         session.flush()
         return user
+
+    @staticmethod
+    def first_unambiguous_platform_admin(session: Session) -> User | None:
+        """Return the original admin only when its persisted order is provable.
+
+        The fallback is development-only and confers owner authority. Historical
+        rows with a colliding earliest timestamp therefore fail closed instead
+        of selecting whichever random UUID happens to sort first.
+        """
+
+        admins = list(
+            session.scalars(
+                select(User)
+                .where(User.is_platform_admin.is_(True))
+                .order_by(User.created_at.asc(), User.id.asc())
+                .limit(2)
+            ).all()
+        )
+        if not admins:
+            return None
+        if (
+            len(admins) > 1
+            and _as_utc(admins[0].created_at) == _as_utc(admins[1].created_at)
+        ):
+            return None
+        return admins[0]
 
     @staticmethod
     def page_companies(
@@ -83,8 +139,14 @@ class PlatformAdminService:
 
     @staticmethod
     def company_entitlements(session: Session, *, company_id: str) -> dict:
-        if session.get(Company, company_id) is None:
+        company = session.get(Company, company_id)
+        if company is None:
             raise NotFoundError("公司不存在")
+        billing_unit = (
+            BillingUnit.POINT
+            if company.billing_version == 2
+            else BillingUnit.CNY_CENT
+        )
 
         model_rows = session.execute(
             select(ModelDefinition, CompanyModelGrant)
@@ -132,6 +194,34 @@ class PlatformAdminService:
                     "price_per_item_cents": (
                         grant.price_per_item_cents if grant else None
                     ),
+                    "price_per_second_points": (
+                        grant.price_per_second_points if grant else None
+                    ),
+                    "price_per_item_points": (
+                        grant.price_per_item_points if grant else None
+                    ),
+                    "point_price_candidate_per_second": (
+                        grant.point_price_candidate_per_second if grant else None
+                    ),
+                    "point_price_candidate_per_item": (
+                        grant.point_price_candidate_per_item if grant else None
+                    ),
+                    "point_price_candidate_revision": (
+                        grant.point_price_candidate_revision if grant else None
+                    ),
+                    "point_price_candidate_created_at": (
+                        _as_utc(grant.point_price_candidate_created_at)
+                        if grant
+                        else None
+                    ),
+                    "point_price_candidate_version_id": (
+                        grant.point_price_candidate_version_id if grant else None
+                    ),
+                    "point_price_active_version_id": (
+                        grant.point_price_active_version_id if grant else None
+                    ),
+                    "billing_unit": billing_unit,
+                    "billing_version": company.billing_version,
                     "config_override": grant.config_override if grant else {},
                     "call_quota": grant.call_quota if grant else None,
                     "concurrency_limit": (
@@ -139,6 +229,9 @@ class PlatformAdminService:
                     ),
                     "effective_at": grant.effective_at if grant else None,
                     "expires_at": grant.expires_at if grant else None,
+                    "grant_updated_at": (
+                        _as_utc(grant.updated_at) if grant else None
+                    ),
                 }
             )
 
@@ -159,4 +252,10 @@ class PlatformAdminService:
             }
             for resource, grant in resource_rows
         ]
-        return {"company_id": company_id, "models": models, "resources": resources}
+        return {
+            "company_id": company_id,
+            "billing_unit": billing_unit,
+            "billing_version": company.billing_version,
+            "models": models,
+            "resources": resources,
+        }

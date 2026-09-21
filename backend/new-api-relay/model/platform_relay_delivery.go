@@ -355,11 +355,18 @@ func DeadLetterPlatformRelayExternalDelivery(
 }
 
 func GetPlatformRelayDeliveryCounts(eventKind string) (PlatformRelayDeliveryCounts, error) {
+	return GetPlatformRelayDeliveryCountsWithDB(DB, eventKind)
+}
+
+func GetPlatformRelayDeliveryCountsWithDB(db *gorm.DB, eventKind string) (PlatformRelayDeliveryCounts, error) {
 	var counts PlatformRelayDeliveryCounts
 	if !platformRelayDeliveryKindValid(eventKind) {
 		return counts, fmt.Errorf("Relay external delivery event kind is invalid")
 	}
-	rows, err := DB.Model(&PlatformRelayExternalDelivery{}).
+	if db == nil {
+		return counts, errors.New("Relay external delivery database is unavailable")
+	}
+	rows, err := db.Model(&PlatformRelayExternalDelivery{}).
 		Select("state, COUNT(*) AS total").
 		Where("event_kind = ?", eventKind).
 		Group("state").Rows()

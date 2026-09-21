@@ -13,7 +13,11 @@ from platform_api.services.quote_revision import model_grant_quote_revision
 from platform_api.services.tasks import TaskService
 
 from .conftest import TEST_RELAY_CAPABILITY_REVISION
+from .legacy_commercial_isolation import isolate_legacy_commercial_gate
 from .test_generation_capability_v1 import _side_effect_snapshot
+from .test_model_capability_v1_contract import (
+    _request_with_fixture_distribution_evidence,
+)
 
 
 def add_model_and_grant(
@@ -25,6 +29,7 @@ def add_model_and_grant(
     item_price: int | None,
     capability_config: dict,
 ) -> str:
+    isolate_legacy_commercial_gate(app)
     with app.state.session_factory.begin() as session:
         model = ModelDefinition(
             slug=slug,
@@ -321,14 +326,19 @@ def test_model_grant_requires_exactly_one_effective_price(client, tenant):
     )
     base = {"model_id": model.json()["id"], "enabled": True}
 
-    missing = client.put(grant_url, headers=admin_headers, json=base)
+    def grant_request(payload):
+        return _request_with_fixture_distribution_evidence(
+            client,
+            model.json()["id"],
+            lambda: client.put(grant_url, headers=admin_headers, json=payload),
+        )
+
+    missing = grant_request(base)
     assert missing.status_code == 409
     assert missing.json()["code"] == "conflict"
 
-    ambiguous = client.put(
-        grant_url,
-        headers=admin_headers,
-        json={
+    ambiguous = grant_request(
+        {
             **base,
             "price_per_second_cents": 75,
             "price_per_item_cents": 240,
@@ -337,19 +347,15 @@ def test_model_grant_requires_exactly_one_effective_price(client, tenant):
     assert ambiguous.status_code == 409
     assert ambiguous.json()["code"] == "conflict"
 
-    per_second = client.put(
-        grant_url,
-        headers=admin_headers,
-        json={**base, "price_per_second_cents": 75},
+    per_second = grant_request(
+        {**base, "price_per_second_cents": 75},
     )
     assert per_second.status_code == 200, per_second.text
     assert per_second.json()["price_per_second_cents"] == 75
     assert per_second.json()["price_per_item_cents"] is None
 
-    per_item = client.put(
-        grant_url,
-        headers=admin_headers,
-        json={**base, "price_per_item_cents": 240},
+    per_item = grant_request(
+        {**base, "price_per_item_cents": 240},
     )
     assert per_item.status_code == 409
     assert per_item.json()["code"] == "conflict"

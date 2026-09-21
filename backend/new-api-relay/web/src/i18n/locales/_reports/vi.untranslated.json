@@ -1,0 +1,22 @@
+{
+  "An irreversible digest of the reason is retained in the operator audit trail; the text itself is not stored.": "An irreversible digest of the reason is retained in the operator audit trail; the text itself is not stored.",
+  "Confirm your identity before replacing the sealed provider credential.": "Confirm your identity before replacing the sealed provider credential.",
+  "Control revision is missing. Refresh and try again.": "Control revision is missing. Refresh and try again.",
+  "Disable {{provider}} and remove it from active routing until an operator resumes it.": "Disable {{provider}} and remove it from active routing until an operator resumes it.",
+  "Only super administrators can write or rotate credentials. Stored keys are never returned to the browser.": "Only super administrators can write or rotate credentials. Stored keys are never returned to the browser.",
+  "Paste a new provider key and record why this change is required.": "Paste a new provider key and record why this change is required.",
+  "Provider identity, account, and region are controlled by the onboarding contract.": "Provider identity, account, and region are controlled by the onboarding contract.",
+  "Record the operator reason": "Record the operator reason",
+  "Refresh to try again.": "Refresh to try again.",
+  "Resume {{provider}} and return it to managed routing.": "Resume {{provider}} and return it to managed routing.",
+  "Routing and acceptance": "Routing and acceptance",
+  "Security proof is missing. Verify and try again.": "Security proof is missing. Verify and try again.",
+  "The key is sent once for sealing. It is never returned, displayed, or copied from this console.": "The key is sent once for sealing. It is never returned, displayed, or copied from this console.",
+  "The server has not published a provider onboarding contract for this environment.": "The server has not published a provider onboarding contract for this environment.",
+  "This field is cleared when the drawer closes or the save succeeds.": "This field is cleared when the drawer closes or the save succeeds.",
+  "Configure a credential to begin onboarding.": "Configure a credential to begin onboarding.",
+  "Managed channel and route test": "Managed channel and route test",
+  "Reserved channel conflicts with existing configuration": "Reserved channel conflicts with existing configuration",
+  "Refresh to obtain the current control revision": "Refresh to obtain the current control revision",
+  "Materialize the Relay route before changing channel state": "Materialize the Relay route before changing channel state"
+}

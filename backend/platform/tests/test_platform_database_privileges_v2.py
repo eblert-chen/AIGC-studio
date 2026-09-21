@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,11 +13,51 @@ from platform_api import database_privileges_behavior_v2 as behavior_v2
 from platform_api import database_privileges_behavior_v3 as behavior_v3
 from platform_api import database_privileges_behavior_v4 as behavior_v4
 from platform_api import database_privileges_behavior_v5 as behavior_v5
+from platform_api import database_privileges_behavior_v6 as behavior_v6
+from platform_api import database_privileges_behavior_v7 as behavior_v7
+from platform_api import database_privileges_behavior_v8 as behavior_v8
+from platform_api import database_privileges_behavior_v9 as behavior_v9
+from platform_api import database_privileges_behavior_v10 as behavior_v10
+from platform_api import database_privileges_behavior_v11 as behavior_v11
+from platform_api import database_privileges_behavior_v12 as behavior_v12
+from platform_api import database_privileges_behavior_v13 as behavior_v13
+from platform_api import database_privileges_behavior_v14 as behavior_v14
+from platform_api import database_privileges_behavior_v15 as behavior_v15
+from platform_api import database_privileges_behavior_v16 as behavior_v16
+from platform_api import database_privileges_behavior_v17 as behavior_v17
+from platform_api import database_privileges_behavior_v18 as behavior_v18
+from platform_api import database_privileges_behavior_v19 as behavior_v19
+from platform_api import database_privileges_behavior_v20 as behavior_v20
+from platform_api import database_privileges_behavior_v21 as behavior_v21
+from platform_api import database_privileges_behavior_v22 as behavior_v22
+from platform_api import database_privileges_behavior_v23 as behavior_v23
+from platform_api import database_privileges_behavior_v24 as behavior_v24
+from platform_api import database_privileges_behavior_v25 as behavior_v25
 from platform_api import database_privileges_v1 as policy_v1
 from platform_api import database_privileges_v2 as policy_v2
 from platform_api import database_privileges_v3 as policy_v3
 from platform_api import database_privileges_v4 as policy_v4
 from platform_api import database_privileges_v5 as policy_v5
+from platform_api import database_privileges_v6 as policy_v6
+from platform_api import database_privileges_v7 as policy_v7
+from platform_api import database_privileges_v8 as policy_v8
+from platform_api import database_privileges_v9 as policy_v9
+from platform_api import database_privileges_v10 as policy_v10
+from platform_api import database_privileges_v11 as policy_v11
+from platform_api import database_privileges_v12 as policy_v12
+from platform_api import database_privileges_v13 as policy_v13
+from platform_api import database_privileges_v14 as policy_v14
+from platform_api import database_privileges_v15 as policy_v15
+from platform_api import database_privileges_v16 as policy_v16
+from platform_api import database_privileges_v17 as policy_v17
+from platform_api import database_privileges_v18 as policy_v18
+from platform_api import database_privileges_v19 as policy_v19
+from platform_api import database_privileges_v20 as policy_v20
+from platform_api import database_privileges_v21 as policy_v21
+from platform_api import database_privileges_v22 as policy_v22
+from platform_api import database_privileges_v23 as policy_v23
+from platform_api import database_privileges_v24 as policy_v24
+from platform_api import database_privileges_v25 as policy_v25
 from platform_api.database import Base
 from platform_api.database_system_semantic_v1 import (
     POSTGRES16_DEBIAN_PGAUDIT_SYSTEM_SEMANTIC_SHA256,
@@ -81,16 +122,46 @@ def test_frozen_v4_policy_and_behavior_sources_are_byte_exact() -> None:
     )
 
 
-def test_runtime_facade_selects_v5_and_keeps_frozen_registry_entries() -> None:
-    assert privileges.CURRENT_PLATFORM_DATABASE_PRIVILEGE_POLICY is policy_v5
-    assert privileges.CURRENT_PLATFORM_DATABASE_PRIVILEGE_BEHAVIOR is behavior_v5
-    assert privileges.PLATFORM_ALEMBIC_HEAD == policy_v5.ALEMBIC_HEAD
+def test_frozen_v5_policy_and_behavior_sources_are_byte_exact() -> None:
+    package = Path(__file__).parents[1] / "platform_api"
+    assert _normalized_sha256(package / "database_privileges_v5.py") == (
+        "ca5fc6723200a0485376a4f89cda194bb6cc3590da132fefab95ce1ea581c51b"
+    )
+    assert _normalized_sha256(package / "database_privileges_behavior_v5.py") == (
+        "3f6093534676f32fe63bad6ae874f5d4f1cd67896ae7ec86b8fd2b20a2913120"
+    )
+
+
+def test_runtime_facade_selects_v25_and_keeps_frozen_registry_entries() -> None:
+    assert privileges.CURRENT_PLATFORM_DATABASE_PRIVILEGE_POLICY is policy_v25
+    assert privileges.CURRENT_PLATFORM_DATABASE_PRIVILEGE_BEHAVIOR is behavior_v25
+    assert privileges.PLATFORM_ALEMBIC_HEAD == policy_v25.ALEMBIC_HEAD
     assert privileges.PLATFORM_DATABASE_PRIVILEGE_POLICY_REGISTRY == {
         policy_v1.ALEMBIC_HEAD: (policy_v1, behavior_v1),
         policy_v2.ALEMBIC_HEAD: (policy_v2, behavior_v2),
         policy_v3.ALEMBIC_HEAD: (policy_v3, behavior_v3),
         policy_v4.ALEMBIC_HEAD: (policy_v4, behavior_v4),
         policy_v5.ALEMBIC_HEAD: (policy_v5, behavior_v5),
+        policy_v6.ALEMBIC_HEAD: (policy_v6, behavior_v6),
+        policy_v7.ALEMBIC_HEAD: (policy_v7, behavior_v7),
+        policy_v8.ALEMBIC_HEAD: (policy_v8, behavior_v8),
+        policy_v9.ALEMBIC_HEAD: (policy_v9, behavior_v9),
+        policy_v10.ALEMBIC_HEAD: (policy_v10, behavior_v10),
+        policy_v11.ALEMBIC_HEAD: (policy_v11, behavior_v11),
+        policy_v12.ALEMBIC_HEAD: (policy_v12, behavior_v12),
+        policy_v13.ALEMBIC_HEAD: (policy_v13, behavior_v13),
+        policy_v14.ALEMBIC_HEAD: (policy_v14, behavior_v14),
+        policy_v15.ALEMBIC_HEAD: (policy_v15, behavior_v15),
+        policy_v16.ALEMBIC_HEAD: (policy_v16, behavior_v16),
+        policy_v17.ALEMBIC_HEAD: (policy_v17, behavior_v17),
+        policy_v18.ALEMBIC_HEAD: (policy_v18, behavior_v18),
+        policy_v19.ALEMBIC_HEAD: (policy_v19, behavior_v19),
+        policy_v20.ALEMBIC_HEAD: (policy_v20, behavior_v20),
+        policy_v21.ALEMBIC_HEAD: (policy_v21, behavior_v21),
+        policy_v22.ALEMBIC_HEAD: (policy_v22, behavior_v22),
+        policy_v23.ALEMBIC_HEAD: (policy_v23, behavior_v23),
+        policy_v24.ALEMBIC_HEAD: (policy_v24, behavior_v24),
+        policy_v25.ALEMBIC_HEAD: (policy_v25, behavior_v25),
     }
     assert policy_v1.CATALOG_SHA256 == (
         "816e9b60476fff7b6e1fc9ee6e7c5c460bf971ead1dbccb8ac8fce86e5fcffeb"
@@ -133,6 +204,105 @@ def test_runtime_facade_selects_v5_and_keeps_frozen_registry_entries() -> None:
     assert policy_v5.CATALOG_SHA256 == (
         "ecd5b3faae20595e66396c59d37327d1e6e5b742c3d70697aaf6f109866591e6"
     )
+    assert policy_v6.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v5.ALEMBIC_HEAD: (
+            "15f8e992c8e6a88d587fe7383fa1b390da3696834c11acf255856520a6265cfa"
+        ),
+        policy_v6.ALEMBIC_HEAD: policy_v6.CATALOG_SHA256,
+    }
+    assert policy_v6.CATALOG_SHA256 == (
+        "397e6923d44a7c68ab462d50895b95715f0edf7ffb7fd965227ce8ef02075ae9"
+    )
+    assert policy_v7.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v6.ALEMBIC_HEAD: policy_v6.CATALOG_SHA256,
+        policy_v7.ALEMBIC_HEAD: policy_v7.CATALOG_SHA256,
+    }
+    assert policy_v7.CATALOG_SHA256 == (
+        "2d8cf3f6ad44338ed77ee0506c8ec058fca02ab84b64186ea09df17a5387d9e8"
+    )
+    assert policy_v8.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v7.ALEMBIC_HEAD: policy_v7.CATALOG_SHA256,
+        policy_v8.ALEMBIC_HEAD: policy_v8.CATALOG_SHA256,
+    }
+    assert policy_v8.CATALOG_SHA256 == policy_v7.CATALOG_SHA256
+    assert policy_v9.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v8.ALEMBIC_HEAD: policy_v8.CATALOG_SHA256,
+        policy_v9.ALEMBIC_HEAD: policy_v9.CATALOG_SHA256,
+    }
+    assert policy_v9.CATALOG_SHA256 == (
+        "64640e8ccf7069fc6ca0773af64def56babfdb80101ea9cd22e6b8e7fc00c167"
+    )
+    assert policy_v10.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v9.ALEMBIC_HEAD: policy_v9.CATALOG_SHA256,
+        policy_v10.ALEMBIC_HEAD: policy_v10.CATALOG_SHA256,
+    }
+    assert policy_v10.CATALOG_SHA256 == (
+        "7ce8849ecc4be298fe9889bdeaeb7ea17932a51c9ff9eeb024cc55bbcad44142"
+    )
+    assert policy_v10.CATALOG_SHA256 != policy_v10.UNQUALIFIED_CATALOG_SHA256
+    assert policy_v11.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v10.ALEMBIC_HEAD: policy_v10.CATALOG_SHA256,
+        policy_v11.ALEMBIC_HEAD: policy_v11.CATALOG_SHA256,
+    }
+    assert policy_v11.CATALOG_SHA256 == (
+        "d4b70386e7592c884394b45d5d0ee00ba3ca7d31cc2881d237ba071f358c142c"
+    )
+    assert policy_v11.CATALOG_SHA256 != policy_v11.UNQUALIFIED_CATALOG_SHA256
+    assert policy_v12.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v11.ALEMBIC_HEAD: policy_v11.CATALOG_SHA256,
+        policy_v12.ALEMBIC_HEAD: policy_v12.CATALOG_SHA256,
+    }
+    assert policy_v12.CATALOG_SHA256 == "0" * 64
+    assert policy_v13.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v12.ALEMBIC_HEAD: policy_v12.CATALOG_SHA256,
+        policy_v13.ALEMBIC_HEAD: policy_v13.CATALOG_SHA256,
+    }
+    assert policy_v13.CATALOG_SHA256 == "0" * 64
+    assert policy_v14.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v13.ALEMBIC_HEAD: policy_v13.CATALOG_SHA256,
+        policy_v14.ALEMBIC_HEAD: policy_v14.CATALOG_SHA256,
+    }
+    assert policy_v14.CATALOG_SHA256 == "0" * 64
+    assert policy_v15.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v14.ALEMBIC_HEAD: policy_v14.CATALOG_SHA256,
+        policy_v15.ALEMBIC_HEAD: policy_v15.CATALOG_SHA256,
+    }
+    assert policy_v15.CATALOG_SHA256 == "0" * 64
+    assert policy_v16.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v15.ALEMBIC_HEAD: policy_v15.CATALOG_SHA256,
+        policy_v16.ALEMBIC_HEAD: policy_v16.CATALOG_SHA256,
+    }
+    assert policy_v16.CATALOG_SHA256 == "0" * 64
+    assert policy_v17.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v16.ALEMBIC_HEAD: policy_v16.CATALOG_SHA256,
+        policy_v17.ALEMBIC_HEAD: policy_v17.CATALOG_SHA256,
+    }
+    assert policy_v17.CATALOG_SHA256 == "0" * 64
+    assert policy_v18.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v17.ALEMBIC_HEAD: policy_v17.CATALOG_SHA256,
+        policy_v18.ALEMBIC_HEAD: policy_v18.CATALOG_SHA256,
+    }
+    assert policy_v18.CATALOG_SHA256 == "0" * 64
+    assert policy_v19.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD == {
+        policy_v18.ALEMBIC_HEAD: policy_v18.CATALOG_SHA256,
+        policy_v19.ALEMBIC_HEAD: policy_v19.CATALOG_SHA256,
+    }
+    assert policy_v19.CATALOG_SHA256 == "0" * 64
+
+
+def test_v6_catalog_projection_normalizes_only_postgres_allocation_history() -> None:
+    projections = dict(behavior_v6._CATALOG_PROJECTIONS)
+    relation = projections["relation"]
+    column = projections["column"]
+
+    assert "toast.relname" not in relation
+    assert "pg_get_indexdef(ix.indexrelid" not in relation
+    assert "toast_ts.spcname" in relation
+    assert "toast.reloptions" in relation
+    assert column.startswith("SELECT c.relname, a.attname, ")
+    assert "ORDER BY c.relname, a.attname" in column
+    assert "format_type(a.atttypid, a.atttypmod)" in column
+    assert "pg_get_expr(d.adbin, d.adrelid, true)" in column
 
 
 def test_v4_cutover_counts_unknown_and_reconciliation_legacy_work() -> None:
@@ -511,7 +681,7 @@ def test_live_source_gate_routes_exact_0036_through_frozen_v2(
     assert calls == [("v2", policy_v2)]
 
 
-def test_live_source_gate_routes_truly_empty_database_through_current_v5(
+def test_live_source_gate_routes_truly_empty_database_through_current_v18(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class EmptyConnection:
@@ -545,24 +715,90 @@ def test_live_source_gate_routes_truly_empty_database_through_current_v5(
     monkeypatch.setattr(
         behavior_v5,
         "validate_platform_migration_source_state",
-        lambda connection, *, policy: calls.append(("v5", policy)),
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v5"),
+    )
+    monkeypatch.setattr(
+        behavior_v6,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v6"),
+    )
+    monkeypatch.setattr(
+        behavior_v7,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v7"),
+    )
+    monkeypatch.setattr(
+        behavior_v8,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v8"),
+    )
+    monkeypatch.setattr(
+        behavior_v9,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v9"),
+    )
+    monkeypatch.setattr(
+        behavior_v10,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v10"),
+    )
+    monkeypatch.setattr(
+        behavior_v11,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v11"),
+    )
+    monkeypatch.setattr(
+        behavior_v12,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v12"),
+    )
+    monkeypatch.setattr(
+        behavior_v13,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v13"),
+    )
+    monkeypatch.setattr(
+        behavior_v14,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v14"),
+    )
+    monkeypatch.setattr(
+        behavior_v15,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v15"),
+    )
+    monkeypatch.setattr(
+        behavior_v16,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v16"),
+    )
+    monkeypatch.setattr(
+        behavior_v17,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("empty source reached v17"),
+    )
+    monkeypatch.setattr(
+        behavior_v18,
+        "validate_platform_migration_source_state",
+        lambda connection, *, policy: calls.append(("v18", policy)),
     )
 
     privileges.validate_platform_migration_source_state(EmptyConnection())
 
-    assert calls == [("v5", policy_v5)]
+    assert calls == [("v18", policy_v18)]
 
 
 @pytest.mark.parametrize(
     "heads",
     [
         (),
-        (policy_v4.ALEMBIC_HEAD,),
+        (policy_v17.ALEMBIC_HEAD,),
+        (policy_v18.ALEMBIC_HEAD,),
         ("0035_operations_evidence", policy_v1.ALEMBIC_HEAD),
         ("unknown_head",),
     ],
 )
-def test_live_source_gate_keeps_current_and_unknown_sources_on_v5(
+def test_live_source_gate_keeps_current_and_unknown_sources_on_v18(
     monkeypatch: pytest.MonkeyPatch,
     heads: tuple[str, ...],
 ) -> None:
@@ -599,12 +835,216 @@ def test_live_source_gate_keeps_current_and_unknown_sources_on_v5(
     monkeypatch.setattr(
         behavior_v5,
         "validate_platform_migration_source_state",
-        lambda connection, *, policy: calls.append(("v5", policy)),
+        lambda *_args, **_kwargs: pytest.fail("current source reached v5"),
+    )
+    monkeypatch.setattr(
+        behavior_v6,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v6"),
+    )
+    monkeypatch.setattr(
+        behavior_v7,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v7"),
+    )
+    monkeypatch.setattr(
+        behavior_v8,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v8"),
+    )
+    monkeypatch.setattr(
+        behavior_v9,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v9"),
+    )
+    monkeypatch.setattr(
+        behavior_v10,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v10"),
+    )
+    monkeypatch.setattr(
+        behavior_v11,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v11"),
+    )
+    monkeypatch.setattr(
+        behavior_v12,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v12"),
+    )
+    monkeypatch.setattr(
+        behavior_v13,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v13"),
+    )
+    monkeypatch.setattr(
+        behavior_v14,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v14"),
+    )
+    monkeypatch.setattr(
+        behavior_v15,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v15"),
+    )
+    monkeypatch.setattr(
+        behavior_v16,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v16"),
+    )
+    monkeypatch.setattr(
+        behavior_v17,
+        "validate_platform_migration_source_state",
+        lambda *_args, **_kwargs: pytest.fail("current source reached v17"),
+    )
+    monkeypatch.setattr(
+        behavior_v18,
+        "validate_platform_migration_source_state",
+        lambda connection, *, policy: calls.append(("v18", policy)),
     )
 
     privileges.validate_platform_migration_source_state(SourceConnection())
 
-    assert calls == [("v5", policy_v5)]
+    assert calls == [("v18", policy_v18)]
+
+
+def test_v6_validates_qualified_0040_source_with_frozen_v5_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @dataclass(frozen=True)
+    class SourceEvidence:
+        catalog_sha256: str
+        alembic_heads: tuple[str, ...]
+
+    source_digest = policy_v6.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD[
+        policy_v5.ALEMBIC_HEAD
+    ]
+    evidence = SourceEvidence(
+        catalog_sha256=source_digest,
+        alembic_heads=(policy_v5.ALEMBIC_HEAD,),
+    )
+    calls: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(
+        behavior_v5,
+        "validate_platform_database_evidence",
+        lambda actual, process_role, *, require_runtime_acl, require_head,
+        policy: calls.append(
+            (
+                actual,
+                process_role,
+                require_runtime_acl,
+                require_head,
+                policy,
+            )
+        ),
+    )
+
+    behavior_v6.validate_platform_database_evidence(
+        evidence,
+        "migration",
+        require_runtime_acl=False,
+        require_head=False,
+        policy=policy_v6,
+    )
+
+    assert len(calls) == 1
+    normalized, process_role, runtime_acl, require_head, policy = calls[0]
+    assert normalized.catalog_sha256 == policy_v5.CATALOG_SHA256
+    assert normalized.alembic_heads == (policy_v5.ALEMBIC_HEAD,)
+    assert process_role == "migration"
+    assert runtime_acl is False
+    assert require_head is False
+    assert policy is policy_v5
+
+
+def test_v6_current_real_evidence_normalizes_its_new_table_for_v5() -> None:
+    principals = tuple(
+        behavior_v6.DatabasePrincipalEvidence(
+            role_name=database_role,
+            role_comment=policy_v6.DATABASE_ROLE_COMMENT_BY_PROCESS[process_role],
+            can_login=True,
+            is_superuser=False,
+            inherits=False,
+            can_create_role=False,
+            can_create_database=False,
+            can_replicate=False,
+            bypasses_rls=False,
+            connection_limit=(
+                policy_v6.DATABASE_ROLE_CONNECTION_LIMIT_BY_PROCESS[process_role]
+            ),
+            credential_validity_ok=True,
+        )
+        for process_role, database_role in policy_v6.DATABASE_ROLE_BY_PROCESS.items()
+    )
+    evidence = behavior_v6.PlatformDatabaseEvidence(
+        current_user=policy_v6.MIGRATION_DATABASE_ROLE,
+        session_user=policy_v6.MIGRATION_DATABASE_ROLE,
+        ssl_active=True,
+        current_schema="public",
+        explicit_schemas=("public",),
+        database_owner=policy_v6.MIGRATION_DATABASE_ROLE,
+        public_schema_owner="pg_database_owner",
+        principals=principals,
+        membership_count=0,
+        role_setting_count=0,
+        parameter_acl_count=0,
+        external_owned_object_count=0,
+        cross_database_acl_count=0,
+        cross_database_dependency_count=0,
+        global_role_dependency_count=0,
+        system_acl_count=0,
+        system_acl_sha256=policy_v6.SYSTEM_ACL_SHA256,
+        system_semantic_sha256=(
+            POSTGRES16_DEBIAN_PGAUDIT_SYSTEM_SEMANTIC_SHA256
+        ),
+        system_extension_surface_exact=True,
+        pgaudit_preloaded=True,
+        pgaudit_log_class_coverage=True,
+        credential_logging_policy_exact=True,
+        system_unsafe_object_count=0,
+        public_unsafe_object_count=0,
+        legacy_pending_work_count=0,
+        foreign_owned_object_count=0,
+        column_acl_count=0,
+        database_acl=frozenset(
+            (
+                role,
+                privilege,
+                policy_v6.MIGRATION_DATABASE_ROLE,
+                False,
+            )
+            for role, privilege in policy_v6.EXPECTED_DATABASE_ACL
+        ),
+        schema_acl=frozenset(
+            (role, privilege, "pg_database_owner", False)
+            for role, privilege in policy_v6.EXPECTED_SCHEMA_ACL
+        ),
+        table_names=policy_v6.TABLES | {"alembic_version"},
+        table_acl=frozenset(
+            (
+                table_name,
+                role,
+                privilege,
+                policy_v6.MIGRATION_DATABASE_ROLE,
+                False,
+            )
+            for table_name, role, privilege in policy_v6.EXPECTED_TABLE_ACL
+        ),
+        sequence_acl=frozenset(),
+        routine_acl=frozenset(),
+        default_acl=policy_v6.EXPECTED_DEFAULT_ACL,
+        catalog_sha256=policy_v6.CATALOG_SHA256,
+        alembic_heads=(policy_v6.ALEMBIC_HEAD,),
+    )
+
+    behavior_v6.validate_platform_database_evidence(
+        evidence,
+        "migration",
+        require_runtime_acl=False,
+        require_head=True,
+        policy=policy_v6,
+    )
 
 
 def test_live_source_gate_normalizes_frozen_v1_failure_to_facade_error(
@@ -639,15 +1079,63 @@ def test_live_source_gate_normalizes_frozen_v1_failure_to_facade_error(
 @pytest.mark.parametrize(
     ("heads", "has_version", "expected_policy", "expected_behavior", "is_current"),
     [
-        ((), False, policy_v5, behavior_v5, False),
+        ((), False, policy_v25, behavior_v25, False),
         (("0035_operations_evidence",), True, policy_v1, behavior_v1, False),
         ((policy_v1.ALEMBIC_HEAD,), True, policy_v2, behavior_v2, False),
         ((policy_v2.ALEMBIC_HEAD,), True, policy_v3, behavior_v3, False),
         ((policy_v3.ALEMBIC_HEAD,), True, policy_v4, behavior_v4, False),
         ((policy_v4.ALEMBIC_HEAD,), True, policy_v5, behavior_v5, False),
-        ((policy_v5.ALEMBIC_HEAD,), True, policy_v5, behavior_v5, True),
+        ((policy_v5.ALEMBIC_HEAD,), True, policy_v6, behavior_v6, False),
+        ((policy_v6.ALEMBIC_HEAD,), True, policy_v7, behavior_v7, False),
+        ((policy_v7.ALEMBIC_HEAD,), True, policy_v8, behavior_v8, False),
+        ((policy_v8.ALEMBIC_HEAD,), True, policy_v9, behavior_v9, False),
+        ((policy_v9.ALEMBIC_HEAD,), True, policy_v10, behavior_v10, False),
+        ((policy_v10.ALEMBIC_HEAD,), True, policy_v11, behavior_v11, False),
+        ((policy_v11.ALEMBIC_HEAD,), True, policy_v12, behavior_v12, False),
+        ((policy_v12.ALEMBIC_HEAD,), True, policy_v13, behavior_v13, False),
+        ((policy_v13.ALEMBIC_HEAD,), True, policy_v14, behavior_v14, False),
+        ((policy_v14.ALEMBIC_HEAD,), True, policy_v15, behavior_v15, False),
+        ((policy_v15.ALEMBIC_HEAD,), True, policy_v16, behavior_v16, False),
+        ((policy_v16.ALEMBIC_HEAD,), True, policy_v17, behavior_v17, False),
+        ((policy_v17.ALEMBIC_HEAD,), True, policy_v18, behavior_v18, False),
+        ((policy_v18.ALEMBIC_HEAD,), True, policy_v19, behavior_v19, False),
+        ((policy_v19.ALEMBIC_HEAD,), True, policy_v20, behavior_v20, False),
+        ((policy_v20.ALEMBIC_HEAD,), True, policy_v21, behavior_v21, False),
+        ((policy_v21.ALEMBIC_HEAD,), True, policy_v22, behavior_v22, False),
+        ((policy_v22.ALEMBIC_HEAD,), True, policy_v23, behavior_v23, False),
+        ((policy_v23.ALEMBIC_HEAD,), True, policy_v24, behavior_v24, False),
+        ((policy_v24.ALEMBIC_HEAD,), True, policy_v25, behavior_v25, False),
+        ((policy_v25.ALEMBIC_HEAD,), True, policy_v25, behavior_v25, True),
     ],
-    ids=("empty", "0035", "0036", "0037", "0038", "0039", "0040-current"),
+    ids=(
+        "empty",
+        "0035",
+        "0036",
+        "0037",
+        "0038",
+        "0039",
+        "0040",
+        "0041",
+        "0042",
+        "0043",
+        "0044",
+        "0045",
+        "0046",
+        "0047",
+        "0048",
+        "0049",
+        "0050",
+        "0051",
+        "0052",
+        "0053",
+        "0054",
+        "0055",
+        "0056",
+        "0057",
+        "0058",
+        "0059",
+        "0060-current",
+    ),
 )
 def test_migration_only_evidence_helper_uses_the_frozen_source_policy(
     monkeypatch: pytest.MonkeyPatch,
@@ -668,7 +1156,33 @@ def test_migration_only_evidence_helper_uses_the_frozen_source_policy(
 
     calls: list[tuple[object, ...]] = []
     evidence = SimpleNamespace(alembic_heads=heads)
-    for behavior in (behavior_v1, behavior_v2, behavior_v3, behavior_v4, behavior_v5):
+    for behavior in (
+        behavior_v1,
+        behavior_v2,
+        behavior_v3,
+        behavior_v4,
+        behavior_v5,
+        behavior_v6,
+        behavior_v7,
+        behavior_v8,
+        behavior_v9,
+        behavior_v10,
+        behavior_v11,
+        behavior_v12,
+        behavior_v13,
+        behavior_v14,
+        behavior_v15,
+        behavior_v16,
+        behavior_v17,
+        behavior_v18,
+        behavior_v19,
+        behavior_v20,
+        behavior_v21,
+        behavior_v22,
+        behavior_v23,
+        behavior_v24,
+        behavior_v25,
+    ):
         monkeypatch.setattr(
             behavior,
             "validate_platform_migration_source_state",
@@ -732,7 +1246,7 @@ def test_migration_only_evidence_helper_uses_the_frozen_source_policy(
     ],
     ids=("unknown", "multi-head", "dirty-shape"),
 )
-def test_migration_only_evidence_helper_rejects_unqualified_v5_sources(
+def test_migration_only_evidence_helper_rejects_unqualified_v14_sources(
     monkeypatch: pytest.MonkeyPatch,
     table_names: tuple[str, ...],
     heads: tuple[str, ...],
@@ -747,12 +1261,12 @@ def test_migration_only_evidence_helper_rejects_unqualified_v5_sources(
             raise AssertionError(rendered)
 
     monkeypatch.setattr(
-        behavior_v5,
+        behavior_v14,
         "platform_catalog_sha256",
-        lambda _connection: policy_v5.EMPTY_CATALOG_SHA256,
+        lambda _connection: policy_v14.EMPTY_CATALOG_SHA256,
     )
     monkeypatch.setattr(
-        behavior_v5,
+        behavior_v14,
         "collect_platform_database_evidence",
         lambda *_args, **_kwargs: pytest.fail("rejected source was collected"),
     )
@@ -811,9 +1325,190 @@ def test_v2_table_manifest_exactly_matches_current_metadata() -> None:
         "showcase_release_items",
         "showcase_releases",
     }
-    behavior_v5.assert_platform_database_manifest_matches_metadata(
-        Base.metadata.tables
+    assert policy_v6.TABLES == policy_v5.TABLES | {
+        "personal_model_grant_batch_journals"
+    }
+    assert policy_v7.TABLES == policy_v6.TABLES | {
+        "company_entitlement_batch_journals"
+    }
+    assert policy_v8.TABLES == policy_v7.TABLES
+    assert policy_v8.PRIVILEGES_BY_PROCESS == policy_v7.PRIVILEGES_BY_PROCESS
+    assert policy_v9.TABLES == policy_v8.TABLES
+    assert policy_v9.PRIVILEGES_BY_PROCESS == policy_v8.PRIVILEGES_BY_PROCESS
+    assert policy_v10.TABLES == policy_v9.TABLES
+    assert policy_v10.PRIVILEGES_BY_PROCESS["relay-catalog-sync"] == {
+        "model_definitions": frozenset({"SELECT", "INSERT", "UPDATE"}),
+        "model_capabilities": frozenset({"SELECT", "INSERT"}),
+        "audit_logs": frozenset({"INSERT"}),
+    }
+    assert "users" not in policy_v10.PRIVILEGES_BY_PROCESS[
+        "relay-catalog-sync"
+    ]
+    assert policy_v10.DATABASE_ROLE_BY_PROCESS["relay-catalog-sync"] == (
+        "platform_relay_catalog_sync"
     )
+    assert policy_v10.DATABASE_ROLE_CONNECTION_LIMIT_BY_PROCESS[
+        "relay-catalog-sync"
+    ] == 4
+    assert policy_v11.TABLES == policy_v10.TABLES | {
+        "company_point_wallet_accounts",
+        "company_point_lots",
+        "company_point_ledger_entries",
+        "task_point_lot_allocations",
+        "company_point_price_versions",
+    }
+    assert policy_v12.TABLES == policy_v11.TABLES | {
+        "auth_product_context_switches"
+    }
+    assert policy_v12.PRIVILEGES_BY_PROCESS["platform-api"][
+        "auth_product_context_switches"
+    ] == frozenset({"SELECT", "INSERT"})
+    for process_role, table_privileges in policy_v12.PRIVILEGES_BY_PROCESS.items():
+        if process_role != "platform-api":
+            assert "auth_product_context_switches" not in table_privileges
+    assert policy_v7.PRIVILEGES_BY_PROCESS["platform-api"][
+        "company_entitlement_batch_journals"
+    ] == frozenset({"SELECT", "INSERT", "UPDATE"})
+    for process_role, table_privileges in policy_v7.PRIVILEGES_BY_PROCESS.items():
+        if process_role != "platform-api":
+            assert "company_entitlement_batch_journals" not in table_privileges
+    assert policy_v13.TABLES == policy_v12.TABLES | policy_v13.COMMERCIAL_TABLES
+    assert policy_v13.APPEND_ONLY_COMMERCIAL_TABLES.isdisjoint(
+        policy_v13.MUTABLE_COMMERCIAL_TABLES
+    )
+    for table_name in policy_v13.APPEND_ONLY_COMMERCIAL_TABLES:
+        assert policy_v13.PRIVILEGES_BY_PROCESS["platform-api"][table_name] == (
+            frozenset({"SELECT", "INSERT"})
+        )
+    for table_name in policy_v13.MUTABLE_COMMERCIAL_TABLES:
+        assert policy_v13.PRIVILEGES_BY_PROCESS["platform-api"][table_name] == (
+            frozenset({"SELECT", "INSERT", "UPDATE"})
+        )
+    worker_projection_tables = {
+        "personal_point_lots",
+        "personal_task_point_lot_allocations",
+        "point_lot_settlement_value_allocations",
+    }
+    for process_role, table_privileges in policy_v13.PRIVILEGES_BY_PROCESS.items():
+        if process_role == "platform-api":
+            continue
+        if process_role == "dispatcher":
+            assert policy_v13.COMMERCIAL_TABLES & set(table_privileges) == {
+                "personal_point_lots",
+                "personal_task_point_lot_allocations",
+            }
+        elif process_role in {"relay-sync", "timeout-worker"}:
+            assert policy_v13.COMMERCIAL_TABLES & set(table_privileges) == (
+                worker_projection_tables
+            )
+        else:
+            assert policy_v13.COMMERCIAL_TABLES.isdisjoint(table_privileges)
+    assert policy_v14.TABLES == policy_v13.TABLES | policy_v14.CLOSURE_TABLES
+    assert policy_v14.APPEND_ONLY_CLOSURE_TABLES.isdisjoint(
+        policy_v14.MUTABLE_CLOSURE_TABLES
+    )
+    for table_name in policy_v14.APPEND_ONLY_CLOSURE_TABLES:
+        assert policy_v14.PRIVILEGES_BY_PROCESS["platform-api"][table_name] == (
+            frozenset({"SELECT", "INSERT"})
+        )
+    for table_name in policy_v14.MUTABLE_CLOSURE_TABLES:
+        assert policy_v14.PRIVILEGES_BY_PROCESS["platform-api"][table_name] == (
+            frozenset({"SELECT", "INSERT", "UPDATE"})
+        )
+    for process_role, table_privileges in policy_v14.PRIVILEGES_BY_PROCESS.items():
+        if process_role != "platform-api":
+            assert policy_v14.CLOSURE_TABLES.isdisjoint(table_privileges)
+    assert policy_v15.TABLES == (
+        policy_v14.TABLES | policy_v15.MODEL_COMMERCIAL_RELEASE_TABLES
+    )
+    assert policy_v15.PRIVILEGES_BY_PROCESS["platform-api"][
+        "model_commercial_release_plans"
+    ] == frozenset({"SELECT", "INSERT"})
+    assert policy_v15.PRIVILEGES_BY_PROCESS["relay-catalog-sync"][
+        "model_commercial_release_plans"
+    ] == frozenset({"SELECT"})
+    assert policy_v15.PRIVILEGES_BY_PROCESS["relay-catalog-sync"][
+        "model_commercial_release_executions"
+    ] == frozenset({"SELECT", "UPDATE"})
+    assert policy_v16.TABLES == policy_v15.TABLES
+    assert policy_v16.PRIVILEGES_BY_PROCESS == policy_v15.PRIVILEGES_BY_PROCESS
+    assert policy_v17.TABLES == policy_v16.TABLES
+    assert policy_v17.PRIVILEGES_BY_PROCESS == policy_v16.PRIVILEGES_BY_PROCESS
+    assert policy_v18.TABLES == (
+        policy_v17.TABLES | policy_v18.DIRECTOR_SHOT_PACKAGE_TABLES
+    )
+    assert policy_v18.PRIVILEGES_BY_PROCESS["platform-api"][
+        "director_shot_packages"
+    ] == frozenset({"SELECT", "INSERT"})
+    assert policy_v18.PRIVILEGES_BY_PROCESS["platform-api"][
+        "task_director_shot_packages"
+    ] == frozenset({"SELECT", "INSERT"})
+    for process_role, table_privileges in policy_v18.PRIVILEGES_BY_PROCESS.items():
+        if process_role != "platform-api":
+            assert policy_v18.DIRECTOR_SHOT_PACKAGE_TABLES.isdisjoint(
+                table_privileges
+            )
+    def _metadata_as_of(policy: object) -> dict[str, object]:
+        """Base metadata restricted to the tables one frozen policy declared.
+
+        ``assert_platform_database_manifest_matches_metadata`` compares for
+        equality, so once a later revision adds a table every historical
+        assertion would fail.  Restricting to that policy's own manifest keeps
+        the meaningful invariant: no table a frozen policy declared has since
+        disappeared from the metadata.  The current policy is still checked
+        against the full metadata below.
+        """
+
+        return {
+            name: table
+            for name, table in Base.metadata.tables.items()
+            if name in policy.TABLES
+        }
+
+    behavior_v18.assert_platform_database_manifest_matches_metadata(
+        _metadata_as_of(policy_v18)
+    )
+    assert policy_v19.TABLES == policy_v18.TABLES
+    assert policy_v19.PRIVILEGES_BY_PROCESS == policy_v18.PRIVILEGES_BY_PROCESS
+    behavior_v19.assert_platform_database_manifest_matches_metadata(
+        _metadata_as_of(policy_v19)
+    )
+    for predecessor, current in (
+        (policy_v19, policy_v20),
+        (policy_v20, policy_v21),
+        (policy_v21, policy_v22),
+        (policy_v22, policy_v23),
+        (policy_v23, policy_v24),
+    ):
+        assert current.TABLES == predecessor.TABLES
+        assert current.PRIVILEGES_BY_PROCESS == predecessor.PRIVILEGES_BY_PROCESS
+        assert current.CATALOG_SHA256 == current.UNQUALIFIED_CATALOG_SHA256 == "0" * 64
+    behavior_v24.assert_platform_database_manifest_matches_metadata(
+        _metadata_as_of(policy_v24)
+    )
+
+    # Every revision in the loop above keeps the v19 table and privilege
+    # manifests exactly.  Revision 0060 is the first successor in that range to
+    # widen them, so it asserts the exact expected delta instead of equality.
+    assert policy_v25.TABLES == policy_v24.TABLES | {
+        "model_commercial_release_batches"
+    }
+    assert policy_v25.CATALOG_SHA256 == policy_v25.UNQUALIFIED_CATALOG_SHA256 == "0" * 64
+    expected_privileges = {
+        process: dict(table_privileges)
+        for process, table_privileges in policy_v24.PRIVILEGES_BY_PROCESS.items()
+    }
+    expected_privileges["platform-api"]["model_commercial_release_batches"] = (
+        frozenset({"SELECT", "INSERT", "UPDATE"})
+    )
+    assert {
+        process: dict(table_privileges)
+        for process, table_privileges in policy_v25.PRIVILEGES_BY_PROCESS.items()
+    } == expected_privileges
+    for process_role, table_privileges in policy_v25.PRIVILEGES_BY_PROCESS.items():
+        if process_role != "platform-api":
+            assert "model_commercial_release_batches" not in table_privileges
+    behavior_v25.assert_platform_database_manifest_matches_metadata(Base.metadata.tables)
 
 
 def test_auth_tables_are_owned_only_by_platform_api_runtime_role() -> None:

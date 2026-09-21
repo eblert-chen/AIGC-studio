@@ -160,6 +160,8 @@ def _submit_relay_job(
         "metadata": {
             "platform_company_id": company_id,
             "platform_task_id": task_id,
+            "platform_billing_scope": "company",
+            "platform_billing_scope_id": company_id,
             "cost_acceptance_case": status_name,
         },
     }
@@ -629,15 +631,13 @@ def test_real_new_api_runtime_materializes_and_delivers_signed_costs():
             event_id = str(
                 uuid5(
                     NAMESPACE_URL,
-                    f"relay-contract-cost:{outcome_id}:{CONTRACT_RATE_ID}",
+                    f"relay-contract-cost:{outcome_id}",
                 )
             )
             assert materialized["id"] == event_id
             assert materialized["reconciliation_state"] == "completed"
             assert materialized["amount_cents"] == 25
-            assert materialized["idempotency_key"] == (
-                f"relay-contract-cost-{outcome_id}-{CONTRACT_RATE_ID}"
-            )
+            assert materialized["idempotency_key"] == f"relay-contract-cost-{outcome_id}"
             assert materialized["channel_key"] == PROVIDER_ROUTE_KEY
             assert materialized["channel_type"] == "official"
             assert materialized["external_reference"] == (

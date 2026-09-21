@@ -47,20 +47,20 @@ func preparePlatformGenerationRouteTest(t *testing.T) {
 func createPlatformGenerationRouteFixture(t *testing.T, modelName string, rpmLimit int, activeLimit int) *PlatformGenerationProviderRoute {
 	t.Helper()
 	key := "provider-key-" + modelName
-	require.NoError(t, DB.Create(&Channel{
-		Id:     1001,
+	channel := &Channel{
 		Type:   constant.ChannelTypeKling,
 		Name:   "generation-route-test",
 		Key:    key,
 		Status: common.ChannelStatusEnabled,
-	}).Error)
+	}
+	require.NoError(t, DB.Create(channel).Error)
 	route := &PlatformGenerationProviderRoute{
 		RouteKey:            "route-" + modelName,
 		Model:               modelName,
 		Mode:                "text_to_video",
 		ProviderName:        "provider-test",
 		AccountID:           "account-test",
-		ChannelID:           1001,
+		ChannelID:           channel.Id,
 		AcceptedChannelType: constant.ChannelTypeKling,
 		KeyIndex:            0,
 		KeyFingerprint:      fmt.Sprintf("%x", common.Sha256Raw([]byte(key))),
@@ -887,7 +887,7 @@ func TestPlatformGenerationTerminalTransitionUsesPollFenceAndClosesUnknownSlot(t
 
 func TestPlatformGenerationProviderCooldownOnlyBlocksNewAdmissionsAndNeverShortens(t *testing.T) {
 	preparePlatformGenerationRouteTest(t)
-	route := createPlatformGenerationRouteFixture(t, "route.cooldown", 20, 4)
+	route := createPlatformGenerationRouteFixture(t, "route.cooldown", 20, 8)
 
 	type existingTask struct {
 		jobID string
@@ -919,9 +919,33 @@ func TestPlatformGenerationProviderCooldownOnlyBlocksNewAdmissionsAndNeverShorte
 		return existingTask{jobID: jobID, token: pollToken}
 	}
 
+	contentPolicyFirst := claimExisting("content-policy-first")
+	contentPolicySecond := claimExisting("content-policy-second")
 	firstFailure := claimExisting("cooldown-first")
 	secondFailure := claimExisting("cooldown-second")
 	existingSuccess := claimExisting("cooldown-success")
+	completeClientFailure := func(task existingTask) {
+		won, err := CompletePlatformGenerationTerminalWithOutcomePolicy(
+			task.jobID,
+			task.token,
+			PlatformGenerationStatusProcessing,
+			map[string]any{"status": PlatformGenerationStatusFailed},
+			&PlatformProviderTerminalOutcome{
+				ID:                uuid.NewString(),
+				RouteID:           route.ID,
+				RelayJobID:        task.jobID,
+				Outcome:           PlatformProviderOutcomeFailed,
+				FailureOwner:      PlatformProviderFailureOwnerClient,
+				FailureCode:       "content_policy_rejected",
+				OccurredAt:        time.Now().UTC(),
+				ExternalReference: "provider-task:" + task.jobID,
+			},
+			1,
+			5*time.Minute,
+		)
+		require.NoError(t, err)
+		require.True(t, won)
+	}
 	completeFailure := func(task existingTask, cooldown time.Duration) {
 		won, err := CompletePlatformGenerationTerminalWithOutcomePolicy(
 			task.jobID,
@@ -944,6 +968,14 @@ func TestPlatformGenerationProviderCooldownOnlyBlocksNewAdmissionsAndNeverShorte
 		require.NoError(t, err)
 		require.True(t, won)
 	}
+
+	completeClientFailure(contentPolicyFirst)
+	completeClientFailure(contentPolicySecond)
+	var afterContentPolicyFailures PlatformGenerationProviderRoute
+	require.NoError(t, DB.First(&afterContentPolicyFailures, route.ID).Error)
+	assert.Zero(t, afterContentPolicyFailures.ConsecutiveFailures,
+		"client content-policy failures must not poison provider route health")
+	assert.Nil(t, afterContentPolicyFailures.CoolingUntil)
 
 	completeFailure(firstFailure, 5*time.Minute)
 	var afterLongCooldown PlatformGenerationProviderRoute

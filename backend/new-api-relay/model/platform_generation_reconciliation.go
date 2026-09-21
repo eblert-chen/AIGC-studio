@@ -3,13 +3,13 @@ package model
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -22,7 +22,24 @@ var (
 	platformGenerationProofTokenPattern               = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	platformGenerationApprovalKeyIDPattern            = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$`)
 	platformGenerationApprovalSignaturePattern        = regexp.MustCompile(`^hmac-sha256:[0-9a-f]{64}$`)
+	platformGenerationProviderResponseDigestPattern   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
+
+// PlatformGenerationSynchronousResultEvidence is private worker evidence for
+// reconstructing a terminal native task after a synchronous provider response
+// was lost on the return path. ResultURL is intentionally excluded from the
+// public reconciliation receipt; its SHA-256 digest remains in the immutable
+// event while the URL is consumed by the verified artifact-transfer worker.
+type PlatformGenerationSynchronousResultEvidence struct {
+	ProviderModelID        string
+	ProviderResponseSHA256 string
+	ResultURL              string
+	Size                   string
+	ProviderCreatedAt      time.Time
+	GeneratedImages        int
+	OutputTokens           int
+	TotalTokens            int
+}
 
 // PlatformGenerationReconciliationResolution contains the complete durable
 // proof submitted by an operator. OperationID is the idempotency boundary;
@@ -40,6 +57,7 @@ type PlatformGenerationReconciliationResolution struct {
 	ApprovalReason              string
 	ApprovalKeyID               string
 	ApprovalSignature           string
+	SynchronousResult           *PlatformGenerationSynchronousResultEvidence
 }
 
 // PlatformGenerationReconciliationEvent is the immutable Relay-side receipt
@@ -86,20 +104,45 @@ type PlatformGenerationReconciliationReceipt struct {
 }
 
 type platformGenerationReconciliationCanonicalPayload struct {
-	TenantID                    string `json:"tenant_id"`
-	JobID                       string `json:"job_id"`
-	OperationID                 string `json:"operation_id"`
-	Outcome                     string `json:"outcome"`
-	UpstreamTaskID              string `json:"upstream_task_id"`
-	ExpectedRouteID             int64  `json:"expected_route_id"`
-	ExpectedSubmissionAttempt   int    `json:"expected_submission_attempt"`
-	ExpectedReconciliationToken string `json:"expected_reconciliation_token"`
-	VerificationReference       string `json:"verification_reference"`
-	ApprovedBy                  string `json:"approved_by"`
-	ApprovalReason              string `json:"approval_reason"`
-	ApprovalKeyID               string `json:"approval_key_id"`
-	ApprovalSignature           string `json:"approval_signature"`
-	ResolvedStatus              string `json:"resolved_status"`
+	TenantID                    string                                              `json:"tenant_id"`
+	JobID                       string                                              `json:"job_id"`
+	OperationID                 string                                              `json:"operation_id"`
+	Outcome                     string                                              `json:"outcome"`
+	UpstreamTaskID              string                                              `json:"upstream_task_id"`
+	ExpectedRouteID             int64                                               `json:"expected_route_id"`
+	ExpectedSubmissionAttempt   int                                                 `json:"expected_submission_attempt"`
+	ExpectedReconciliationToken string                                              `json:"expected_reconciliation_token"`
+	VerificationReference       string                                              `json:"verification_reference"`
+	ApprovedBy                  string                                              `json:"approved_by"`
+	ApprovalReason              string                                              `json:"approval_reason"`
+	ApprovalKeyID               string                                              `json:"approval_key_id"`
+	ApprovalSignature           string                                              `json:"approval_signature"`
+	SynchronousResult           *platformGenerationReconciliationSynchronousPayload `json:"synchronous_result,omitempty"`
+	ResolvedStatus              string                                              `json:"resolved_status"`
+}
+
+type platformGenerationReconciliationSynchronousPayload struct {
+	ProviderModelID        string `json:"provider_model_id"`
+	ProviderResponseSHA256 string `json:"provider_response_sha256"`
+	ArtifactURLSHA256      string `json:"artifact_url_sha256"`
+	ProviderCreatedAt      string `json:"provider_created_at"`
+	GeneratedImages        int    `json:"generated_images"`
+	OutputTokens           int    `json:"output_tokens"`
+	TotalTokens            int    `json:"total_tokens"`
+}
+
+// PlatformGenerationReconciliationSynchronousReceipt is the secret-free,
+// immutable subset of a synchronous provider result that may be returned to
+// operations clients. The temporary provider URL is represented only by its
+// digest and is never reconstructed from the audit event.
+type PlatformGenerationReconciliationSynchronousReceipt struct {
+	ProviderModelID        string
+	ProviderResponseSHA256 string
+	ArtifactURLSHA256      string
+	ProviderCreatedAt      time.Time
+	GeneratedImages        int
+	OutputTokens           int
+	TotalTokens            int
 }
 
 func isCanonicalPlatformGenerationReconciliationUUID(value string) bool {
@@ -147,6 +190,32 @@ func newPlatformGenerationReconciliationEvent(
 	} else if resolution.UpstreamTaskID != "" {
 		return nil, fmt.Errorf("upstream task id must be empty for not_created")
 	}
+	var synchronousPayload *platformGenerationReconciliationSynchronousPayload
+	if resolution.SynchronousResult != nil {
+		if !resolution.Created {
+			return nil, fmt.Errorf("synchronous result evidence requires created outcome")
+		}
+		evidence := resolution.SynchronousResult
+		if strings.TrimSpace(evidence.ProviderModelID) != evidence.ProviderModelID || evidence.ProviderModelID == "" || len(evidence.ProviderModelID) > 128 ||
+			!platformGenerationProviderResponseDigestPattern.MatchString(evidence.ProviderResponseSHA256) ||
+			resolution.UpstreamTaskID != "seedream:"+evidence.ProviderResponseSHA256 ||
+			strings.TrimSpace(evidence.ResultURL) != evidence.ResultURL || evidence.ResultURL == "" || len(evidence.ResultURL) > 8192 ||
+			strings.TrimSpace(evidence.Size) != evidence.Size || evidence.Size == "" || len(evidence.Size) > 32 ||
+			evidence.ProviderCreatedAt.IsZero() || evidence.GeneratedImages < 1 || evidence.GeneratedImages > 16 ||
+			evidence.OutputTokens < 0 || evidence.TotalTokens < evidence.OutputTokens {
+			return nil, fmt.Errorf("synchronous result evidence is invalid")
+		}
+		artifactDigest := sha256.Sum256([]byte(evidence.ResultURL))
+		synchronousPayload = &platformGenerationReconciliationSynchronousPayload{
+			ProviderModelID:        evidence.ProviderModelID,
+			ProviderResponseSHA256: evidence.ProviderResponseSHA256,
+			ArtifactURLSHA256:      hex.EncodeToString(artifactDigest[:]),
+			ProviderCreatedAt:      evidence.ProviderCreatedAt.UTC().Format(time.RFC3339),
+			GeneratedImages:        evidence.GeneratedImages,
+			OutputTokens:           evidence.OutputTokens,
+			TotalTokens:            evidence.TotalTokens,
+		}
+	}
 
 	payload := platformGenerationReconciliationCanonicalPayload{
 		TenantID:                    tenantID,
@@ -162,9 +231,10 @@ func newPlatformGenerationReconciliationEvent(
 		ApprovalReason:              resolution.ApprovalReason,
 		ApprovalKeyID:               resolution.ApprovalKeyID,
 		ApprovalSignature:           resolution.ApprovalSignature,
+		SynchronousResult:           synchronousPayload,
 		ResolvedStatus:              resolvedStatus,
 	}
-	payloadBytes, err := json.Marshal(payload)
+	payloadBytes, err := common.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +243,7 @@ func newPlatformGenerationReconciliationEvent(
 		uuid.NameSpaceURL,
 		[]byte("platform-generation-reconciliation-v1\x00"+tenantID+"\x00"+resolution.OperationID),
 	).String()
-	return &PlatformGenerationReconciliationEvent{
+	event := &PlatformGenerationReconciliationEvent{
 		ID:                          eventID,
 		TenantID:                    tenantID,
 		JobID:                       jobID,
@@ -194,24 +264,106 @@ func newPlatformGenerationReconciliationEvent(
 		PayloadSHA256:               hex.EncodeToString(payloadDigest[:]),
 		ResolvedAt:                  now,
 		CreatedAt:                   now,
-	}, nil
+	}
+	return event, nil
 }
 
 func platformGenerationReconciliationEventsEqual(
 	left PlatformGenerationReconciliationEvent,
 	right PlatformGenerationReconciliationEvent,
 ) bool {
-	// RequestID, timestamps, and approval-key material identify the first
-	// committed attempt and therefore do not participate in semantic replay
-	// equality. A key rotation must not turn an otherwise identical retry into
-	// an operation_id conflict; the original immutable receipt is returned.
-	return left.ID == right.ID && left.TenantID == right.TenantID && left.JobID == right.JobID &&
+	// RequestID and timestamps identify the first HTTP attempt and therefore do
+	// not participate in semantic replay equality. Approval key identity and
+	// signature do participate: they are part of the operator evidence, so a
+	// later request may replay an operation only when its complete signed body is
+	// identical to the immutable receipt.
+	if !(left.ID == right.ID && left.TenantID == right.TenantID && left.JobID == right.JobID &&
 		left.OperationID == right.OperationID && left.Outcome == right.Outcome &&
 		left.UpstreamTaskID == right.UpstreamTaskID && left.ExpectedRouteID == right.ExpectedRouteID &&
 		left.ExpectedSubmissionAttempt == right.ExpectedSubmissionAttempt &&
 		left.ExpectedReconciliationToken == right.ExpectedReconciliationToken &&
 		left.VerificationReference == right.VerificationReference && left.ApprovedBy == right.ApprovedBy &&
-		left.ApprovalReason == right.ApprovalReason && left.ResolvedStatus == right.ResolvedStatus
+		left.ApprovalReason == right.ApprovalReason && left.ApprovalKeyID == right.ApprovalKeyID &&
+		left.ApprovalSignature == right.ApprovalSignature && left.ResolvedStatus == right.ResolvedStatus) {
+		return false
+	}
+	leftPayload, leftErr := platformGenerationReconciliationCanonicalPayloadFromEvent(left)
+	rightPayload, rightErr := platformGenerationReconciliationCanonicalPayloadFromEvent(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return platformGenerationReconciliationSynchronousPayloadsEqual(leftPayload.SynchronousResult, rightPayload.SynchronousResult)
+}
+
+func platformGenerationReconciliationSynchronousPayloadsEqual(
+	left *platformGenerationReconciliationSynchronousPayload,
+	right *platformGenerationReconciliationSynchronousPayload,
+) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func platformGenerationReconciliationCanonicalPayloadFromEvent(
+	event PlatformGenerationReconciliationEvent,
+) (platformGenerationReconciliationCanonicalPayload, error) {
+	var payload platformGenerationReconciliationCanonicalPayload
+	if strings.TrimSpace(event.PayloadJSON) == "" {
+		return payload, errors.New("generation reconciliation payload is missing")
+	}
+	digest := sha256.Sum256([]byte(event.PayloadJSON))
+	if event.PayloadSHA256 != hex.EncodeToString(digest[:]) {
+		return payload, errors.New("generation reconciliation payload digest is invalid")
+	}
+	if err := common.RejectDuplicateJSONKeys([]byte(event.PayloadJSON)); err != nil {
+		return payload, fmt.Errorf("generation reconciliation payload is invalid: %w", err)
+	}
+	if err := common.DecodeJsonDisallowUnknownFields(strings.NewReader(event.PayloadJSON), &payload); err != nil {
+		return payload, fmt.Errorf("generation reconciliation payload is invalid: %w", err)
+	}
+	if payload.TenantID != event.TenantID || payload.JobID != event.JobID || payload.OperationID != event.OperationID ||
+		payload.Outcome != event.Outcome || payload.UpstreamTaskID != event.UpstreamTaskID ||
+		payload.ExpectedRouteID != event.ExpectedRouteID || payload.ExpectedSubmissionAttempt != event.ExpectedSubmissionAttempt ||
+		payload.ExpectedReconciliationToken != event.ExpectedReconciliationToken ||
+		payload.VerificationReference != event.VerificationReference || payload.ApprovedBy != event.ApprovedBy ||
+		payload.ApprovalReason != event.ApprovalReason || payload.ApprovalKeyID != event.ApprovalKeyID ||
+		payload.ApprovalSignature != event.ApprovalSignature || payload.ResolvedStatus != event.ResolvedStatus {
+		return payload, errors.New("generation reconciliation payload does not match its event")
+	}
+	return payload, nil
+}
+
+// PlatformGenerationReconciliationSynchronousResult validates the immutable
+// event payload and returns the public-safe synchronous-result receipt.
+func PlatformGenerationReconciliationSynchronousResult(
+	event PlatformGenerationReconciliationEvent,
+) (*PlatformGenerationReconciliationSynchronousReceipt, error) {
+	payload, err := platformGenerationReconciliationCanonicalPayloadFromEvent(event)
+	if err != nil {
+		return nil, err
+	}
+	if payload.SynchronousResult == nil {
+		return nil, nil
+	}
+	synchronous := payload.SynchronousResult
+	providerCreatedAt, err := time.Parse(time.RFC3339, synchronous.ProviderCreatedAt)
+	if err != nil || providerCreatedAt.UTC().Format(time.RFC3339) != synchronous.ProviderCreatedAt ||
+		!platformGenerationProviderResponseDigestPattern.MatchString(synchronous.ProviderResponseSHA256) ||
+		!platformGenerationProviderResponseDigestPattern.MatchString(synchronous.ArtifactURLSHA256) ||
+		synchronous.ProviderModelID == "" || synchronous.GeneratedImages < 1 ||
+		synchronous.OutputTokens < 0 || synchronous.TotalTokens < synchronous.OutputTokens {
+		return nil, errors.New("generation reconciliation synchronous result is invalid")
+	}
+	return &PlatformGenerationReconciliationSynchronousReceipt{
+		ProviderModelID:        synchronous.ProviderModelID,
+		ProviderResponseSHA256: synchronous.ProviderResponseSHA256,
+		ArtifactURLSHA256:      synchronous.ArtifactURLSHA256,
+		ProviderCreatedAt:      providerCreatedAt.UTC(),
+		GeneratedImages:        synchronous.GeneratedImages,
+		OutputTokens:           synchronous.OutputTokens,
+		TotalTokens:            synchronous.TotalTokens,
+	}, nil
 }
 
 func findPlatformGenerationReconciliationEventTx(
@@ -272,6 +424,44 @@ func GetPlatformGenerationReconciliationReceipt(
 		}
 		var job PlatformGenerationJob
 		if err := tx.Select("status").Where("id = ? AND tenant_id = ?", jobID, tenantID).First(&job).Error; err != nil {
+			return err
+		}
+		receipt.CurrentStatus = job.Status
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &receipt, nil
+}
+
+// GetPlatformGenerationReconciliationReceiptByOperation resolves the durable
+// idempotency identity before consulting mutable unknown-submission state. The
+// event and its current job status are read in one transaction; callers must
+// still compare Event.JobID with the requested resource before replaying it.
+func GetPlatformGenerationReconciliationReceiptByOperation(
+	tenantID string,
+	operationID string,
+) (*PlatformGenerationReconciliationReceipt, error) {
+	if !isCanonicalPlatformGenerationReconciliationUUID(tenantID) ||
+		!platformGenerationOperationIDPattern.MatchString(operationID) {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var receipt PlatformGenerationReconciliationReceipt
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where(
+			"tenant_id = ? AND operation_id = ?",
+			tenantID,
+			operationID,
+		).First(&receipt.Event).Error; err != nil {
+			return err
+		}
+		var job PlatformGenerationJob
+		if err := tx.Select("status").Where(
+			"id = ? AND tenant_id = ?",
+			receipt.Event.JobID,
+			tenantID,
+		).First(&job).Error; err != nil {
 			return err
 		}
 		receipt.CurrentStatus = job.Status

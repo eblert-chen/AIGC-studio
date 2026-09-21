@@ -4,16 +4,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import (
+    BillingUnit,
+    CompanyBillingAccount,
+    CompanyPointWalletAccount,
     GenerationTask,
-    PersonalWalletAccount,
     TaskStatus,
-    WalletAccount,
 )
 from ..relay_client import RelayArtifact, expected_reservation_action
 from .billing import WalletService
+from .company_points_billing import CompanyPointBillingService
 from .personal_billing import PersonalWalletService
 from .artifacts import TaskArtifactService
 from .errors import ConflictError, NotFoundError
+from .execution_contracts import require_execution_digest
 
 
 class RelayStatusService:
@@ -26,6 +29,7 @@ class RelayStatusService:
     )
     _OUTPUT_MEDIA_TYPE_BY_MODE = {
         "text_to_image": "image",
+        "image_to_image": "image",
         "text_to_video": "video",
         "image_to_video": "video",
         "video_to_video": "video",
@@ -104,7 +108,10 @@ class RelayStatusService:
                 GenerationTask.company_id.is_(None),
                 GenerationTask.personal_workspace_id == personal_workspace_id,
             )
-        task = session.scalar(statement.with_for_update())
+        session.flush()
+        task = session.scalar(
+            statement.with_for_update().execution_options(populate_existing=True)
+        )
         if task is None:
             raise NotFoundError("当前账务范围下不存在匹配的中转站任务")
         return task
@@ -129,22 +136,42 @@ class RelayStatusService:
         personal_workspace_id: str | None,
         task_id: str,
     ) -> GenerationTask:
-        """Acquire the applicable wallet then task using one global lock order."""
+        """Lock company/account (points), wallet, then task in admission order."""
         if (company_id is None) == (personal_workspace_id is None):
             raise NotFoundError("任务账务范围无效")
         if company_id is not None:
-            wallet = session.scalar(
-                select(WalletAccount)
-                .where(WalletAccount.company_id == company_id)
-                .with_for_update()
+            billing_unit = session.scalar(
+                select(GenerationTask.billing_unit).where(
+                    GenerationTask.id == task_id,
+                    GenerationTask.company_id == company_id,
+                    GenerationTask.personal_workspace_id.is_(None),
+                )
             )
+            if billing_unit == BillingUnit.POINT:
+                # Point settlement later updates enterprise receivables. Take
+                # its parent locks before the wallet, just as reserve/month-end
+                # do; taking these only inside settle creates a wallet/company
+                # cycle against a concurrent task admission.
+                CompanyPointBillingService._locked_company(session, company_id)
+                session.scalar(
+                    select(CompanyBillingAccount)
+                    .where(CompanyBillingAccount.company_id == company_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                wallet = session.scalar(
+                    select(CompanyPointWalletAccount)
+                    .where(CompanyPointWalletAccount.company_id == company_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            else:
+                wallet = WalletService._locked_account(session, company_id)
             if wallet is None:
                 raise NotFoundError("公司钱包不存在")
         else:
-            wallet = session.scalar(
-                select(PersonalWalletAccount)
-                .where(PersonalWalletAccount.workspace_id == personal_workspace_id)
-                .with_for_update()
+            wallet = PersonalWalletService._locked_account(
+                session, personal_workspace_id
             )
             if wallet is None:
                 raise NotFoundError("个人积分账户不存在")
@@ -159,7 +186,7 @@ class RelayStatusService:
     def lock_wallet_and_task_for_update(
         cls, session: Session, *, company_id: str, task_id: str
     ) -> GenerationTask:
-        """Acquire billing locks in the single global wallet -> task order."""
+        """Acquire billing parents, wallet and task in admission order."""
         return cls.lock_wallet_and_task_for_scope(
             session,
             company_id=company_id,
@@ -181,6 +208,7 @@ class RelayStatusService:
         failure_reason: str = "",
         error_snapshot: dict | None = None,
         reservation_action: str | None = None,
+        execution_contract_sha256: str | None = None,
     ) -> GenerationTask:
         target_status = cls.target_status(status)
         cls._validate_reservation_action(status, reservation_action)
@@ -210,6 +238,7 @@ class RelayStatusService:
             error_snapshot=error_snapshot,
             reservation_action=reservation_action,
             personal_workspace_id=personal_workspace_id,
+            execution_contract_sha256=execution_contract_sha256,
         )
 
     @staticmethod
@@ -242,8 +271,10 @@ class RelayStatusService:
         error_snapshot: dict | None = None,
         reservation_action: str | None = None,
         personal_workspace_id: str | None = None,
+        execution_contract_sha256: str | None = None,
     ) -> GenerationTask:
-        """Apply a status after the caller acquired wallet (if terminal) then task."""
+        """Apply a status after the caller acquired billing parents and task."""
+        require_execution_digest(task, execution_contract_sha256)
         if (company_id is None) == (personal_workspace_id is None):
             raise NotFoundError("任务账务范围无效")
         if (
@@ -291,15 +322,26 @@ class RelayStatusService:
             )
             task.relay_error_snapshot = None
             if company_id is not None:
-                if task.quote_cents is None:
-                    raise ConflictError("公司任务报价快照无效")
-                WalletService.settle_success(
-                    session,
-                    company_id=company_id,
-                    task_id=task_id,
-                    actual_cost_cents=task.quote_cents,
-                    idempotency_key=f"relay-terminal:{relay_job_id}:succeeded",
-                )
+                if task.billing_unit == BillingUnit.POINT:
+                    if task.quote_points is None:
+                        raise ConflictError("公司积分任务报价快照无效")
+                    WalletService.settle_success(
+                        session,
+                        company_id=company_id,
+                        task_id=task_id,
+                        actual_cost_points=task.quote_points,
+                        idempotency_key=f"relay-terminal:{relay_job_id}:succeeded",
+                    )
+                else:
+                    if task.quote_cents is None:
+                        raise ConflictError("公司任务报价快照无效")
+                    WalletService.settle_success(
+                        session,
+                        company_id=company_id,
+                        task_id=task_id,
+                        actual_cost_cents=task.quote_cents,
+                        idempotency_key=f"relay-terminal:{relay_job_id}:succeeded",
+                    )
             else:
                 if task.quote_points is None or personal_workspace_id is None:
                     raise ConflictError("个人任务积分报价快照无效")

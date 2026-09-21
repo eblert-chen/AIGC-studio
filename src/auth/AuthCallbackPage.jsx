@@ -25,7 +25,13 @@ export function AuthCallbackPage({ session, status, onRetry }) {
         description="正在验证身份提供方返回的结果，确认完成前不会开放任何账号数据。"
         tone="loading"
         busy
-      />
+      >
+        <div className="auth-check-sequence" role="status" aria-label="安全会话确认进度">
+          <span className="is-active">身份回执核验</span>
+          <span>服务端会话建立</span>
+          <span>授权范围读取</span>
+        </div>
+      </AuthShell>
     );
   }
 
@@ -36,6 +42,11 @@ export function AuthCallbackPage({ session, status, onRetry }) {
       description={status === "error" ? "无法确认新的登录会话，请重新检查。" : "身份提供方尚未建立可用会话。"}
       tone="warning"
     >
+      <div className="auth-check-sequence is-blocked" aria-label="安全会话确认未完成">
+        <span>身份回执核验</span>
+        <span>服务端会话未确认</span>
+        <span>授权范围保持关闭</span>
+      </div>
       <button className="auth-secondary-action" type="button" onClick={onRetry}>重新确认会话</button>
     </AuthShell>
   );

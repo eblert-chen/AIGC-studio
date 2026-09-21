@@ -37,12 +37,24 @@
 
 ```powershell
 Copy-Item .env.example .env
-# 编辑 .env，至少替换数据库密码、Relay API Key 和内部服务令牌
-docker compose config --quiet
-docker compose build
-docker compose up -d
-docker compose ps
+# 编辑 .env：除数据库、Relay 与内部服务凭据外，还必须填写 Auth0/OIDC 端点、
+# Client ID、回调地址、前端 Origin 和 PLATFORM_OWNER_USER_IDS_JSON；示例值默认不可登录。
+npm run services:start:local
 ```
+
+`services:start:local` 是 Windows 本地长期开发栈的唯一一键启动入口。它固定按
+`.env -> huawei-obs.runtime.env -> paid-canary.runtime.env -> platform-canary.runtime.env`
+加载配置，先验证 Auth0/OIDC 必需字段和 Compose 配置，再启动 Docker 服务、重启网关并
+确认 `login_available=true`。如果 5173 尚未监听，它还会以隐藏窗口启动 Vite；如果该端口
+已被其他服务占用但 `/platform` 不可用，脚本会失败关闭而不会停止未知进程。
+
+存在成功的 Relay `role-post` 初始化凭证时，脚本走幂等的 warm-start 路径，只启动数据库和
+长驻服务，不会重新执行会与运行中 Relay 生命周期锁冲突的数据库角色/迁移 one-shot；只有首次
+启动才执行完整依赖启动图。若 Relay/下载边缘仍在运行却缺少成功凭证，脚本会失败关闭而不是
+冒险并发迁移。Platform API 在 warm-start 中会明确重建，确保当前 `.env` 真正进入容器。
+
+脚本不会执行 `down`、删除 volume、清理 orphan 或 prune。海外生产不得使用本地 `.env`，
+必须继续使用独立的受控生产秘密文件与生产部署流程。
 
 网关通过 Docker 内置 DNS 持续解析 `platform-api`，后端容器被重建后无需人工重启
 Nginx。若健康检查未恢复，应先查看网关与平台日志，不能用反复重启掩盖故障。
@@ -63,7 +75,53 @@ Invoke-RestMethod http://127.0.0.1:8180/health/ready
 完整本地冒烟：
 
 ```powershell
-.\scripts\smoke-local.ps1
+$smokeId = "run-" + (Get-Date -Format "yyyyMMddHHmmss")
+$smokeProject = "ai-video-smoke-$smokeId"
+$smokeManifest = Join-Path ([System.IO.Path]::GetTempPath()) "$smokeProject.json"
+$gatewayBase = "http://127.0.0.1:18180"
+$platformBase = "http://127.0.0.1:18200"
+$relayBase = "http://127.0.0.1:18300"
+
+node .\scripts\smoke-disposable-environment.mjs issue `
+  --environment-id $smokeId `
+  --gateway-base $gatewayBase `
+  --platform-base $platformBase `
+  --relay-base $relayBase |
+  Set-Content -LiteralPath $smokeManifest -Encoding utf8
+
+$env:GATEWAY_HOST_PORT = ([Uri]$gatewayBase).Port
+$env:PLATFORM_HOST_PORT = ([Uri]$platformBase).Port
+$env:NEW_API_RELAY_HOST_PORT = ([Uri]$relayBase).Port
+
+try {
+  docker compose --project-name $smokeProject up --build --detach --wait
+  if ($LASTEXITCODE -ne 0) { throw "Disposable smoke Compose startup failed" }
+
+  .\scripts\smoke-local.ps1 `
+    -GatewayBase $gatewayBase `
+    -PlatformBase $platformBase `
+    -RelayBase $relayBase `
+    -DisposableEnvironmentManifest $smokeManifest
+}
+finally {
+  docker compose --project-name $smokeProject down --volumes --remove-orphans
+  $cleanupExitCode = $LASTEXITCODE
+  $remainingContainers = @(docker container ls --all --quiet --filter "label=com.docker.compose.project=$smokeProject")
+  $containerCheckExitCode = $LASTEXITCODE
+  $remainingVolumes = @(docker volume ls --quiet --filter "label=com.docker.compose.project=$smokeProject")
+  $volumeCheckExitCode = $LASTEXITCODE
+  $remainingNetworks = @(docker network ls --quiet --filter "label=com.docker.compose.project=$smokeProject")
+  $networkCheckExitCode = $LASTEXITCODE
+  Remove-Item -LiteralPath $smokeManifest -Force -ErrorAction SilentlyContinue
+  Remove-Item Env:GATEWAY_HOST_PORT, Env:PLATFORM_HOST_PORT, Env:NEW_API_RELAY_HOST_PORT -ErrorAction SilentlyContinue
+
+  if ($cleanupExitCode -ne 0 -or $containerCheckExitCode -ne 0 -or
+      $volumeCheckExitCode -ne 0 -or $networkCheckExitCode -ne 0 -or
+      $remainingContainers.Count -ne 0 -or
+      $remainingVolumes.Count -ne 0 -or $remainingNetworks.Count -ne 0) {
+    throw "Disposable smoke project cleanup is incomplete: $smokeProject"
+  }
+}
 ```
 
 脚本会自动读取仓库根目录 `.env` 中的 `RELAY_CLIENT_ID` 与
@@ -75,6 +133,16 @@ Invoke-RestMethod http://127.0.0.1:8180/health/ready
 
 该脚本创建隔离的测试公司和测试余额，跑通派发、Mock Provider 回调、Relay 主动回调、外部测试图片转存、任务历史、作品索引、短时下载签发、完整字节传输、可信完成事件和结算。
 它不会调用真实支付或真实生成渠道，但需要能够访问脚本参数中的 HTTPS 测试图片。
+这些数据是持久化合同证据，不能逐表猜测删除；隔离边界必须是清单中精确绑定的
+`ai-video-smoke-<environment_id>` Compose project。脚本默认拒绝无清单、过期清单、非回环地址、
+地址不匹配、保留卷的清理策略，以及长期开发栈默认的 `8180/8200/8300` 端口，并在任何 HTTP
+请求前失败关闭。`-PreflightOnly` 只验证清单和目标，不发送网络请求。
+
+无论冒烟通过还是失败，上面的 `finally` 都会对该精确 project 执行
+`docker compose --project-name $smokeProject down --volumes --remove-orphans`，然后分别以
+`com.docker.compose.project=$smokeProject` 标签查询 container、volume 和 network；三者均为空才算
+清理完成，任何残留都会使命令失败。不得把 `down --volumes` 指向默认或其他长期 project。冒烟 JSON 只报告
+`cleanup_required=true`、精确 project 和清理模式，不会把“测试通过”误报成“清理完成”。
 
 停止服务：
 
@@ -82,7 +150,8 @@ Invoke-RestMethod http://127.0.0.1:8180/health/ready
 docker compose down
 ```
 
-保留卷可保留数据库与队列。只有明确需要清空本地测试数据时才执行 `docker compose down --volumes`；该操作不可恢复。
+长期开发 project 的保留卷可保留数据库与队列，且不得运行这个写入型冒烟。只有上面由清单绑定的
+短时 smoke project 才必须删除自身卷；该操作不可恢复，所以 project 名和标签核验不可省略。
 
 ### 唯一 new-api Relay 本地栈
 
@@ -290,66 +359,266 @@ Provider Monitor 和告警在生产配置中 fail-closed：Monitor 必须启用�
 
 本节是唯一活动 new-api Relay 的常规版本发布顺序。若环境仍有 Python 遗留任务，必须先按
 迁移手册完成一次性排空；正常发布和回滚均不得重建 Python production admission。
+以下是资格完成后的执行顺序，不是当前生产执行授权：Platform v15 catalog 为 `UNQUALIFIED`，
+v12/0047、v13/0048 也尚未资格化，v14/0049 同样未资格化；当前受保护发布保持 `BLOCKED / NO-GO`。
+Relay 当前源码合同为 `target=8,min=1,max=8`：fresh-v8 预期只记录 `[8]`，完整历史链预期为
+`[1,2,3,4,5,6,7,8]`，current-v8 只接受 exact v7 并新增不可变的供应商成本分摊证据。
+专用 PostgreSQL 用例 `TestRelaySchemaPostgresConstructedV7ToV8ProviderCostEvidence` 已通过
+`TEST_RELAY_SCHEMA_V7_TO_V8_DSN` 在一次性 `postgres:16-alpine` 上完成
+`PG16-constructed-v7→v8-gate=PASS (9.021s)`，证明构造 v7→v8、v7 ledger 不变、v8 表与
+UPDATE/DELETE 不可变 guard。该专项没有 TLS 或 pgAudit，不是生产资格门禁；
+`PG16+TLS+pgAudit-full-qualification-gate=NOT_RUN`，尚未完成生产资格。下面既有 v7 长门禁只到历史 v7 边界，不能授权 v8；v8 成功后
+max-v7 镜像必须判为 `ahead`。因此 Relay 同样保持 `BLOCKED / NO-GO`。
 
 1. 冻结发布版本和数据库迁移版本。
 2. 备份平台数据库、中转站数据库和关键 OBS 元数据。
 3. 在 staging 使用同一镜像执行迁移与完整冒烟测试。
 4. new-api 按 secret validator → database role-pre → migration → role-post → root/principal
-   lifecycle 顺序验证 `target=3,min=1,max=3`、catalog、ACL 与 generation-bound release proof；
-   protected API/edge/Worker 只接受 Current v3。
-5. 客户平台执行 `python -m alembic upgrade head`、`python -m alembic check` 和
-   `python -m alembic current`，唯一 head 必须为 `0040_showcase_management`，直接前序为
-   `0039_new_api_relay_defaults`。0040 新增 Owner-only 首页精选案例草稿、不可变发布版本和
-   紧急下线事件；0039 仍只把新 task/outbox 的数据库 default 冻结到 new-api，不改写任何
+   lifecycle 顺序验证 `target=8,min=1,max=8`、catalog、ACL 与 generation-bound release proof；
+   protected API/edge/Worker 只接受 Current v8。v8 的独立生产资格完成前不得执行该步骤。
+5. 客户平台当前源码 head 为 `0050_model_commercial_release`，直接前序为
+   `0049_payment_finance_closure`；当前 Platform 数据库权限策略为 v15。先完成当前链的独立
+   PostgreSQL 16 catalog/角色与签名 release proof 资格，再按受保护 role-pre → migration → proof
+   时序执行 `python -m alembic upgrade head`、`python -m alembic check` 和
+   `python -m alembic current`。开发 PG16 迁移/并发通过不等于资格通过；不得用全零占位或历史
+   hash 放宽受保护校验。0050 新增证据绑定、不可变的模型商业发布计划及失败关闭的执行状态；
+   0048 建立商业计费与财务状态机，0049 加固持久支付投递、Webhook
+   重放、账单原件绑定、拒付偿债归属与企业催收。0049 对无原件绑定的旧结算行、无 Mandate
+   的历史自动扣款订单会在 DDL 前失败关闭；必须制定保留历史的迁移方案，不得删旧事实、
+   捏造原件或用户同意来绕过检查。
+   历史 `0045_system_audit_actor` 为用户/系统审计主体建立显式互斥字段，并增加专用、
+   最小权限的 `relay-catalog-sync` 数据库 principal；`0044_account_product_partition`
+   持久化互斥的个人、企业和平台管理员账号类型，保留历史
+   钱包、账本、任务、产物和成员证据，只停用不属于该账号类型的入口，并安装数据库约束和
+   trigger 阻止静默跨类型；0043 仅持久加入只读提示词收集权限
+   `platform.task_content.read`，不提供 manage、编辑或删除能力，表与 ACL 投影保持 0042 的
+   冻结值；0042 在任何企业授权副作用前原子 claim 全局 idempotency key，并将 journal、
+   授权、审计与结果同事务提交；`0041_model_capability_releases` 分离 Relay capability
+   candidate 与最后批准 ceiling；
+   0040 新增 Owner-only 首页精选案例草稿、不可变发布版本和紧急下线事件；0039 仍只把新
+   task/outbox 的数据库 default 冻结到 new-api，不改写任何
    历史 affinity；更早的 `0038_download_evidence_checks` 与认证生命周期前序继续冻结保留。
-   受保护 v5 catalog 必须精确为
-   `ecd5b3faae20595e66396c59d37327d1e6e5b742c3d70697aaf6f109866591e6`。
+   历史 v10/0045 的最小权限边界继续保留。`relay-catalog-sync` 只获得
+   `model_definitions` 的 SELECT/INSERT/UPDATE、`model_capabilities` 的 SELECT/INSERT 和
+   `audit_logs` 的 INSERT；它不能读取用户表，也不能批准、发布、定价或分发模型。受保护的
+   PostgreSQL 16 当前链仍未资格化。v10/0045 的
+   `7ce8849ecc4be298fe9889bdeaeb7ea17932a51c9ff9eeb024cc55bbcad44142` 与 v9/0044 的
+   `64640e8ccf7069fc6ca0773af64def56babfdb80101ea9cd22e6b8e7fc00c167` 均仅保留为历史
+   资格证据，不能证明当前链或授权生产；更早 hash 同样不能替代 v15 attestation。
+   **0041 不会把旧 `relay_capability_revision` 或 Platform 自报能力自动回填为候选/批准
+   ceiling。** 这是故意的 fail-closed 升级：旧 revision 只保留为历史证据，所有既有模型的
+   candidate/approved ceiling 均保持 `NULL`，直到重新读取 live Relay 内容。
+   支付订单、退款/拒付、积分、对账、自动充值及企业月结已有软件实现；真实 PSP、可信账单
+   来源、生产常驻 billing worker 和通知仍未接入。`python -m platform_api.billing_worker`
+   只是已实现的 HTTP-only 调度入口，不证明已发布为生产常驻服务或客户已收到通知。
+   上传文件只能证明收到的 bytes，不能证明 PSP/银行/供应商来源可信；相关对账继续保留
+   `SOURCE_AUTHENTICITY_UNVERIFIED`。完整边界见 [支付与财务闭环](payment-finance-closure.md)。
 6. 依次启动 new-api API、生成 Worker、Provider 状态同步 Worker、Provider 监控 Worker、
    转存 Worker、回调 Worker和 download edge。
-7. 启动只配置 `new-api-v1 / generations.v1` 的客户平台 API、派发、状态同步和超时补偿进程。
-8. 验证内部健康检查、Monitor 最近成功周期和告警 Webhook 验签后，再恢复新准入。
-9. 用测试公司执行一条低成本真实任务，核对预占、任务历史、作品索引、短签签发、完整下载事件、结算和审计日志。
-10. 观察错误率、队列积压、预占余额、生成耗时、转存失败、Provider 健康样本、活动告警和
+7. 在客户新准入仍关闭、Platform 管理入口单独受保护的状态下启动只配置
+   `new-api-v1 / generations.v1` 的 Platform API、派发/同步/超时 Worker，以及专用
+   `relay-catalog-sync` 周期 Worker；派发、状态同步和超时补偿必须继续处理迁移前已接受的
+   任务，不能因公司或模型准入关闭而搁置余额和上游任务。
+8. 对 `GET /api/v1/platform-admin/models` 返回的每个已发布或启用模型执行下面的升级门禁；
+   任一模型缺失于 Relay、能力不安全或路由验收证据不完整时，保持该模型/客户新准入关闭，
+   不得复制旧 Platform 能力来“补齐”未知 Relay 能力：
+   1. 等待 `relay-catalog-sync` 完成一次单 leader 周期。Worker 使用上一轮 ETag 条件请求
+      `GET /v1/models`；`304` 或完整目录无语义变化时不得写库或追加审计；
+   2. 打开模型目录页面或调用 `GET /api/v1/platform-admin/models` 只读取 Platform 已持久化目录，
+      不得因页面加载调用 Relay 或触发写入。新 `public_model_id` 只能出现为未发布草稿；候选
+      变化必须带 `actor_kind=system`、`actor_key=relay-catalog-sync` 的系统审计；
+   3. 由 Platform Owner 独立审阅候选与最后批准 ceiling 的差异，再调用
+      `POST /api/v1/platform-admin/models/{model_id}/relay-capability`。批准端会再次拉取 live
+      catalog，并在数据库行锁内确认 catalog revision、capability revision 和完整内容都与
+      stored candidate 完全一致；同 revision 不同内容按 collision 拒绝；
+   4. 人工设置显示名称、发布状态、计费方式/价格以及个人或企业分发；后台对账进程没有这些
+      权限。再次读取模型清单，确认所有拟恢复分发的模型均为
+      `relay_capability_approval_status=approved`、
+      `relay_capability_requires_approval=false`、approved ceiling 非空且 route evidence ready。
+      `unavailable`、`legacy_approved`、`pending` 或 `unapproved` 任一状态都禁止恢复该模型。
+9. 验证内部健康检查、Monitor 最近成功周期、告警 Webhook 验签和第 8 步批准清单后，再恢复
+   客户新准入。
+10. 用测试公司执行一条低成本真实任务，核对预占、任务历史、作品索引、短签签发、完整下载事件、结算和审计日志。
+11. 观察错误率、队列积压、预占余额、生成耗时、转存失败、Provider 健康样本、活动告警和
    告警投递状态至少 30 分钟。
 
-### 扩展 new-api Relay 原生数据库 v3
+### 受保护的 live staging 验收
+
+生产 promotion 前必须从默认分支手动运行 GitHub Actions 的
+`Relay live staging acceptance`。该 workflow 绑定 GitHub Environment
+`relay-staging-acceptance`，不接受 dispatch 参数；候选配置与非敏感证据包固定来自该
+Environment 的 variables，两个 Relay service credential 与 fault-control token 固定来自
+Environment secrets。任一配置、证据或 credential 缺失时任务直接失败，不能降级为 dry-run。
+
+Environment 管理员必须完成以下仓库设置，workflow 本身不会替管理员创建这些保护：
+
+- 只允许受保护默认分支部署到 `relay-staging-acceptance`，配置 required reviewers，并限制
+  谁可以发起或批准该 Environment deployment；
+- `RELAY_STAGING_ACCEPTANCE_CONFIG_B64` 使用 canonical base64 编码 staging 配置；配置中的
+  `candidate.gitRevision` 必须精确等于本次 workflow 的默认分支 commit SHA；workflow 会在访问
+  staging candidate 前失败关闭地比较该值与 `github.sha`，防止把其他提交部署的候选证据错误
+  归档到当前 commit。配置中的
+  两个 `apiKeyEnv` 必须固定为 `RELAY_ACCEPTANCE_TENANT_A_API_KEY` 与
+  `RELAY_ACCEPTANCE_TENANT_B_API_KEY`，fault token 名必须固定为
+  `RELAY_ACCEPTANCE_FAULT_CONTROL_TOKEN`；
+- `RELAY_STAGING_ACCEPTANCE_EVIDENCE_BUNDLE_B64` 使用 canonical base64 编码 JSON：
+  `{"schema_version":1,"files":{"evidence/...json":"<canonical-base64>"}}`。只能包含
+  `evidence/` 下最多 16 个小型 JSON 元数据、哈希或摘要证据，解码后的证据合计不得超过
+  20 KiB，不能放 credential；配置中每个 `evidenceFiles[].path` 必须在包内。GitHub
+  Environment variable 本身有容量限制，因此该 bundle 不是大日志、录屏或二进制文件的传输通道；
+- 三个同名 secret 只保存 service credential/fault token 原值。禁止把 secret 写进配置、证据、
+  workflow 参数、命令行或 artifact。
+
+workflow 会先执行 `relay:candidate:check`，再以 `--execute-all` 对已部署 staging candidate
+运行 migration acceptance，并只上传 secret-free、create-only 的 `report.json` 及其 SHA-256。
+验收会把候选就绪证据分成两份独立门禁：
+`contract.candidate_readiness` 是任何变更请求之前的 `preflight`，
+`contract.candidate_readiness_final` 则只在所有合同流量、故障场景的清理/恢复确认和真实渠道证据
+校验全部结束后执行。每个故障场景除了自身断言外，还必须返回由原始证据绑定的
+`fault_environment_restored=true`；对应证据必须明确标识 `kind=fault_cleanup`、
+`action=restore` 和 `data.restored=true`，仅返回场景 `PASS` 不能代替清理完成证明。
+故障控制证据采用精确字段合同；每条原始证据的摘要通过后仍会递归检查已配置 credential、
+credential-bearing 字段和绝对 HTTP(S) URL。任何包含 provider 临时/签名 URL、token、secret
+或额外未声明字段的故障证据都会使门禁失败，且不复制进可上传报告。
+真实渠道记录同样只接受声明的摘要字段；task/bill/ledger 等 reference 必须是稳定标识符，
+不能用 provider URL 代替，任何绝对 HTTP(S) URL 都会失败关闭且不会进入报告。
+最终门禁会重新读取 `/health/ready`，再次要求 HTTP 200、顶层 `state=healthy`、
+`production_cutover_ready=true`、同一 source/upstream git revision 与 image digest，并确认 cost
+incomplete/backlog/dead-letter、native billing reconciliation 均为零且成本核对完整。preflight 与
+final 还会逐字段验证 Provider Runtime 已启用、Monitor 新鲜且没有 Worker error、active alert 和
+unavailable route 均为零，并要求 alert、task-stage、operations-snapshot 的 backlog/dead-letter
+以及 provider-result reconciliation backlog
+全部为零；不能只信一个 `production_cutover_ready` 布尔值，顶层 `degraded` 即使保持 API 可服务也不能
+授权切流。此后验收工具
+不得再发送任何候选或故障控制变更请求。故障清理失败或最终就绪复检失败都会阻止 PASS 和 artifact
+上传，preflight 证据不能替代 final 证据。
+报告 schema v3 会在 `execution.mutation_tracking` 中分别记录 `python_oracle`、
+`new_api_candidate` 与 `fault_control` 的变更请求尝试和已确认受理次数。请求一旦发出，
+即使超时、断线或响应无法解析，`request_attempted` 也保持为 `true`；
+`accepted_mutation_confirmed=false` 只表示没有拿到明确受理响应，不能解释为远端一定未发生变更。
+`python_relay_source_or_deployment_changed=false` 仅说明验收工具没有修改 Python Relay 的源码或部署，
+Python oracle 运行时收到的生成请求另由 `python_oracle_runtime_mutation` 如实记录。
+production promotion 必须消费同一 commit 的成功 run 与上传的 `report.json`；这里的“同一
+commit”同时指 workflow checkout、配置中的 `candidate.gitRevision`、候选 readiness 返回的
+`x-relay-source-revision` 和 artifact 名中的 commit SHA 四者完全一致。发布记录至少保存
+run URL/ID、commit SHA、artifact 名和报告 SHA-256；`contract.candidate_readiness` 与
+`contract.candidate_readiness_final` 必须分别以 `preflight` 和 `final` 证据 PASS，
+live cost 字段必须完整，报告 decision 仍必须是
+`OFFLINE_PARITY_PASSED_REQUIRES_EXTERNAL_RELEASE_GATES`。报告明确不授权 Python production
+admission，也不能替代 Provider、OBS、IdP、支付、备份恢复与容量的独立发布证据。
+
+这个 workflow 不能替代 GitHub 仓库外的 branch protection、Environment protection 或生产
+部署系统的 required check。管理员仍须在 GitHub 与生产 promotion 系统中把上述 Environment
+审批和成功 run/artifact 设为强制条件；没有该外部绑定时，仓库只能证明验收能力存在，不能声称
+生产放行已经被强制执行。
+
+### 扩展 new-api Relay 原生数据库 v8
 
 Python Relay 的 `0012_generation_contract_v1` 只冻结离线行为 oracle artifact，既不是生产
-发布步骤，也不是回滚目标。new-api 本次发布契约固定为
-`target=3,min=1,max=3`，使用 `relay-schema-status` 与 `relay-migrate`，不得用 Alembic
+发布步骤，也不是回滚目标。new-api 本次源码契约固定为
+`target=8,min=1,max=8`，使用 `relay-schema-status` 与 `relay-migrate`，不得用 Alembic
 命令或生成接口的 `schema_version=1` 代替其状态证明。
 
-- fresh v3 必须报告 `from=0`、`baseline=current=target=3`，ledger 只能有 version 3
-  一行，即 `[3]`；不得为没有执行的 v1/v2 伪造历史。
+- fresh v8 必须报告 `from=0`、`baseline=current=target=8`，ledger 只能有 version 8
+  一行，即 `[8]`；不得为没有执行的 v1/v2/v3/v4/v5/v6/v7 伪造历史。
 - exact v1 输入在迁移诊断中可为 `compatible,current=false`；它必须先由冻结的 historical
-  v1→v2 no-catalog-delta bridge 形成 exact v2，再由当前 one-shot 执行 v2→v3 修复。最终必须为
-  `baseline=1,current=target=3`，ledger 精确为 `[1,2,3]`，原 v1、v2 行完全不变。v1/v2/v3
+  v1→v2 no-catalog-delta bridge 形成 exact v2，再由 pinned v3 完成 v2→v3 修复。发布门禁随后只在
+  自己持有的 exact-v3 合成数据库上，用不可变 pinned-v4 digest
+  `ai-video/new-api-relay@sha256:53a5d65cefbc4400e9e572665b227cf4a9628774aa77c814be4082f1abd7f84f`
+  实跑 v3→v4 route-binding；不可变 pinned-v5 digest
+  `ai-video/new-api-relay@sha256:d5998561f1142e5189ca15f6086b42da31127ecb5d58269ac492dc4aa3f61b9a`
+  接着在同一门禁数据库独占执行 v4→v5 diagnostic-taxonomy。固定的 pinned-v6 镜像
+  `ai-video/new-api-relay:v6-canary-0b0b8bf5`（image/repo digest
+  `sha256:576b836d26f19825532feaca1f9f7950f28affc78477d61d7b29dca474b8817f`，source revision
+  `0b0b8bf597aeb9e69e89a04f9b4d7b1d712e3391`，source snapshot
+  `sha256:1ad8305e212ac45bca32d2bbcf064c20bdb4337623b952452659748b17d2e836`，file count `2106`，
+  upstream `0ab02020603d22e5613bc4cf46bfab06f8567769`）独占执行 v5→v6 durable route-test lifecycle，
+  再由历史 v7 执行 v6→v7 artifact content-type release；current v8 只允许从 exact v7
+  执行 v7→v8 provider-cost allocation evidence。预期终态为
+  `baseline=1,current=target=8`，ledger 精确为 `[1,2,3,4,5,6,7,8]`，原 v1..v7 行完全不变。
+  current v8 不得跳过 exact v7。pinned-v4 与 pinned-v5 都只是 immutable binary
+  behavior fixture；pinned-v6 是 5→6 release owner。所有 pinned image 均不得访问业务/live 数据库，
+  也不是运营迁移源；业务数据库只允许由本次经审阅的 current-v8 migrator 执行其冻结版本链。
+  v1/v2/v3
   PostgreSQL catalog digest 相同是经冻结的设计；v2 source/checksum 仍必须独立，冻结值分别为
   `sha256:03de3ed038c3a9f7b6e160ac720e4350b9d468c09417cdc9e280289ed390fef2` 与
   `sha256:a3dc154ca42086544096cc0c3e3f2c84479e52e2ad76bd4d32aa2806c2c9af0e`；v3 source/checksum
   分别为 `sha256:4d784286e5480a10a83f4408b303eec075a347fa405d45650e12c19425e4659d` 与
-  `sha256:0295d36ca5032088cc2e0b3b7f935aaeb24c3c5847a6b0a92a4dc3099d58e553`。
-- raw/unversioned previous-candidate 必须先由固定的 v1 migrator 转成 exact v1，再由当前
-  代码中的冻结 v2 合同完成 historical bridge，最后由当前 v3 one-shot 升级。当前 v3 image
-  直接重放 live v1/v2、测试 SKIP、dirty/partial/ahead/unknown、catalog/ACL/ledger drift 都是发布失败。
+  `sha256:0295d36ca5032088cc2e0b3b7f935aaeb24c3c5847a6b0a92a4dc3099d58e553`。v4 增加已接收任务恢复所需的
+  adapter profile、model release 与 route snapshot 六列；三元组必须全空或全非空，历史空组仅允许一次
+  原子回填，绑定后仅允许同值更新。v4 source/model/catalog/checksum 分别为
+  `sha256:6c1ff01ee6567115190f12dcd947a96b01d88bbee5668705d811f51a526e4c34`、
+  `sha256:75c900e5d3edb4785f774d44b23e60b7d0fdd23ba541c28ccf6cb0ec727bb01c`、
+  `sha256:b8260ee751d0b9bb6dcd0c2d2d4105bef475296f25a4babb13fca3e117888126` 与
+  `sha256:4a91686133814c07401a11eea3fe373154219923c4d63666ca99e3049d96079d`。
+- v5 为 channel-test diagnostics 增加受数据库保护的 taxonomy；source/model/catalog/checksum 分别为
+  `sha256:1d63451fdcdc0edfd869df3995d4ea14b3d0a3fa0871dadde9a842197b92c9d8`、
+  `sha256:75c900e5d3edb4785f774d44b23e60b7d0fdd23ba541c28ccf6cb0ec727bb01c`、
+  `sha256:2bc1bf2f68e513d12de36cd4f8c2ca6a569d102b93a6fbaea444facad3189fc1` 与
+  `sha256:d8066d7081eb4a73239333bab10b78e825457dcf78bc3d3aaa195c52edc8b7f6`。
+- v6 为 route-bound channel test 增加 transport revision/digest、durable provider task、sticky resume、
+  secret-free artifact evidence 与 owner reconciliation 数据库 guard；provider success 后的 proof/artifact
+  验收失败保持 `pending+submitted`，不得释放 route block。v6 checksum/catalog 分别固定为
+  `sha256:8cffc546bb13c3f36f734dbb2e45a750da5b3e614de3beda82c6dd87dd84af00` 与
+  `sha256:180546808883afca58bb9fd246340339d87ac023aff91fe23186d9274dc15135`。
+- v7 只把受保护渠道测试的 artifact 类型从 `video/mp4` 扩展为 `video/mp4` 或 `image/png`；
+  其余五组 v6 constraints/index OID、v1..v6 ledger 和 ACL 必须保持不变。v7 checksum/catalog
+  分别固定为 `sha256:da3ddb86260818f894b13fc6b3ad34031b6089dddb83954172984d07e451c4c3`
+  与 `sha256:af1377416cb2788093391a03491d2bb380fc4b81db5f08d0d628f3f8a2abef01`。
+- v8 只在 exact v7 上增加不可变、回执绑定的 provider-cost allocation evidence；
+  source/model/checksum/catalog 分别冻结为
+  `sha256:4d1422f6f691d1440600536f9b89c3e1fb9af9e69f880437b95d437b101f71dd`、
+  `sha256:24f03d665ed5df5958cbf82075bfd28fb8aeb97fee277164e443a0218132776d`、
+  `sha256:1def22667e226cf8dfbd467e18445874dcce6959a8b9e74b43623e14bbc31de7` 与
+  `sha256:6374866475d3b9c404592c39ef5ad8be1b63066308b502e5362dbc47e469823c`。
+  这些冻结值只证明源码身份，不证明生产 PG 资格。`TEST_RELAY_SCHEMA_V7_TO_V8_DSN`
+  专项已有 `PG16-constructed-v7→v8-gate=PASS (9.021s)`，但没有覆盖 TLS/pgAudit；
+  `PG16+TLS+pgAudit-full-qualification-gate=NOT_RUN`。
+- raw/unversioned previous-candidate 必须先由固定的 v1 migrator 转成 exact v1，再依次执行
+  v1→v2、v2→v3、v3→v4、v4→v5、pinned-v6 的 v5→v6、历史 v7 的 v6→v7，最后由
+  current-v8 从 exact v7 执行 v7→v8。current v8 image
+  直接重放 live v1 bootstrap、测试 SKIP、dirty/partial/ahead/unknown、catalog/ACL/ledger drift 都是发布失败。
 - pinned v1 段只准新增 schema/ledger/catalog/roles；旧候选中既有的唯一
   `lifecycle_root` 与 setup marker 必须和普通用户、业务行、加密 credential 一样逐行 digest
   后原样保留，不得新增或改写 root/setup，principal 仍必须为零，且不准启动 API/edge。
   historical v2 bridge 与 v3 correction 必须在同一数据库再次重核这些数据，随后完整执行
-  proof -> root exact replay (`unchanged`) -> principal creation -> API Current-v3 lifecycle；fresh 参考库不能替代这项
-  同库终态证据。
+  历史 v7 长门禁只证明 proof -> root exact replay (`unchanged`) -> principal creation -> API/edge
+  v7 lifecycle；它不能替代尚未运行的 current-v8 同库终态证据。fresh-v8 与 pinned-v1 application-catalog
+  参考库也不能替代这项 current-v8 证据。pinned-v1 参考库只证明冻结的 v1 application catalog 与单行
+  ledger，不代表旧 v1 runtime 或 system-catalog acceptance。
 - 受保护的 post、service-principal provision/rotation、root bootstrap、API、download
-  edge、database-release proof consumer 与 runtime readiness 全部要求 Current v3；只有
-  role-pre 与 migrate proof path 可读取 compatible v1/v2 以完成升级。v3 成功后，`max=2`
+  edge、database-release proof consumer 与 runtime readiness 全部要求 Current v8；只有
+  role-pre 与 migrate proof path 可读取 compatible v1/v2/v3/v4/v5/v6/v7 以完成升级。v8 成功后，`max=7`
   镜像必须把数据库判为 `ahead` 并失败关闭，不能直接回滚；旧镜像不兼容时只能前向修复。
+- 已归档的 v7 跨版本 ACL 边界严格执行 `pinned-v3 migration -> pre-v4 zero-ACL role-pre ->
+  pinned-v4 migration -> pinned-v4 full verifier -> pre-v5 zero-ACL role-pre -> pinned-v5 migration ->
+  pinned-v5 rollback verifier -> pre-v6 zero-ACL role-pre -> pinned-v6 migration ->
+  pinned-v6 rollback verifier -> pre-v7 zero-ACL role-pre -> historical-v7 migration`。
+  v3 提交 ACL 后，current provisioner 先恢复零 ACL 角色桩，才允许不可变 v4 binary 独占执行
+  3→4；完整 v4 verifier 通过后再次恢复零 ACL 角色桩，才允许 pinned v5 独占执行 4→5；
+  v5 verifier 通过后第三次恢复零 ACL 角色桩，才允许 pinned v6 独占执行 5→6；
+  v6 rollback verifier 通过后第四次恢复零 ACL 角色桩，才允许历史 v7 独占执行 6→7。
+  role-pre does not perform schema migration，只负责清除上一版本已提交授权并重建受保护角色桩。
+  四个边界必须分别归档 `pre-v4-zero-acl-role-stub-gate=PASS`、
+  `pre-v5-zero-acl-role-stub-gate=PASS`、`pre-v6-zero-acl-role-stub-gate=PASS` 与
+  `pre-v7-zero-acl-role-stub-gate=PASS`。
 
 运行 `make test-relay-schema-legacy-pg16` 时归档固定 PG16.14/pgaudit16.1/TLS image、固定
-v1/v2 source 与 test-only fixture digest，以及 fresh-v3-row3-only、legacy-to-v1、v1 保留既有
-root/setup 且无新增 runtime side effect、historical frozen v1-to-v2 no-catalog-delta、
-v2-to-v3 one-shot、同库 exact-v1-to-v3 ledger、post-v3 proof/root/principal/API 与
-max-v2-ahead/no-direct-rollback 各项明确 PASS；Go 测试与两项
+ v1/v2/v3 source、不可变 pinned-v4/pinned-v5/pinned-v6 image provenance 与 test-only fixture digest，以及 fresh-v7-row7-only、fresh-v1-row1-only
+application-reference、legacy-to-v1、v1 保留既有 root/setup 且无新增 runtime side effect、historical frozen v1-to-v2 no-catalog-delta、
+ immutable v2-to-v3 one-shot、gate-owned exact-v3 上的 pinned-v4 one-shot、
+ `pre-v4-zero-acl-role-stub-gate=PASS`、pinned-v4 one-shot、
+ `pinned-v4-state-ledger-catalog-acl-guards-gate=PASS` 只读/回滚核验、
+ `pre-v5-zero-acl-role-stub-gate=PASS`、pinned-v5 的 v4→v5 one-shot、同库 exact-v1-to-v5 ledger、
+ pinned-v5→v6 rollback verifier、`pre-v6-zero-acl-role-stub-gate=PASS`、pinned-v6 的 v5→v6 one-shot、
+ exact-v1-to-v6 ledger、pinned-v6→v7 rollback verifier、`pre-v7-zero-acl-role-stub-gate=PASS`、
+ current-v7 的 v6→v7 one-shot、exact-v1-to-v7 ledger、post-v7 proof/root/principal/API/download-edge、
+ route-binding mutation/fencing 与 max-v6-ahead/no-direct-rollback 各项明确 PASS；Go 测试与两项
 rotation 测试也必须有 JSON PASS event，缺失或 SKIP 均失败。完整 protected Compose 仍按
 `validator -> role-pre -> migrate -> post -> root/principal/API/edge` 的既定 proof 顺序执行。
+这些是历史 v7 证据；当前另有一次聚焦的 `PG16-constructed-v7→v8-gate=PASS (9.021s)`，
+但它不包含 TLS/pgAudit、v8 当前角色/ACL 或 Current-v8 API/edge lifecycle；
+`PG16+TLS+pgAudit-full-qualification-gate=NOT_RUN`，不能标为生产 v8 PASS，也不能用于生产切流。
 
 ## 7. 回滚
 

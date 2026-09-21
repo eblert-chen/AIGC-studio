@@ -69,7 +69,7 @@ class InputAssetStore(Protocol):
 
 
 _OBJECT_KEY_PATTERN = re.compile(
-    r"inputs/[0-9a-f-]{36}/[0-9a-f-]{36}"
+    r"inputs/(?:personal/)?[0-9a-f-]{36}/[0-9a-f-]{36}"
 )
 
 
@@ -399,7 +399,6 @@ class HuaweiObsInputAssetStore:
         headers = PutObjectHeader(
             contentType=content_type,
             acl="private",
-            cacheControl="private, no-store",
         )
         metadata = {
             "sha256": sha256,
@@ -412,6 +411,7 @@ class HuaweiObsInputAssetStore:
                 str(source_path),
                 metadata,
                 headers,
+                extensionHeaders={"Cache-Control": "private, no-store"},
             )
         except Exception as exc:
             raise InputAssetStorageError("Huawei OBS input asset upload failed") from exc

@@ -356,7 +356,16 @@ export function createPlatformCore({
       ).trim().toLowerCase();
       const responseDetails = nestedError?.details
         ?? payload?.details
-        ?? detail?.details;
+        ?? detail?.details
+        ?? (Array.isArray(detail)
+          ? {
+            validationErrors: detail.map((issue) => ({
+              loc: Array.isArray(issue?.loc) ? issue.loc.map(String) : [],
+              msg: String(issue?.msg || "请求字段未通过校验"),
+              type: String(issue?.type || "validation_error"),
+            })),
+          }
+          : undefined);
       throw new PlatformApiError(message, {
         status: response.status,
         code: authRequired === "step-up"

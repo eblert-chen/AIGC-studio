@@ -17,7 +17,12 @@ from platform_api.models import (
 from platform_api.services.billing import WalletService
 
 from .conftest import TEST_RELAY_CAPABILITY_REVISION, bootstrap
-from .test_model_capability_v1_contract import _mode, canonical_capability
+from .legacy_commercial_isolation import isolate_legacy_commercial_gate
+from .test_model_capability_v1_contract import (
+    _mode,
+    _request_with_fixture_distribution_evidence,
+    canonical_capability,
+)
 
 
 def _member(client, tenant: dict[str, str], headers: dict[str, str], suffix: str):
@@ -54,6 +59,7 @@ def _model_with_grants(
     grants: list[dict[str, object]],
     capability_config: dict[str, object],
 ) -> str:
+    isolate_legacy_commercial_gate(app)
     with app.state.session_factory.begin() as session:
         model = ModelDefinition(
             slug=slug,
@@ -190,8 +196,12 @@ def test_two_employees_consume_one_company_wallet_and_keep_employee_attribution(
     assert wallet.status_code == 200, wallet.text
     assert wallet.json() == {
         "company_id": company_id,
+        "billing_unit": "CNY_CENT",
+        "billing_version": 1,
         "available_cents": 675,
         "reserved_cents": 0,
+        "available_points": None,
+        "reserved_points": None,
     }
 
     report = client.get(
@@ -759,19 +769,27 @@ def test_model_billing_mode_change_is_versioned_and_frozen_after_grant(
     assert changed.json()["billing_mode"] == "per_item"
     assert changed.json()["capability_version"] == 2
 
-    published = client.post(
-        f"/api/v1/platform-admin/models/{model['id']}/publish",
-        headers=admin_headers,
+    published = _request_with_fixture_distribution_evidence(
+        client,
+        model["id"],
+        lambda: client.post(
+            f"/api/v1/platform-admin/models/{model['id']}/publish",
+            headers=admin_headers,
+        ),
     )
     assert published.status_code == 200, published.text
-    grant = client.put(
-        f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
-        headers=admin_headers,
-        json={
-            "model_id": model["id"],
-            "enabled": True,
-            "price_per_item_cents": 99,
-        },
+    grant = _request_with_fixture_distribution_evidence(
+        client,
+        model["id"],
+        lambda: client.put(
+            f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
+            headers=admin_headers,
+            json={
+                "model_id": model["id"],
+                "enabled": True,
+                "price_per_item_cents": 99,
+            },
+        ),
     )
     assert grant.status_code == 200, grant.text
     assert client.post(

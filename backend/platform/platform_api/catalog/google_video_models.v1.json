@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-09-01",
+  "provider_key": "google",
+  "capability_source": "relay_live_catalog",
+  "customer_pricing_policy": "admin_approved_fixed_points",
+  "models": [
+    {
+      "public_model_id": "gemini-omni-1.1-flash",
+      "display_name": "Gemini Omni 1.1 Flash",
+      "billing_mode": "per_second",
+      "lifecycle": "acceptance_candidate",
+      "evidence_status": "relay_route_acceptance_required",
+      "new_routes_allowed": true,
+      "provider_model_ids": [
+        "gemini-omni-1.1-flash"
+      ],
+      "official_sources": [
+        "https://ai.google.dev/gemini-api/docs/models/gemini-omni-flash",
+        "https://ai.google.dev/gemini-api/docs/omni",
+        "https://ai.google.dev/gemini-api/docs/deprecations"
+      ]
+    },
+    {
+      "public_model_id": "veo-3.1",
+      "display_name": "Google Veo 3.1",
+      "billing_mode": "per_second",
+      "lifecycle": "acceptance_candidate",
+      "evidence_status": "relay_route_acceptance_required",
+      "new_routes_allowed": true,
+      "provider_model_ids": [
+        "veo-3.1-generate-preview"
+      ],
+      "official_sources": [
+        "https://ai.google.dev/gemini-api/docs/veo"
+      ]
+    },
+    {
+      "public_model_id": "veo-3.1-fast",
+      "display_name": "Google Veo 3.1 Fast",
+      "billing_mode": "per_second",
+      "lifecycle": "acceptance_candidate",
+      "evidence_status": "relay_route_acceptance_required",
+      "new_routes_allowed": true,
+      "provider_model_ids": [
+        "veo-3.1-fast-generate-preview"
+      ],
+      "official_sources": [
+        "https://ai.google.dev/gemini-api/docs/veo"
+      ]
+    }
+  ]
+}

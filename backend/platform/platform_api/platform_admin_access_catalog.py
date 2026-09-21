@@ -23,29 +23,32 @@ _DOMAIN_DESCRIPTIONS = {
     "asset_exceptions": "产物转存和下载登记异常",
     "audit": "平台操作审计、筛选和导出线索",
     "relay_health": "Relay 渠道、账号池、限流、切换和告警摘要",
+    "task_content": "用户生成提示词自动汇总库",
     "admin_access": "平台管理员角色和权限分配",
 }
+_READ_ONLY_DOMAINS = frozenset({"task_content"})
 
 
 def _build_catalog() -> tuple[PlatformAdminPermissionSpec, ...]:
     permissions: list[PlatformAdminPermissionSpec] = []
     for domain, subject in _DOMAIN_DESCRIPTIONS.items():
-        permissions.extend(
-            (
-                PlatformAdminPermissionSpec(
-                    code=f"platform.{domain}.read",
-                    domain=domain,
-                    action="read",
-                    description=f"查看{subject}",
-                ),
+        permissions.append(
+            PlatformAdminPermissionSpec(
+                code=f"platform.{domain}.read",
+                domain=domain,
+                action="read",
+                description=f"查看{subject}",
+            )
+        )
+        if domain not in _READ_ONLY_DOMAINS:
+            permissions.append(
                 PlatformAdminPermissionSpec(
                     code=f"platform.{domain}.manage",
                     domain=domain,
                     action="manage",
                     description=f"管理{subject}",
-                ),
+                )
             )
-        )
     return tuple(permissions)
 
 
@@ -60,4 +63,3 @@ def validate_platform_admin_permission_code(code: str) -> str:
     if code not in PLATFORM_ADMIN_PERMISSION_CODES:
         raise ValueError(f"Unknown platform administrator permission: {code}")
     return code
-

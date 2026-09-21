@@ -186,17 +186,103 @@ func TestPlatformRelayLocalDatabaseRoleRehearsalRequiresExactDevelopmentOptIn(t 
 	t.Setenv("RELAY_DATABASE_TLS_ATTESTATION_REQUIRED", "false")
 	t.Setenv("RELAY_LOCAL_DATABASE_ROLE_REHEARSAL", "true")
 	require.True(t, platformRelayLocalDatabaseRoleRehearsalEnabled())
+	t.Setenv("RELAY_DATABASE_TLS_ATTESTATION_REQUIRED", "true")
+	require.True(t, platformRelayLocalDatabaseRoleRehearsalEnabled())
+	t.Setenv("RELAY_DATABASE_TLS_ATTESTATION_REQUIRED", "false")
+	for _, protectedEnvironment := range []string{"staging", "production"} {
+		t.Run("exact-"+protectedEnvironment, func(t *testing.T) {
+			t.Setenv("APP_ENV", protectedEnvironment)
+			t.Setenv("DEPLOYMENT_ENV", protectedEnvironment)
+			require.False(t, platformRelayLocalDatabaseRoleRehearsalEnabled())
+		})
+	}
 
 	for _, override := range [][2]string{
 		{"APP_ENV", "staging"},
+		{"APP_ENV", "production"},
+		{"DEPLOYMENT_ENV", "staging"},
 		{"DEPLOYMENT_ENV", "production"},
 		{"RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED", "false"},
-		{"RELAY_DATABASE_TLS_ATTESTATION_REQUIRED", "true"},
+		{"RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED", "invalid"},
 		{"RELAY_LOCAL_DATABASE_ROLE_REHEARSAL", "false"},
+		{"RELAY_LOCAL_DATABASE_ROLE_REHEARSAL", "TRUE"},
 	} {
 		t.Run(override[0]+"="+override[1], func(t *testing.T) {
 			t.Setenv(override[0], override[1])
 			require.False(t, platformRelayLocalDatabaseRoleRehearsalEnabled())
+		})
+	}
+}
+
+func TestPlatformRelayProtectedConsumerVerificationUsesOneFailClosedBoundary(t *testing.T) {
+	tests := []struct {
+		name        string
+		appEnv      string
+		deployment  string
+		attestation string
+		tls         string
+		rehearsal   string
+		required    bool
+	}{
+		{
+			name:       "ordinary development",
+			appEnv:     "development",
+			deployment: "development",
+			required:   false,
+		},
+		{
+			name:       "staging environment",
+			appEnv:     "staging",
+			deployment: "staging",
+			required:   true,
+		},
+		{
+			name:       "production environment",
+			appEnv:     "production",
+			deployment: "production",
+			required:   true,
+		},
+		{
+			name:        "explicit role attestation",
+			appEnv:      "development",
+			deployment:  "development",
+			attestation: "true",
+			required:    true,
+		},
+		{
+			name:        "invalid attestation fails closed",
+			appEnv:      "development",
+			deployment:  "development",
+			attestation: "invalid",
+			required:    true,
+		},
+		{
+			name:        "exact local plaintext role rehearsal",
+			appEnv:      "development",
+			deployment:  "development",
+			attestation: "true",
+			tls:         "false",
+			rehearsal:   "true",
+			required:    false,
+		},
+		{
+			name:        "exact local TLS role rehearsal",
+			appEnv:      "development",
+			deployment:  "development",
+			attestation: "true",
+			tls:         "true",
+			rehearsal:   "true",
+			required:    false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("APP_ENV", test.appEnv)
+			t.Setenv("DEPLOYMENT_ENV", test.deployment)
+			t.Setenv("RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED", test.attestation)
+			t.Setenv("RELAY_DATABASE_TLS_ATTESTATION_REQUIRED", test.tls)
+			t.Setenv("RELAY_LOCAL_DATABASE_ROLE_REHEARSAL", test.rehearsal)
+			require.Equal(t, test.required, platformRelayProtectedConsumerVerificationRequired())
 		})
 	}
 }

@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-08-31",
+  "models": [
+    {
+      "provider_model_id": "MiniMax-H3",
+      "public_model_id": "minimax-h3",
+      "display_name": "MiniMax H3",
+      "lifecycle": "acceptance_candidate",
+      "evidence_status": "route_acceptance_required",
+      "new_routes_allowed": true,
+      "adapter_profile_id": "minimax.video-generation.h3-reference-v1",
+      "official_sources": [
+        "https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create",
+        "https://platform.minimaxi.com/docs/api-reference/video/generation/api/v2-video-generation.json",
+        "https://platform.minimax.io/docs/guides/video-generation",
+        "https://platform.minimax.io/docs/api-reference/video-generation-v2-query",
+        "https://github.com/MiniMax-AI/MiniMax-H3"
+      ],
+      "image_role": "reference_image",
+      "notes": [
+        "This reviewed catalog is an acceptance candidate, not account access, route approval, pricing, a paid canary, artifact-storage verification or provider-bill evidence.",
+        "Use the official Video Generation V2 API: POST /v2/video_generation and GET /v2/query/video_generation/{task_id}; CN base https://api.minimax.cn and global base https://api.minimax.io. H3-Context-IR returns an enhanced prompt only and is not the video-create endpoint.",
+        "The public subset is text-only T2V, image-reference I2V and video-reference V2V. Image and video modes use reference_image, reference_video and reference_audio roles with an explicit fixed ratio. They are not first/last-frame interpolation or an exact source-video preservation guarantee.",
+        "The provider first_frame and last_frame modes ignore a requested fixed ratio and use adaptive. They are not exposed by this fixed-ratio contract. The provider description mentions middle frames, but the published content role enum does not define a middle-frame field; no middle-frame support is claimed.",
+        "The provider reference limits are at most 9 images, 3 videos and 3 audio files, with at most 12 files in total. The frozen public schema has only per-type maxima: image mode safely allows 9/0/3 and video mode 6/3/3. The remaining combinations need a versioned total-media constraint; excess files must be rejected, not silently dropped.",
+        "Images: JPG/JPEG/PNG/WEBP/HEIC/HEIF; at most 30 MB each, width and height 256 through 5760 px, width/height 0.4 through 2.5. The product may accept a narrower verified asset-format subset.",
+        "Reference videos: MP4 or MOV, H.264/AVC or H.265/HEVC video and AAC or MP3 embedded audio; at most 50 MB each; each clip 2 through 15 seconds, combined video duration at most 15 seconds; dimensions 256 through 5760 px, ratio 0.4 through 2.5, frame rate 23.976 through 60 fps.",
+        "Reference audio: WAV or MP3, at most 15 MB each; each clip 2 through 15 seconds and combined audio duration at most 15 seconds. Audio-only reference generation is not represented by the existing public modes and is not exposed.",
+        "One nonempty prompt of at most 7000 characters is required. Output duration is an integer 4 through 15 seconds, resolution 768P or 2K, and fixed ratios 21:9, 16:9, 4:3, 1:1, 3:4 or 9:16. Public resolution identifiers are normalized to 768p and 2k.",
+        "The provider also accepts mm_file references and Base64 data URIs, but the adapter uses only server-validated asset URLs. Total provider request body must be at most 64 MB. Client metadata cannot add roles, URLs, model IDs, callbacks, watermarks or unsupported provider parameters.",
+        "H3 generates video with native audio; the official model repository documents 24 fps and 32 kHz stereo. The public artifact remains one verified MP4. There is no published generate_audio, seed, output_format or output-count field, and no separate audio artifact or audio toggle is exposed.",
+        "Successful tasks supply an expiring content.url directly; no legacy file_id exchange is needed. Query can refresh an expired URL while the task remains available within the documented seven-day query window. Store the verified artifact durably before final success.",
+        "The official API publishes no idempotency key, client task identity or signed callback-verification contract. Use authenticated polling; ambiguous POST outcomes must remain reconciliation-required without retry or failover. Provider request_id is diagnostic, not an idempotency guarantee."
+      ],
+      "capability": {
+        "schema_version": 1,
+        "modes": {
+          "text_to_video": {
+            "input_media_types": [],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 7000,
+              "max_images": 0,
+              "max_videos": 0,
+              "max_audio": 0,
+              "duration_seconds": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+              "aspect_ratios": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+              "resolutions": ["768p", "2k"],
+              "output_counts": [1]
+            }
+          },
+          "image_to_video": {
+            "input_media_types": ["image", "audio"],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 7000,
+              "max_images": 9,
+              "max_videos": 0,
+              "max_audio": 3,
+              "duration_seconds": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+              "aspect_ratios": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+              "resolutions": ["768p", "2k"],
+              "output_counts": [1]
+            }
+          },
+          "video_to_video": {
+            "input_media_types": ["image", "video", "audio"],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 7000,
+              "max_images": 6,
+              "max_videos": 3,
+              "max_audio": 3,
+              "duration_seconds": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+              "aspect_ratios": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+              "resolutions": ["768p", "2k"],
+              "output_counts": [1]
+            }
+          }
+        }
+      }
+    },
+    {
+      "provider_model_id": "MiniMax-H3-Max",
+      "public_model_id": "minimax-h3-max",
+      "display_name": "MiniMax H3 Max",
+      "lifecycle": "acceptance_candidate",
+      "evidence_status": "route_acceptance_required",
+      "new_routes_allowed": true,
+      "adapter_profile_id": "minimax.video-generation.h3-max-t2v-v1",
+      "official_sources": [
+        "https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create",
+        "https://platform.minimaxi.com/docs/api-reference/video/generation/api/v2-video-generation.json",
+        "https://platform.minimax.io/docs/guides/video-generation",
+        "https://platform.minimax.io/docs/api-reference/video-generation-v2-query"
+      ],
+      "notes": [
+        "This reviewed catalog is an acceptance candidate only. It does not prove account access, paid generation, artifact transfer, pricing, provider cost or route readiness.",
+        "The exact official model ID is MiniMax-H3-Max, a fast-generation variant using the same /v2/video_generation and /v2/query/video_generation/{task_id} protocol. CN base is https://api.minimax.cn and global base is https://api.minimax.io.",
+        "The current official API supports T2V and first/last-frame I2V, but no reference images, videos or audio, no middle frames and no 2K output. First/last-frame I2V uses adaptive ratio even when a fixed ratio is sent. Therefore this fixed-ratio public profile safely exposes text-only T2V and does not pretend to cover every upstream H3 Max feature.",
+        "One nonempty prompt of at most 7000 characters is required. Output duration is an integer 5 through 15 seconds, resolution 480P or 768P, and fixed T2V ratios 21:9, 16:9, 4:3, 1:1, 3:4 or 9:16. Four-second output is not supported. Public resolution identifiers are normalized to 480p and 768p.",
+        "The public result is one verified MP4 obtained from the expiring task.content.url. No separate output audio, audio toggle, seed, output_format, output-count or arbitrary metadata parameter is exposed. The H3 Max API does not separately specify a guaranteed audio sample rate or output codec.",
+        "Task lookup covers the last seven days; a new query can refresh an expired download URL. There is no published provider idempotency guarantee or authenticated callback-signature contract. Unknown POST outcomes must not retry or fail over, and output must be verified and stored before completion."
+      ],
+      "capability": {
+        "schema_version": 1,
+        "modes": {
+          "text_to_video": {
+            "input_media_types": [],
+            "supports_face": false,
+            "required_resource_keys": [],
+            "limits": {
+              "max_prompt_length": 7000,
+              "max_images": 0,
+              "max_videos": 0,
+              "max_audio": 0,
+              "duration_seconds": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+              "aspect_ratios": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+              "resolutions": ["480p", "768p"],
+              "output_counts": [1]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

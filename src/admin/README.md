@@ -29,11 +29,11 @@ The `data` object accepts these independent groups, so the host can load only th
 - `business: { metrics, trend, companyRanking }`
 - `modelProfitability`, `companyHealth`, `channels`
 - `publishingExceptions`, `assetExceptions`
-- `relayChannels`, `relayUnknownSubmissions`, `relayCallbackDeadLetters`
+- `relayChannels`, `relayUnknownSubmissions`, `relayProviderResultReconciliations`, `relayCallbackDeadLetters`
 - `companies`, `entitlementProducts`, `entitlementTemplates`, `entitlementGrants`
 - `auditEvents`, `platformAdmins`, `adminPermissionCatalog`
 
-Entitlement grants use a map keyed by `companyId::productId`. Each grant may contain `state`, `priceCents`, `quota`, `concurrency`, `effectiveAt`, `expiresAt`, and `capabilityLimit`.
+Entitlement grants use a map keyed by `companyId::productId`. Model grants carry explicit `billingUnit` / `billingVersion` evidence and the matching `pricePoints` (POINT/v2) or read-only legacy `priceCents` (CNY_CENT/v1), plus `state`, `quota`, `concurrency`, `effectiveAt`, `expiresAt`, and `capabilityLimit`. Never reinterpret one price field as the other.
 
 ## Mutation callbacks
 

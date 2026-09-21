@@ -16,7 +16,6 @@ const SECTION_TO_API = {
   模板: "template",
   挑战: "challenge",
 };
-const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const MANIFEST_FIELDS = [
   "mediaId",
   "title",
@@ -214,25 +213,17 @@ export function validateShowcaseDraft(values, _options = {}) {
   const title = text(values.title);
   const altText = text(values.altText);
   const file = values.file || null;
-  const sourceTaskArtifactId = text(values.sourceTaskArtifactId);
   if (!title) return "请填写案例标题。";
   if (title.length > 80) return "案例标题不能超过 80 个字符。";
   if (!altText) return "请填写图片或视频的替代说明。";
   if (altText.length > 200) return "替代说明不能超过 200 个字符。";
-  if (values.mediaSource === "artifact" && !sourceTaskArtifactId) {
-    return "请选择本人作品，或填写该作品的 Artifact ID。";
-  }
+  if (!["upload", "existing"].includes(values.mediaSource)) return "请选择有效的媒体来源。";
+  if (values.mediaSource === "upload" && !file) return "请选择本地图片。";
   if (values.mediaSource === "existing" && !text(values.mediaId)) {
     return "请选择一条已上传媒体。";
   }
-  if (sourceTaskArtifactId && !CANONICAL_UUID.test(sourceTaskArtifactId)) {
-    return "Artifact ID 格式无效，请勿粘贴媒体网址。";
-  }
   if (file && !DIRECT_UPLOAD_MEDIA_TYPES.has(String(file.type || "").toLowerCase())) {
-    return "本地上传仅支持 JPEG、PNG 或 WebP 图片；视频请从本人已验证作品导入。";
-  }
-  if (!file && !sourceTaskArtifactId && !values.mediaId) {
-    return "请选择本地媒体，或填写本人已验证作品的 Artifact ID。";
+    return "本地上传仅支持 JPEG、PNG 或 WebP 图片。";
   }
   if (values.isHero === true && values.section !== "视频") {
     return "首页头图必须放在“视频”分区。";

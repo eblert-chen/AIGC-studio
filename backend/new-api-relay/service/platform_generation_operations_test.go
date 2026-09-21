@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -275,4 +276,39 @@ func TestVerifyPlatformGenerationReconciliationApprovalBindsCanonicalProof(t *te
 	)
 	require.NoError(t, err)
 	assert.False(t, authorized)
+}
+
+func TestPlatformGenerationSynchronousApprovalCrossLanguageVector(t *testing.T) {
+	request := dto.PlatformGenerationReconciliationRequest{
+		OperationID:                 "reconcile-seedream-created-0001",
+		Outcome:                     "created",
+		UpstreamTaskID:              "seedream:" + strings.Repeat("ab", 32),
+		ExpectedRouteID:             41,
+		ExpectedSubmissionAttempt:   3,
+		ExpectedReconciliationToken: "sha256:" + strings.Repeat("cd", 32),
+		VerificationReference:       "provider-console-case-seedream-42",
+		ApprovedBy:                  "platform-admin-1",
+		ApprovalReason:              "Provider console and response archive prove one image was created",
+		ApprovalKeyID:               "platform-approval-v1",
+		SynchronousResult: &dto.PlatformGenerationSynchronousResultEvidence{
+			ProviderModelID:        "doubao-seedream-5-0-260128",
+			ProviderResponseSHA256: strings.Repeat("ab", 32),
+			ArtifactURL:            "https://provider.example.test/results/image.png?token=private",
+			ProviderCreatedAt:      "2026-08-28T01:02:03Z",
+			GeneratedImages:        1,
+			OutputTokens:           144,
+			TotalTokens:            160,
+		},
+	}
+	payload := platformGenerationReconciliationApprovalPayload(
+		platformOperationsTenantOne,
+		"6b4f72d2-4d64-4ef9-adf2-7ead3e125b4f",
+		request,
+	)
+	const expectedPayloadBase64 = "cGxhdGZvcm0tZ2VuZXJhdGlvbi1yZWNvbmNpbGlhdGlvbi1hcHByb3ZhbC12MQAzNjo1MWJkZjdjNC05M2E2LTRiN2MtYTRhMS0wM2Y2MTZhMTBmMzAzNjo2YjRmNzJkMi00ZDY0LTRlZjktYWRmMi03ZWFkM2UxMjViNGYzMTpyZWNvbmNpbGUtc2VlZHJlYW0tY3JlYXRlZC0wMDAxNzpjcmVhdGVkNzM6c2VlZHJlYW06YWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYjI6NDExOjM3MTpzaGEyNTY6Y2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZDMzOnByb3ZpZGVyLWNvbnNvbGUtY2FzZS1zZWVkcmVhbS00MjE2OnBsYXRmb3JtLWFkbWluLTE2NTpQcm92aWRlciBjb25zb2xlIGFuZCByZXNwb25zZSBhcmNoaXZlIHByb3ZlIG9uZSBpbWFnZSB3YXMgY3JlYXRlZDIwOnBsYXRmb3JtLWFwcHJvdmFsLXYxMjE6c3luY2hyb25vdXMtcmVzdWx0LXYxMjY6ZG91YmFvLXNlZWRyZWFtLTUtMC0yNjAxMjg2NDphYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiNjE6aHR0cHM6Ly9wcm92aWRlci5leGFtcGxlLnRlc3QvcmVzdWx0cy9pbWFnZS5wbmc/dG9rZW49cHJpdmF0ZTIwOjIwMjYtMDgtMjhUMDE6MDI6MDNaMToxMzoxNDQzOjE2MA=="
+	reencoded := base64.StdEncoding.EncodeToString(payload)
+	require.Equal(t, expectedPayloadBase64, reencoded)
+	mac := hmac.New(sha256.New, []byte("approval-secret-one-with-at-least-32-bytes"))
+	_, _ = mac.Write(payload)
+	require.Equal(t, "2af01beb61b2aecf7f7589a263258992b16243c7c048f0ff5a193e28882513f4", fmt.Sprintf("%x", mac.Sum(nil)))
 }

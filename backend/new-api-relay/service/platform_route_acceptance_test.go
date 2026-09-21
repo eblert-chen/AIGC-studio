@@ -13,6 +13,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/generationprofile"
+	"github.com/QuantumNous/new-api/generationrelease"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -30,6 +32,18 @@ type platformRouteAcceptanceFixture struct {
 
 func newPlatformRouteAcceptanceFixture(t *testing.T) platformRouteAcceptanceFixture {
 	t.Helper()
+	platformRelayConfigCache.Lock()
+	platformRelayConfigCache.snapshot = platformRelayConfigSnapshot{}
+	platformRelayConfigCache.lastObserved = time.Time{}
+	platformRelayConfigCache.clockFailed = false
+	platformRelayConfigCache.Unlock()
+	t.Cleanup(func() {
+		platformRelayConfigCache.Lock()
+		platformRelayConfigCache.snapshot = platformRelayConfigSnapshot{}
+		platformRelayConfigCache.lastObserved = time.Time{}
+		platformRelayConfigCache.clockFailed = false
+		platformRelayConfigCache.Unlock()
+	})
 	seed := bytes.Repeat([]byte{0x42}, ed25519.SeedSize)
 	privateKey := ed25519.NewKeyFromSeed(seed)
 	publicKey := privateKey.Public().(ed25519.PublicKey)
@@ -239,6 +253,210 @@ func TestSecureRouteAcceptanceCacheExpiresWithoutEnvironmentChange(t *testing.T)
 	platformRouteAcceptanceNow = func() time.Time { return fixture.now.Add(2 * time.Hour) }
 	_, err = GetPlatformRelayModelCatalog()
 	require.ErrorContains(t, err, "expired and cannot be replayed")
+	platformRouteAcceptanceNow = func() time.Time { return fixture.now }
+	_, err = GetPlatformRelayModelCatalog()
+	require.ErrorContains(t, err, "clock moved backwards", "expired evidence must not revive after a wall-clock rollback")
+}
+
+func TestSecureRouteConfigCacheClockRollbackPermanentlyFailsClosed(t *testing.T) {
+	fixture := newPlatformRouteAcceptanceFixture(t)
+	clockNow := fixture.now
+	platformRouteAcceptanceNow = func() time.Time { return clockNow }
+	signed := fixture.signedRoute(t, "production", fixture.route, uuid.NewString(), fixture.now.Add(-time.Minute), fixture.now.Add(time.Hour))
+	t.Setenv("RELAY_COMPAT_ENVIRONMENT", "production")
+	t.Setenv("RELAY_COMPAT_CLIENT_CREDENTIALS_JSON", fmt.Sprintf(
+		`{"platform":{"tenant_id":"00000000-0000-4000-8000-000000000001","api_key":%q,"upstream_token":%q}}`,
+		platformRelayRuntimeSecretsTestValue("rollback-cache-api"),
+		platformRelayRuntimeSecretsTestToken("rollback-cache-upstream"),
+	))
+	t.Setenv("RELAY_COMPAT_MODEL_CAPABILITIES_JSON", "")
+	t.Setenv("RELAY_COMPAT_MODEL_ROUTES_JSON", platformRouteJSONForTest(t, fixture.modelID, signed))
+
+	_, err := GetPlatformRelayModelCatalog()
+	require.NoError(t, err)
+	clockNow = fixture.now.Add(10 * time.Minute)
+	_, err = GetPlatformRelayModelCatalog()
+	require.NoError(t, err)
+	clockNow = fixture.now.Add(5 * time.Minute)
+	_, err = GetPlatformRelayModelCatalog()
+	require.ErrorContains(t, err, "clock moved backwards")
+	clockNow = fixture.now.Add(20 * time.Minute)
+	_, err = GetPlatformRelayModelCatalog()
+	require.ErrorContains(t, err, "clock moved backwards", "advancing the clock must not clear the rollback latch")
+
+	rotated := fixture.signedRoute(t, "production", fixture.route, uuid.NewString(), fixture.now.Add(-time.Minute), fixture.now.Add(time.Hour))
+	t.Setenv("RELAY_COMPAT_MODEL_ROUTES_JSON", platformRouteJSONForTest(t, fixture.modelID, rotated))
+	_, err = GetPlatformRelayModelCatalog()
+	require.ErrorContains(t, err, "clock moved backwards", "rotating otherwise-valid release inputs must not clear the process clock latch")
+}
+
+func TestSecureRouteConfigCacheRetriesFutureModelAttestationAndRecovers(t *testing.T) {
+	fixture := newPlatformRouteAcceptanceFixture(t)
+	clockNow := fixture.now
+	platformRouteAcceptanceNow = func() time.Time { return clockNow }
+	profile, ok := generationprofile.Get(generationprofile.VolcengineArkImageGenerationV1)
+	require.True(t, ok)
+	modelID := constant.PlatformGenerationPublicSeedream50Model
+	release := generationrelease.Release{
+		APIVersion:             generationrelease.APIVersion,
+		Kind:                   generationrelease.Kind,
+		ReleaseID:              "seedream-5-future-cache-r1",
+		PublicModelID:          modelID,
+		ProviderModelID:        constant.PlatformGenerationArkSeedream50Model,
+		AdapterProfileID:       profile.ID,
+		AdapterProfileRevision: profile.Revision,
+		LegacyPublicAliases:    []string{constant.PlatformGenerationLegacySeedream50LitePublicAlias},
+		Capability:             profile.Capability,
+		Audit: generationrelease.Audit{
+			CreatedAt: fixture.now.Add(-time.Hour).Format(time.RFC3339),
+			CreatedBy: "release-authority",
+			Reason:    "verify future attestation cache retry",
+			SourceRef: "acceptance/seedream/future-cache",
+		},
+	}
+	modelAttestation := generationrelease.Attestation{
+		Algorithm: generationrelease.Algorithm,
+		KeyID:     fixture.keyID,
+		SignedAt:  fixture.now.Add(2 * time.Minute).Format(time.RFC3339),
+		NotAfter:  fixture.now.Add(time.Hour).Format(time.RFC3339),
+	}
+	payload, err := release.SigningPayload(modelAttestation)
+	require.NoError(t, err)
+	modelAttestation.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.privateKey, payload))
+	release.Attestation = &modelAttestation
+
+	route := PlatformRelayRouteDeclaration{
+		RouteID:           "seedream-future-cache-route",
+		ProviderName:      "volcengine-ark",
+		AccountID:         "ark-future-cache-account",
+		ChannelID:         30,
+		NativeChannelType: constant.ChannelTypeVolcEngine,
+		KeyIndex:          0,
+		KeyFingerprint:    strings.Repeat("a", 64),
+		ChannelClass:      PlatformChannelClassOfficial,
+		UpstreamModel:     release.ProviderModelID,
+		RPMLimit:          10,
+		ActiveTaskLimit:   2,
+		Capabilities:      profile.Capability,
+		CapabilityProfile: profile.ID,
+		ModelRelease:      &release,
+	}
+	manifest, err := BuildPlatformRouteAcceptanceManifest(
+		modelID,
+		&route,
+		uuid.NewString(),
+		fixture.keyID,
+		"production",
+		fixture.provenance,
+		fixture.now.Add(-time.Minute),
+		fixture.now.Add(2*time.Hour),
+	)
+	require.NoError(t, err)
+	routePayload, err := PlatformRouteAcceptanceSignaturePayload(manifest)
+	require.NoError(t, err)
+	route.Acceptance = &PlatformRouteAcceptanceEvidence{
+		Manifest:  manifest,
+		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.privateKey, routePayload)),
+	}
+
+	t.Setenv("RELAY_COMPAT_ENVIRONMENT", "production")
+	t.Setenv("RELAY_COMPAT_CLIENT_CREDENTIALS_JSON", fmt.Sprintf(
+		`{"platform":{"tenant_id":"00000000-0000-4000-8000-000000000001","api_key":%q,"upstream_token":%q}}`,
+		platformRelayRuntimeSecretsTestValue("future-cache-api"),
+		platformRelayRuntimeSecretsTestToken("future-cache-upstream"),
+	))
+	t.Setenv("RELAY_COMPAT_MODEL_CAPABILITIES_JSON", "")
+	t.Setenv("RELAY_COMPAT_MODEL_ROUTES_JSON", platformRouteJSONForTest(t, modelID, route))
+
+	_, err = GetPlatformRelayModelCatalog()
+	require.ErrorContains(t, err, "outside its validity window")
+	clockNow = fixture.now.Add(3 * time.Minute)
+	_, err = GetPlatformRelayModelCatalog()
+	require.NoError(t, err, "a bounded error cache must retry after the signed_at instant")
+}
+
+func TestSecureRouteConfigCacheExpiresAtEarlierModelReleaseAttestation(t *testing.T) {
+	fixture := newPlatformRouteAcceptanceFixture(t)
+	profile, ok := generationprofile.Get(generationprofile.VolcengineArkImageGenerationV1)
+	require.True(t, ok)
+	modelID := constant.PlatformGenerationPublicSeedream50Model
+	release := generationrelease.Release{
+		APIVersion:             generationrelease.APIVersion,
+		Kind:                   generationrelease.Kind,
+		ReleaseID:              "seedream-5-cache-expiry-r1",
+		PublicModelID:          modelID,
+		ProviderModelID:        constant.PlatformGenerationArkSeedream50Model,
+		AdapterProfileID:       profile.ID,
+		AdapterProfileRevision: profile.Revision,
+		LegacyPublicAliases:    []string{constant.PlatformGenerationLegacySeedream50LitePublicAlias},
+		Capability:             profile.Capability,
+		Audit: generationrelease.Audit{
+			CreatedAt: fixture.now.Add(-2 * time.Hour).Format(time.RFC3339),
+			CreatedBy: "release-authority",
+			Reason:    "verify model-release cache expiry",
+			SourceRef: "acceptance/seedream/cache-expiry",
+		},
+	}
+	modelAttestation := generationrelease.Attestation{
+		Algorithm: generationrelease.Algorithm,
+		KeyID:     fixture.keyID,
+		SignedAt:  fixture.now.Add(-time.Hour).Format(time.RFC3339),
+		NotAfter:  fixture.now.Add(30 * time.Minute).Format(time.RFC3339),
+	}
+	payload, err := release.SigningPayload(modelAttestation)
+	require.NoError(t, err)
+	modelAttestation.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.privateKey, payload))
+	release.Attestation = &modelAttestation
+
+	route := PlatformRelayRouteDeclaration{
+		RouteID:           "seedream-cache-expiry-route",
+		ProviderName:      "volcengine-ark",
+		AccountID:         "ark-cache-expiry-account",
+		ChannelID:         29,
+		NativeChannelType: constant.ChannelTypeVolcEngine,
+		KeyIndex:          0,
+		KeyFingerprint:    strings.Repeat("a", 64),
+		ChannelClass:      PlatformChannelClassOfficial,
+		UpstreamModel:     release.ProviderModelID,
+		RPMLimit:          10,
+		ActiveTaskLimit:   2,
+		Capabilities:      profile.Capability,
+		CapabilityProfile: profile.ID,
+		ModelRelease:      &release,
+	}
+	manifest, err := BuildPlatformRouteAcceptanceManifest(
+		modelID,
+		&route,
+		uuid.NewString(),
+		fixture.keyID,
+		"production",
+		fixture.provenance,
+		fixture.now.Add(-time.Minute),
+		fixture.now.Add(2*time.Hour),
+	)
+	require.NoError(t, err)
+	routePayload, err := PlatformRouteAcceptanceSignaturePayload(manifest)
+	require.NoError(t, err)
+	route.Acceptance = &PlatformRouteAcceptanceEvidence{
+		Manifest:  manifest,
+		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.privateKey, routePayload)),
+	}
+
+	t.Setenv("RELAY_COMPAT_ENVIRONMENT", "production")
+	t.Setenv("RELAY_COMPAT_CLIENT_CREDENTIALS_JSON", fmt.Sprintf(
+		`{"platform":{"tenant_id":"00000000-0000-4000-8000-000000000001","api_key":%q,"upstream_token":%q}}`,
+		platformRelayRuntimeSecretsTestValue("model-release-cache-api"),
+		platformRelayRuntimeSecretsTestToken("model-release-cache-upstream"),
+	))
+	t.Setenv("RELAY_COMPAT_MODEL_CAPABILITIES_JSON", "")
+	t.Setenv("RELAY_COMPAT_MODEL_ROUTES_JSON", platformRouteJSONForTest(t, modelID, route))
+
+	_, err = GetPlatformRelayModelCatalog()
+	require.NoError(t, err)
+	platformRouteAcceptanceNow = func() time.Time { return fixture.now.Add(45 * time.Minute) }
+	_, err = GetPlatformRelayModelCatalog()
+	require.ErrorContains(t, err, "model release")
+	require.ErrorContains(t, err, "validity window")
 }
 
 func TestRouteSyncBindsAcceptedNativeAdapterToActualChannelType(t *testing.T) {

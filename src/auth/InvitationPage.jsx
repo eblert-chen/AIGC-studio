@@ -18,7 +18,7 @@ function invitationState(status) {
   if (["accepted", "used"].includes(status)) return { title: "这份邀请已经使用", detail: "无需重复接受，可直接进入工作台。", tone: "success" };
   if (status === "expired") return { title: "这份邀请已过期", detail: "请联系企业老板重新发送邀请。", tone: "warning" };
   if (status === "revoked") return { title: "这份邀请已撤销", detail: "邀请已被企业管理员撤销，无法继续使用。", tone: "warning" };
-  return { title: "加入企业工作空间", detail: "接受后，你的个人空间与企业钱包、权限和数据仍会分别管理。", tone: "secure" };
+  return { title: "加入企业工作空间", detail: "请使用受邀邮箱登录企业账号并完成一次性邀请；个人消费者账号不能直接加入企业。", tone: "secure" };
 }
 
 function formatExpiry(value) {
@@ -40,6 +40,7 @@ function errorCopy(error) {
   if (error?.code === "invitation_account_unavailable") return "当前账号暂不可接受邀请，请联系平台管理员恢复账号状态。";
   if (error?.code === "invitation_company_unavailable") return "受邀企业当前不可用，请联系平台管理员恢复企业状态。";
   if (error?.code === "invitation_membership_conflict") return "当前账号在该企业已有不兼容的成员关系，请联系企业老板处理。";
+  if (error?.code === "account_type_conflict") return "个人消费者或平台管理员账号不能直接加入企业；请改用其他邮箱登录受邀企业账号，或联系平台管理员先完成账号类型迁移。";
   if (error?.status === 409) return "邀请当前不可用，可能已经接受、被撤销，或成员关系已变化。";
   return error?.message || "无法读取邀请，请稍后重试。";
 }
@@ -163,18 +164,21 @@ export function InvitationPage({
       description={completed ? "企业成员关系已创建，服务端权限会在进入工作台时重新加载。" : state.detail}
       tone={completed ? "success" : state.tone}
       busy={accepting}
-      footer="邀请只绑定受邀邮箱；接受邀请不会合并个人积分与企业共享钱包。"
+      footer="邀请只绑定受邀邮箱；接受后该账号使用企业权限与企业共享钱包，不开放个人积分赠送。"
     >
-      <div className="invitation-summary">
-        <span className="invitation-company-mark" aria-hidden="true"><UsersThree size={22} /></span>
-        <div><small>受邀加入</small><strong>{invitation?.company_name || "企业工作空间"}</strong></div>
+      <div className="auth-invitation-record">
+        <div className="invitation-summary">
+          <span className="invitation-company-mark" aria-hidden="true"><UsersThree size={22} /></span>
+          <div><small>受邀加入</small><strong>{invitation?.company_name || "企业工作空间"}</strong></div>
+        </div>
+        <dl className="auth-detail-list">
+          <div><dt>受邀邮箱</dt><dd>{invitation?.email || "未提供"}</dd></div>
+          <div><dt>初始级别</dt><dd>{ROLE_LABELS[invitation?.primary_role] || invitation?.primary_role || "运营"}</dd></div>
+          <div><dt>邀请人</dt><dd>{invitation?.inviter_name || "企业管理员"}</dd></div>
+          <div><dt>有效期至</dt><dd>{formatExpiry(invitation?.expires_at)}</dd></div>
+          <div><dt>账号规则</dt><dd>已有个人消费者账号不能直接接受企业邀请；请使用另一个邮箱作为企业账号，或先联系平台管理员完成账号类型迁移。</dd></div>
+        </dl>
       </div>
-      <dl className="auth-detail-list">
-        <div><dt>受邀邮箱</dt><dd>{invitation?.email || "未提供"}</dd></div>
-        <div><dt>初始级别</dt><dd>{ROLE_LABELS[invitation?.primary_role] || invitation?.primary_role || "运营"}</dd></div>
-        <div><dt>邀请人</dt><dd>{invitation?.inviter_name || "企业管理员"}</dd></div>
-        <div><dt>有效期至</dt><dd>{formatExpiry(invitation?.expires_at)}</dd></div>
-      </dl>
       {emailMismatch ? (
         <div className="auth-alert" role="alert">
           当前登录账号 {session.user.email} 与受邀邮箱不一致。切换账号会先安全退出当前会话，再要求身份提供方明确选择账号。

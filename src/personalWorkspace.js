@@ -8,6 +8,33 @@ const PERSONAL_CAPABILITY_KEYS = Object.freeze([
   "publishing",
   "task_cancel",
 ]);
+const PRODUCT_CONTEXT_BY_ACCOUNT_KIND = Object.freeze({
+  personal: "personal",
+  company: "company",
+  platform: "platform",
+  platform_admin: "platform",
+});
+
+function normalizedProductContext(value) {
+  return PRODUCT_CONTEXT_BY_ACCOUNT_KIND[String(value || "").trim()] || "";
+}
+
+export function availableProductContexts(source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return [];
+  const declared = Array.isArray(source.available_product_contexts)
+    ? source.available_product_contexts
+    : Array.isArray(source.available_account_kinds)
+      ? source.available_account_kinds
+      : [];
+  const active = normalizedProductContext(
+    source.active_product_context
+      || source.account_type
+      || (source.is_platform_admin ? "platform" : source.workspace_kind),
+  );
+  const contexts = new Set(declared.map(normalizedProductContext).filter(Boolean));
+  if (active) contexts.add(active);
+  return [...contexts];
+}
 
 function normalizeCapabilities(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -53,12 +80,42 @@ export function normalizeSessionSurfaces(payload) {
     ? true
     : source.platform_admin && typeof source.platform_admin === "object"
       && !Array.isArray(source.platform_admin) ? source.platform_admin : false;
+  const declaredAccountType = ["personal", "company", "platform_admin", "unavailable"]
+    .includes(String(source.account_type || "").trim())
+    ? String(source.account_type).trim()
+    : "";
+  const inferredAccountType = platformAdmin
+    ? "platform_admin"
+    : companies.some(isCompanyMembershipContext)
+      ? "company"
+      : personal
+        ? "personal"
+        : "unavailable";
+  const accountType = declaredAccountType || inferredAccountType;
+  const productContexts = availableProductContexts({
+    ...source,
+    account_type: accountType,
+  });
 
-  return { user, personal, companies, platform_admin: platformAdmin };
+  return {
+    user,
+    personal: accountType === "personal" ? personal : null,
+    companies: accountType === "company" ? companies : [],
+    platform_admin: accountType === "platform_admin" ? platformAdmin : false,
+    account_type: accountType,
+    active_product_context: normalizedProductContext(
+      source.active_product_context || accountType,
+    ),
+    available_product_contexts: productContexts,
+  };
 }
 
-export function personalIdentityFromSession(session, availableSurfaces = ["personal"]) {
-  if (!session?.user?.id || !session?.personal?.workspace_id) return null;
+export function personalIdentityFromSession(session) {
+  if (
+    sessionAccountKind(session) !== "personal"
+    || !session?.user?.id
+    || !session?.personal?.workspace_id
+  ) return null;
   return {
     user_id: session.user.id,
     email: session.user.email,
@@ -72,7 +129,7 @@ export function personalIdentityFromSession(session, availableSurfaces = ["perso
     roles: [],
     is_personal: true,
     is_platform_admin: false,
-    available_surfaces: [...availableSurfaces],
+    available_surfaces: ["personal"],
   };
 }
 
@@ -81,11 +138,53 @@ export function personalCapability(identity, key) {
     && identity?.personal_capabilities?.[key] === true;
 }
 
+export function isActiveCompanyContext(company) {
+  return Boolean(company?.company_id)
+    && String(company.status || "active").trim().toLowerCase() === "active";
+}
+
+export function isCompanyMembershipContext(company) {
+  return Boolean(company?.company_id)
+    && String(company.status || "active").trim().toLowerCase() !== "deleted";
+}
+
+export function sessionAccountKind(session) {
+  const declaredAccountType = String(session?.account_type || "").trim();
+  const companies = Array.isArray(session?.companies) ? session.companies : [];
+  const hasCompanyMembership = companies.some(isCompanyMembershipContext);
+
+  if (declaredAccountType === "platform_admin") {
+    return session?.platform_admin && !hasCompanyMembership && !session?.personal
+      ? "platform"
+      : "unavailable";
+  }
+  if (declaredAccountType === "company") {
+    return companies.some(isActiveCompanyContext) ? "company" : "company_unavailable";
+  }
+  if (declaredAccountType === "personal") {
+    return session?.personal?.workspace_id
+      ? "personal"
+      : "unavailable";
+  }
+  if (declaredAccountType === "unavailable") return "unavailable";
+
+  // Older deployments did not return account_type. Preserve strict precedence
+  // without unioning the lower-priority workspaces into the chosen identity.
+  if (session?.platform_admin) return "platform";
+  if (hasCompanyMembership) {
+    return companies.some(isActiveCompanyContext) ? "company" : "company_unavailable";
+  }
+
+  return session?.personal?.workspace_id ? "personal" : "unavailable";
+}
+
 export function preferredCompanyId(session, preferredId = "") {
   const companies = Array.isArray(session?.companies) ? session.companies : [];
   const preferred = String(preferredId || "").trim();
-  if (preferred && companies.some((company) => company.company_id === preferred)) {
+  if (preferred && companies.some((company) => (
+    company.company_id === preferred && isActiveCompanyContext(company)
+  ))) {
     return preferred;
   }
-  return companies.find((company) => company.status !== "deleted")?.company_id || "";
+  return companies.find(isActiveCompanyContext)?.company_id || "";
 }

@@ -271,6 +271,16 @@ def _fixture_tasks(
         media_type="image",
         asset_size=640,
     )
+    # Both image-generation modes share the same history/artwork projection.
+    # The task was settled through the already-covered text-to-image path; use
+    # the persisted mode here to cover image-to-image classification itself.
+    with app.state.session_factory.begin() as session:
+        stored_owner_image = session.get(GenerationTask, owner_image["id"])
+        assert stored_owner_image is not None
+        stored_owner_image.request_payload = {
+            **stored_owner_image.request_payload,
+            "mode": "image_to_image",
+        }
     member_video, member_video_artifact = _finish_task(
         app,
         client,
@@ -469,7 +479,7 @@ def test_task_records_are_complete_paginated_and_scoped_to_the_employee(
     assert image_only.status_code == 200, image_only.text
     assert image_only.json()["total"] == 1
     assert all(
-        item["request_payload"]["mode"] == "text_to_image"
+        item["request_payload"]["mode"] == "image_to_image"
         for item in image_only.json()["items"]
     )
 

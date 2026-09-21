@@ -1,9 +1,9 @@
 /*
  * Application stylesheet entry point.
  *
- * The application ships one explicit design-system cascade. Retired route
- * styles remain in the repository only as migration evidence and are not
- * loaded by the browser.
+ * The application ships one explicit design-system cascade. Every import
+ * below is an active layer; superseded route styles are removed during each
+ * migration instead of being loaded as compatibility overrides.
  */
 @layer system.tokens, system.foundation, system.controls, system.shells, system.routes;
 
@@ -20,6 +20,8 @@
 @import "./composer.css" layer(system.routes);
 @import "./home.css" layer(system.routes);
 @import "./mobile-studio.css" layer(system.routes);
+@import "./generation-editor.css" layer(system.routes);
+@import "./workbenches.css" layer(system.routes);
 @import "./mobile-management.css" layer(system.routes);
 @import "./mobile-operations.css" layer(system.routes);
 @import "./branding.css" layer(system.routes);

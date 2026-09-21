@@ -6,6 +6,7 @@ import uuid
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
@@ -162,9 +163,10 @@ def test_sqlite_personal_workspace_migration_round_trip_preserves_guards(
         )
     engine.dispose()
 
-    command.upgrade(config, "head")
+    # This chain intentionally includes later auth columns and artifact guards.
+    command.upgrade(config, "0055_commercial_plan_revisions")
     engine = create_engine(database_url)
-    assert _revision(engine) == "0040_showcase_management"
+    assert _revision(engine) == "0055_commercial_plan_revisions"
     _assert_personal_scope_schema(engine)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -214,9 +216,10 @@ def test_sqlite_personal_workspace_migration_round_trip_preserves_guards(
 
     command.upgrade(config, "head")
     engine = create_engine(database_url)
-    assert _revision(engine) == "0040_showcase_management"
+    assert _revision(engine) == ScriptDirectory.from_config(config).get_current_head()
     _assert_personal_scope_schema(engine)
     engine.dispose()
+    command.check(config)
 
 
 def test_postgres_personal_workspace_migration_guards_and_round_trip(
@@ -240,8 +243,8 @@ def test_postgres_personal_workspace_migration_guards_and_round_trip(
     monkeypatch.setenv("DATABASE_URL", schema_url)
 
     try:
-        command.upgrade(config, "head")
-        assert _revision(engine) == "0040_showcase_management"
+        command.upgrade(config, "0055_commercial_plan_revisions")
+        assert _revision(engine) == "0055_commercial_plan_revisions"
         _assert_personal_scope_schema(engine)
         workspace_id = _insert_user_and_personal_ledger(engine)
         _assert_personal_ledger_is_immutable(engine, workspace_id)
@@ -279,8 +282,9 @@ def test_postgres_personal_workspace_migration_guards_and_round_trip(
         assert _revision(engine) == "0033_relay_backend_affinity"
         assert "personal_workspaces" not in inspect(engine).get_table_names()
         command.upgrade(config, "head")
-        assert _revision(engine) == "0040_showcase_management"
+        assert _revision(engine) == ScriptDirectory.from_config(config).get_current_head()
         _assert_personal_scope_schema(engine)
+        command.check(config)
     finally:
         engine.dispose()
         with administration_engine.begin() as connection:

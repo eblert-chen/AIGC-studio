@@ -12,7 +12,26 @@ import (
 const (
 	PlatformContractRateUnitOutputItem   = "output_item"
 	PlatformContractRateUnitOutputSecond = "output_second"
+
+	PlatformProviderUpstreamModelGeminiOmni11Flash = "gemini-omni-1.1-flash"
+	PlatformProviderUpstreamModelGeminiOmniPreview = "gemini-omni-flash-preview"
 )
+
+// PlatformContractRateRequiresTokenUsageEvidence identifies provider models
+// whose bill cannot be represented by the legacy single-component
+// output_item/output_second contract. Gemini Omni charges input tokens and
+// video output tokens separately. Until both immutable usage evidence and a
+// versioned multi-component rate set exist, accepting a legacy rate would
+// silently understate provider cost.
+func PlatformContractRateRequiresTokenUsageEvidence(upstreamModel string) bool {
+	switch upstreamModel {
+	case PlatformProviderUpstreamModelGeminiOmni11Flash,
+		PlatformProviderUpstreamModelGeminiOmniPreview:
+		return true
+	default:
+		return false
+	}
+}
 
 // PlatformProviderContractRateInput is an immutable, versioned pricing fact
 // copied from a provider contract. It deliberately accepts neither customer
@@ -62,6 +81,9 @@ func (input PlatformProviderContractRateInput) Validate() error {
 	case PlatformContractRateUnitOutputItem, PlatformContractRateUnitOutputSecond:
 	default:
 		return fmt.Errorf("contract rate billing_unit is invalid")
+	}
+	if PlatformContractRateRequiresTokenUsageEvidence(input.UpstreamModel) {
+		return fmt.Errorf("contract rate upstream_model requires immutable input and video output token usage evidence")
 	}
 	if input.UnitAmountCents <= 0 || input.UnitAmountCents > PlatformChannelCostMaxAmountCents {
 		return fmt.Errorf("contract rate unit_amount_cents must be positive and in range")

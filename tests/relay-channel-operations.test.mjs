@@ -1,16 +1,31 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   adaptRelayChannelOperation,
   buildRelayChannelOperationRequest,
   readRelayChannelOperation,
+  relayChannelTestErrorLabel,
   runRelayChannelOperationWithReadback,
 } from "../src/admin/relayChannelOperations.js";
+
+const relayDrawerSource = await readFile(
+  new URL("../src/admin/operations/OperationsDrawers.jsx", import.meta.url),
+  "utf8",
+);
+const platformGatewaySource = await readFile(
+  new URL("../infra/nginx/platform-api.conf", import.meta.url),
+  "utf8",
+);
 
 const channelId = 17;
 const reason = "Approved connectivity verification";
 const operationId = "relay-channel-test-operation-0001";
+const routeIdentity = Object.freeze({
+  publicModelId: "seedance-1.5-pro",
+  routeId: "volcengine-seedance-primary-01",
+});
 
 function receipt(overrides = {}) {
   return {
@@ -43,6 +58,7 @@ test("channel approval request exposes only the exact public test fields", () =>
     operationId,
     reason: `  ${reason}  `,
     approved: true,
+    ...routeIdentity,
     model: "must-not-cross-facade",
     endpoint: "/v1/models",
     stream: true,
@@ -50,7 +66,13 @@ test("channel approval request exposes only the exact public test fields", () =>
     operationId,
     reason,
     approved: true,
+    ...routeIdentity,
   });
+  assert.throws(() => buildRelayChannelOperationRequest("test", {
+    operationId,
+    reason,
+    approved: true,
+  }), /必须选择受控的 public_model_id 和 route_id/);
   assert.throws(() => buildRelayChannelOperationRequest("status", {
     operationId,
     reason,
@@ -60,8 +82,87 @@ test("channel approval request exposes only the exact public test fields", () =>
   }), /只能切换为启用或手动停用/);
 });
 
+test("route-bound channel approval carries an exact public model and route pair", () => {
+  assert.deepEqual(buildRelayChannelOperationRequest("test", {
+    operationId,
+    reason,
+    approved: true,
+    publicModelId: "seedance-1.5-pro",
+    routeId: "volcengine-seedance-primary-01",
+  }), {
+    operationId,
+    reason,
+    approved: true,
+    publicModelId: "seedance-1.5-pro",
+    routeId: "volcengine-seedance-primary-01",
+  });
+  assert.throws(() => buildRelayChannelOperationRequest("test", {
+    operationId,
+    reason,
+    approved: true,
+    publicModelId: "seedance-1.5-pro",
+  }), /必须选择受控的 public_model_id 和 route_id/);
+  assert.throws(() => buildRelayChannelOperationRequest("test", {
+    operationId,
+    reason,
+    approved: true,
+    publicModelId: "seedance-1.5-pro",
+    routeId: "route with spaces",
+  }), /格式无效/);
+
+  assert.deepEqual(buildRelayChannelOperationRequest("test", {
+    operationId,
+    reason,
+    approved: true,
+    publicModelId: "veo-3.1",
+    routeId: "google-veo-primary-01",
+    mode: "image_to_video",
+  }), {
+    operationId,
+    reason,
+    approved: true,
+    publicModelId: "veo-3.1",
+    routeId: "google-veo-primary-01",
+    mode: "image_to_video",
+  });
+  assert.throws(() => buildRelayChannelOperationRequest("test", {
+    operationId,
+    reason,
+    approved: true,
+    publicModelId: "veo-3.1",
+    routeId: "google-veo-primary-01",
+    mode: "audio_to_video",
+  }), /测试模式无效/);
+});
+
+test("route test UI selects a secret-free Relay summary and warns about real provider cost", () => {
+  assert.match(relayDrawerSource, /routeOptions = \[\]/);
+  assert.match(relayDrawerSource, /String\(route\.channelId\) === String\(channel\.id\)/);
+  assert.match(relayDrawerSource, /<select value=\{selectedRouteKey\}/);
+  assert.match(relayDrawerSource, /route\.publicModelId\} → \{route\.upstreamModel\} · \{route\.routeId/);
+  assert.match(relayDrawerSource, /Platform 不接受手填 route_id/);
+  assert.match(relayDrawerSource, /页面不提供手填 route_id/);
+  assert.match(relayDrawerSource, /真实低配生成，可能产生供应商费用；失败不会解锁模型发布/);
+  assert.doesNotMatch(relayDrawerSource, /name=["'](?:public_model_id|route_id)["']/);
+});
+
+test("gateway extends timeout only for the exact paid Relay route-test endpoint", () => {
+  assert.match(
+    platformGatewaySource,
+    /location ~ \^\/api\/v1\/platform-admin\/relay\/channels\/\[1-9\]\[0-9\]\*\/test\$ \{[\s\S]*?proxy_read_timeout 660s;/,
+  );
+  assert.equal(
+    platformGatewaySource.match(/proxy_read_timeout 660s;/g)?.length,
+    1,
+  );
+  assert.match(platformGatewaySource, /proxy_read_timeout 60s;/);
+  assert.match(platformGatewaySource, /location \/api\/ \{/);
+});
+
 test("an ambiguous POST is attempted once and reconciled by GET with the same operation id", async () => {
-  const request = buildRelayChannelOperationRequest("test", { operationId, reason, approved: true });
+  const request = buildRelayChannelOperationRequest("test", {
+    operationId, reason, approved: true, ...routeIdentity,
+  });
   let submitCount = 0;
   let readCount = 0;
   const result = await runRelayChannelOperationWithReadback({
@@ -86,7 +187,9 @@ test("an ambiguous POST is attempted once and reconciled by GET with the same op
 });
 
 test("Platform machine codes distinguish preflight failure from an ambiguous accepted operation", async () => {
-  const request = buildRelayChannelOperationRequest("test", { operationId, reason, approved: true });
+  const request = buildRelayChannelOperationRequest("test", {
+    operationId, reason, approved: true, ...routeIdentity,
+  });
   const notStarted = Object.assign(new Error("Relay preflight failed"), {
     status: 503,
     code: "RELAY_CHANNEL_OPERATION_NOT_STARTED",
@@ -181,6 +284,7 @@ test("definitive pre-POST 409 responses never read back or lock a nonexistent op
       operationId,
       reason,
       approved: true,
+      ...routeIdentity,
     });
     const conflict = Object.assign(new Error(message), {
       status: 409,
@@ -209,6 +313,7 @@ test("local status-zero configuration errors do not masquerade as ambiguous writ
     operationId,
     reason,
     approved: true,
+    ...routeIdentity,
   });
   const configurationError = Object.assign(new Error("Platform API is not configured"), {
     status: 0,
@@ -229,7 +334,9 @@ test("local status-zero configuration errors do not masquerade as ambiguous writ
 });
 
 test("unavailable or mismatched readback locks the original operation proof", async () => {
-  const request = buildRelayChannelOperationRequest("test", { operationId, reason, approved: true });
+  const request = buildRelayChannelOperationRequest("test", {
+    operationId, reason, approved: true, ...routeIdentity,
+  });
   await assert.rejects(
     runRelayChannelOperationWithReadback({
       channelId,
@@ -258,6 +365,37 @@ test("operation adapter retains only safe receipt facts", () => {
   }), { channelId, operationId, kind: "test", reason });
   assert.equal(adapted.result.responseTimeMs, 413);
   assert.doesNotMatch(JSON.stringify(adapted), /SECRET_CANARY|credential|raw_error/);
+});
+
+test("operation adapter accepts every secret-safe provider failure class", () => {
+  const cases = new Map([
+    ["CHANNEL_TEST_FAILED", "渠道测试失败"],
+    ["CHANNEL_TEST_UNAVAILABLE", "渠道暂不可用"],
+    ["CHANNEL_TEST_PROVIDER_VALIDATION", "供应商拒绝了请求参数或模型配置"],
+    ["CHANNEL_TEST_PROVIDER_AUTH", "供应商身份凭证或模型授权无效"],
+    ["CHANNEL_TEST_PROVIDER_QUOTA", "供应商余额、配额或限流阻止了本次测试"],
+    ["CHANNEL_TEST_PROVIDER_TERMINAL", "供应商已返回终态失败"],
+    ["CHANNEL_TEST_ARTIFACT_INVALID", "生成产物未通过完整性验证"],
+    ["CHANNEL_TEST_ROUTE_DRIFT", "受控路由在测试期间发生漂移"],
+    ["CHANNEL_TEST_RECONCILED_NO_CREATION", "已核对确认供应商未创建任务"],
+  ]);
+  assert.equal(cases.size, 9);
+  for (const [errorCode, label] of cases) {
+    const adapted = adaptRelayChannelOperation(receipt({
+      state: "failed",
+      result: { success: false, response_time_ms: 4045, error_code: errorCode },
+    }), { channelId, operationId, kind: "test", reason });
+    assert.equal(adapted.result.errorCode, errorCode);
+    assert.equal(relayChannelTestErrorLabel(errorCode), label);
+  }
+  assert.throws(() => adaptRelayChannelOperation(receipt({
+    state: "failed",
+    result: {
+      success: false,
+      response_time_ms: 4045,
+      error_code: "PROVIDER_RAW_ERROR",
+    },
+  }), { channelId, operationId, kind: "test", reason }), /回执无效/);
 });
 
 test("status readback fails closed when persisted revision or target intent drifts", () => {

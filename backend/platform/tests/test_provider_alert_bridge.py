@@ -212,7 +212,11 @@ def test_same_event_id_with_different_signed_payload_conflicts():
         lambda body, event_id: _headers(
             body,
             event_id=event_id,
-            timestamp=int(time.time()) + 301,
+            # Keep the future timestamp well outside the 300-second replay
+            # window.  ``int(time.time()) + 301`` becomes exactly +300 when
+            # request construction crosses a wall-clock second, making this
+            # security test spuriously accept the documented boundary.
+            timestamp=int(time.time()) + 600,
         ),
     ],
 )

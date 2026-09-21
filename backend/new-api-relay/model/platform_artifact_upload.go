@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -139,11 +140,21 @@ func MigratePlatformArtifactUploadIntentStorageWithDB(db *gorm.DB) error {
 // cleaned tombstones and operator-visible dead letters still bind the service
 // to its historical artifact store.
 func PlatformArtifactCleanupMaintenanceRequired() (bool, error) {
-	if DB == nil {
+	return PlatformArtifactCleanupMaintenanceRequiredWithDB(context.Background(), DB)
+}
+
+// PlatformArtifactCleanupMaintenanceRequiredWithDB is the context-bound form
+// used when a live storage health proof must be followed by a fresh durable
+// maintenance-edge read before it can be published.
+func PlatformArtifactCleanupMaintenanceRequiredWithDB(ctx context.Context, db *gorm.DB) (bool, error) {
+	if ctx == nil {
+		return false, errors.New("context is required")
+	}
+	if db == nil {
 		return false, errors.New("database is not initialized")
 	}
 	var intent PlatformArtifactUploadIntent
-	err := DB.Select("id").
+	err := db.WithContext(ctx).Select("id").
 		Where("state <> ?", PlatformArtifactUploadIntentPublished).
 		Take(&intent).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -605,8 +616,15 @@ func ReleasePlatformArtifactCleanup(
 }
 
 func GetPlatformArtifactUploadIntentCounts() (PlatformArtifactUploadIntentCounts, error) {
+	return GetPlatformArtifactUploadIntentCountsWithDB(DB)
+}
+
+func GetPlatformArtifactUploadIntentCountsWithDB(db *gorm.DB) (PlatformArtifactUploadIntentCounts, error) {
 	counts := PlatformArtifactUploadIntentCounts{}
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	if db == nil {
+		return counts, fmt.Errorf("artifact upload intent database is unavailable")
+	}
+	err := db.Transaction(func(tx *gorm.DB) error {
 		now, err := GetDBTimeTx(tx)
 		if err != nil {
 			return err

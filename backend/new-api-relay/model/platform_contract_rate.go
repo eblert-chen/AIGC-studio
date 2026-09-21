@@ -20,9 +20,10 @@ const (
 )
 
 var (
-	ErrPlatformProviderContractRateCollision = errors.New("provider contract rate identity is already used by different evidence")
-	ErrPlatformProviderContractRateImmutable = errors.New("provider contract rates are append-only")
-	ErrPlatformCostReconciliationClaimLost   = errors.New("channel cost reconciliation claim is no longer current")
+	ErrPlatformProviderContractRateCollision             = errors.New("provider contract rate identity is already used by different evidence")
+	ErrPlatformProviderContractRateImmutable             = errors.New("provider contract rates are append-only")
+	ErrPlatformProviderContractRateUsageEvidenceRequired = errors.New("provider contract rate requires immutable multi-component token usage evidence")
+	ErrPlatformCostReconciliationClaimLost               = errors.New("channel cost reconciliation claim is no longer current")
 )
 
 // PlatformProviderContractRate is an immutable provider-side pricing fact.
@@ -252,6 +253,19 @@ func CompletePlatformChannelCostReconciliation(claim PlatformChannelCostReconcil
 	return finishPlatformChannelCostReconciliation(claim, PlatformCostReconciliationCompleted, "", 0)
 }
 
+func CompletePlatformChannelCostReconciliationTx(
+	tx *gorm.DB,
+	claim PlatformChannelCostReconciliationClaim,
+) (bool, error) {
+	return finishPlatformChannelCostReconciliationTx(
+		tx,
+		claim,
+		PlatformCostReconciliationCompleted,
+		"",
+		0,
+	)
+}
+
 func DeferPlatformChannelCostReconciliation(
 	claim PlatformChannelCostReconciliationClaim,
 	errorCode string,
@@ -275,34 +289,116 @@ func finishPlatformChannelCostReconciliation(
 	}
 	won := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		now, err := GetDBTimeTx(tx)
-		if err != nil {
-			return err
-		}
-		updates := map[string]any{
-			"state":            state,
-			"claim_token":      "",
-			"claim_expires_at": nil,
-			"last_error_code":  errorCode,
-			"attempts":         gorm.Expr("attempts + 1"),
-			"updated_at":       now,
-		}
-		if state == PlatformCostReconciliationWaiting {
-			updates["next_attempt_at"] = now.Add(delay)
-		} else {
-			updates["next_attempt_at"] = now
-		}
-		result := tx.Model(&PlatformChannelCostReconciliation{}).Where(
-			"relay_job_id = ? AND outcome_id = ? AND state = ? AND claim_token = ? AND claim_expires_at > ?",
-			claim.RelayJobID, claim.OutcomeID, PlatformCostReconciliationClaimed, claim.Token, now,
-		).Updates(updates)
-		if result.Error != nil {
-			return result.Error
-		}
-		won = result.RowsAffected == 1
-		return nil
+		var err error
+		won, err = finishPlatformChannelCostReconciliationTx(tx, claim, state, errorCode, delay)
+		return err
 	})
 	return won, err
+}
+
+func finishPlatformChannelCostReconciliationTx(
+	tx *gorm.DB,
+	claim PlatformChannelCostReconciliationClaim,
+	state string,
+	errorCode string,
+	delay time.Duration,
+) (bool, error) {
+	if tx == nil {
+		return false, fmt.Errorf("channel cost reconciliation transaction is required")
+	}
+	now, err := GetDBTimeTx(tx)
+	if err != nil {
+		return false, err
+	}
+	updates := map[string]any{
+		"state":            state,
+		"claim_token":      "",
+		"claim_expires_at": nil,
+		"last_error_code":  errorCode,
+		"attempts":         gorm.Expr("attempts + 1"),
+		"updated_at":       now,
+	}
+	if state == PlatformCostReconciliationWaiting {
+		updates["next_attempt_at"] = now.Add(delay)
+	} else {
+		updates["next_attempt_at"] = now
+	}
+	result := tx.Model(&PlatformChannelCostReconciliation{}).Where(
+		"relay_job_id = ? AND outcome_id = ? AND state = ? AND claim_token = ? AND claim_expires_at > ?",
+		claim.RelayJobID, claim.OutcomeID, PlatformCostReconciliationClaimed, claim.Token, now,
+	).Updates(updates)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// LockPlatformProviderCostMaterializationClaimTx establishes the single
+// transactional serialization point for a contract-rate cost. The queue row
+// is locked before outcome/job/route evidence is read, so an expired worker
+// cannot create a fact after a new token owner has taken over.
+func LockPlatformProviderCostMaterializationClaimTx(
+	tx *gorm.DB,
+	claim PlatformChannelCostReconciliationClaim,
+) (PlatformProviderCostMaterializationFacts, *PlatformChannelCostEvent, error) {
+	var facts PlatformProviderCostMaterializationFacts
+	if tx == nil {
+		return facts, nil, fmt.Errorf("channel cost reconciliation transaction is required")
+	}
+	if parsed, err := uuid.Parse(claim.RelayJobID); err != nil || parsed.String() != claim.RelayJobID ||
+		claim.OutcomeID == "" || claim.Token == "" {
+		return facts, nil, fmt.Errorf("channel cost reconciliation claim is invalid")
+	}
+	now, err := GetDBTimeTx(tx)
+	if err != nil {
+		return facts, nil, err
+	}
+	var queue PlatformChannelCostReconciliation
+	if err := lockForUpdate(tx.Where("relay_job_id = ?", claim.RelayJobID)).First(&queue).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return facts, nil, ErrPlatformCostReconciliationClaimLost
+		}
+		return facts, nil, err
+	}
+	if queue.OutcomeID != claim.OutcomeID || queue.State != PlatformCostReconciliationClaimed ||
+		queue.ClaimToken != claim.Token || queue.ClaimExpiresAt == nil || !queue.ClaimExpiresAt.After(now) {
+		return facts, nil, ErrPlatformCostReconciliationClaimLost
+	}
+	if err := lockForUpdate(tx.Where(
+		"id = ? AND relay_job_id = ? AND outcome = ?",
+		claim.OutcomeID,
+		claim.RelayJobID,
+		PlatformProviderOutcomeSucceeded,
+	)).First(&facts.Outcome).Error; err != nil {
+		return facts, nil, err
+	}
+	if err := lockForUpdate(tx.Where("id = ?", claim.RelayJobID)).First(&facts.Job).Error; err != nil {
+		return facts, nil, err
+	}
+	if err := lockForUpdate(tx.Where("id = ?", facts.Outcome.RouteID)).First(&facts.Route).Error; err != nil {
+		return facts, nil, err
+	}
+	if facts.Job.ProviderRouteID != facts.Route.ID || facts.Job.ProviderChannelID != facts.Route.ChannelID ||
+		facts.Job.Model != facts.Route.Model || facts.Job.Mode != facts.Route.Mode ||
+		facts.Job.ID != facts.Outcome.RelayJobID || facts.Outcome.RouteID != facts.Route.ID {
+		return facts, nil, fmt.Errorf("provider cost route evidence is inconsistent")
+	}
+	var events []PlatformChannelCostEvent
+	if err := lockForUpdate(tx.Where(
+		"relay_job_id = ? AND evidence_source = ?",
+		claim.RelayJobID,
+		"contract_rate",
+	).Order("id ASC").Limit(2)).Find(&events).Error; err != nil {
+		return facts, nil, err
+	}
+	if len(events) > 1 {
+		return facts, nil, ErrPlatformChannelCostEventCollision
+	}
+	facts.AlreadyCosted = len(events) == 1
+	if len(events) == 1 {
+		return facts, &events[0], nil
+	}
+	return facts, nil, nil
 }
 
 func GetPlatformProviderCostMaterializationFacts(relayJobID string) (PlatformProviderCostMaterializationFacts, error) {
@@ -335,8 +431,22 @@ func FindPlatformProviderContractRate(
 	facts PlatformProviderCostMaterializationFacts,
 	resolution string,
 ) (*PlatformProviderContractRate, error) {
+	return FindPlatformProviderContractRateTx(DB, facts, resolution)
+}
+
+func FindPlatformProviderContractRateTx(
+	tx *gorm.DB,
+	facts PlatformProviderCostMaterializationFacts,
+	resolution string,
+) (*PlatformProviderContractRate, error) {
 	var rate PlatformProviderContractRate
-	err := DB.Where(
+	if dto.PlatformContractRateRequiresTokenUsageEvidence(facts.Route.UpstreamModel) {
+		return &rate, ErrPlatformProviderContractRateUsageEvidenceRequired
+	}
+	if tx == nil {
+		return &rate, fmt.Errorf("provider contract rate transaction is required")
+	}
+	err := tx.Where(
 		"provider_name = ? AND channel_id = ? AND upstream_model = ? AND mode = ? AND resolution = ? AND effective_from <= ?",
 		facts.Route.ProviderName,
 		facts.Route.ChannelID,
@@ -345,6 +455,15 @@ func FindPlatformProviderContractRate(
 		resolution,
 		facts.Outcome.OccurredAt.UTC(),
 	).Order("effective_from DESC, id DESC").First(&rate).Error
+	return &rate, err
+}
+
+func GetPlatformProviderContractRateTx(tx *gorm.DB, rateID string) (*PlatformProviderContractRate, error) {
+	var rate PlatformProviderContractRate
+	if tx == nil || rateID == "" {
+		return &rate, fmt.Errorf("provider contract rate identity is required")
+	}
+	err := tx.Where("id = ?", rateID).First(&rate).Error
 	return &rate, err
 }
 

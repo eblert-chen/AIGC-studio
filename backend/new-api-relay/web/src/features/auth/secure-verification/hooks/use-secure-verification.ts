@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import i18next from 'i18next'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
 import {
@@ -25,8 +25,14 @@ import {
   isVerificationRequiredError,
 } from '@/lib/secure-verification'
 
-import { checkVerificationMethods, verify } from '../api'
+import { checkVerificationMethods, isAbortError, verify } from '../api'
+import {
+  SecureVerificationOperationCoordinator,
+  type SecureVerificationOperation,
+} from '../operation-coordinator'
 import type {
+  SecurityProofBinding,
+  SecurityProofScope,
   SecureVerificationState,
   StartVerificationOptions,
   UseSecureVerificationOptions,
@@ -34,11 +40,16 @@ import type {
   VerificationMethods,
 } from '../types'
 
-type ApiCall = ((proofToken?: string) => Promise<unknown>) | null
+type ApiCall = (proofToken?: string, signal?: AbortSignal) => Promise<unknown>
 
-interface InternalState extends SecureVerificationState {
+type PendingVerification = {
   apiCall: ApiCall
+  binding?: SecurityProofBinding
+  operation: SecureVerificationOperation
+  scope: SecurityProofScope
 }
+
+type InternalState = SecureVerificationState
 
 const defaultMethods: VerificationMethods = {
   has2FA: false,
@@ -52,7 +63,6 @@ const initialState: InternalState = {
   code: '',
   title: undefined,
   description: undefined,
-  apiCall: null,
 }
 
 export function useSecureVerification(
@@ -63,29 +73,88 @@ export function useSecureVerification(
   const [methods, setMethods] = useState<VerificationMethods>(defaultMethods)
   const [state, setState] = useState<InternalState>(initialState)
   const [open, setOpen] = useState(false)
+  const apiCallRef = useRef<PendingVerification | null>(null)
+  const mountedRef = useRef(true)
+  const operationCoordinatorRef = useRef(
+    new SecureVerificationOperationCoordinator()
+  )
+  const methodChecksRef = useRef(new Set<AbortController>())
 
   const fetchVerificationMethods = useCallback(async () => {
-    const result = await checkVerificationMethods()
-    setMethods(result)
-    return result
+    const controller = new AbortController()
+    methodChecksRef.current.add(controller)
+    try {
+      const result = await checkVerificationMethods(controller.signal)
+      if (mountedRef.current && !controller.signal.aborted) setMethods(result)
+      return result
+    } finally {
+      methodChecksRef.current.delete(controller)
+    }
   }, [])
 
   useEffect(() => {
-    fetchVerificationMethods()
-  }, [fetchVerificationMethods])
-
-  const reset = useCallback(() => {
-    setState(initialState)
-    setOpen(false)
+    const methodChecks = methodChecksRef.current
+    const operationCoordinator = operationCoordinatorRef.current
+    mountedRef.current = true
+    const controller = new AbortController()
+    void checkVerificationMethods(controller.signal)
+      .then((result) => {
+        if (mountedRef.current && !controller.signal.aborted) setMethods(result)
+      })
+      .catch(() => undefined)
+    return () => {
+      mountedRef.current = false
+      controller.abort()
+      for (const pendingController of methodChecks) {
+        pendingController.abort()
+      }
+      methodChecks.clear()
+      operationCoordinator.invalidate()
+      apiCallRef.current = null
+    }
   }, [])
 
+  const reset = useCallback(() => {
+    operationCoordinatorRef.current.invalidate()
+    apiCallRef.current = null
+    if (mountedRef.current) {
+      setState(initialState)
+      setOpen(false)
+    }
+  }, [])
+
+  const updateOpen = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        reset()
+        return
+      }
+      if (mountedRef.current) setOpen(true)
+    },
+    [reset]
+  )
+
   const startVerification = useCallback(
-    async (
-      apiCall: (proofToken?: string) => Promise<unknown>,
-      config: StartVerificationOptions
-    ) => {
-      const { preferredMethod, scope, title, description } = config
-      const availableMethods = await fetchVerificationMethods()
+    async (apiCall: ApiCall, config: StartVerificationOptions) => {
+      const { preferredMethod, scope, binding, title, description } = config
+      const operation = operationCoordinatorRef.current.begin()
+      apiCallRef.current = null
+      let availableMethods: VerificationMethods
+      try {
+        availableMethods = await checkVerificationMethods(
+          operation.controller.signal
+        )
+      } catch (error) {
+        if (
+          isAbortError(error) ||
+          !operationCoordinatorRef.current.isCurrent(operation)
+        ) {
+          return false
+        }
+        throw error
+      }
+      if (!operationCoordinatorRef.current.isCurrent(operation)) return false
+      if (mountedRef.current) setMethods(availableMethods)
 
       if (!availableMethods.has2FA && !availableMethods.hasPasskey) {
         toast.error(
@@ -98,6 +167,7 @@ export function useSecureVerification(
             'No verification methods available. Enable 2FA or Passkey to continue.'
           )
         )
+        operationCoordinatorRef.current.invalidate()
         return false
       }
 
@@ -118,23 +188,25 @@ export function useSecureVerification(
         }
       }
 
+      apiCallRef.current = { apiCall, binding, operation, scope }
       setState((prev) => ({
         ...prev,
-        apiCall,
         method: defaultMethod,
         scope,
+        binding,
         title,
         description,
       }))
       setOpen(true)
       return true
     },
-    [fetchVerificationMethods, onError]
+    [onError]
   )
 
   const executeVerification = useCallback(
     async (method?: VerificationMethod, code?: string) => {
-      if (!state.apiCall) {
+      const pending = apiCallRef.current
+      if (!pending) {
         toast.error(i18next.t('Verification is not configured properly'))
         return
       }
@@ -145,18 +217,34 @@ export function useSecureVerification(
         return
       }
 
+      if (!operationCoordinatorRef.current.isCurrent(pending.operation)) return
       setState((prev) => ({ ...prev, loading: true }))
 
       try {
-        if (!state.scope) {
-          throw new Error(i18next.t('Verification scope is missing'))
-        }
         const proof = await verify(
           actualMethod,
-          state.scope,
-          code ?? state.code
+          pending.scope,
+          code ?? state.code,
+          pending.binding,
+          pending.operation.controller.signal
         )
-        const result = await state.apiCall(proof.proof_token)
+        if (!operationCoordinatorRef.current.isCurrent(pending.operation)) {
+          proof.proof_token = ''
+          return
+        }
+        let result: unknown
+        try {
+          result = await pending.apiCall(
+            proof.proof_token,
+            pending.operation.controller.signal
+          )
+        } finally {
+          proof.proof_token = ''
+        }
+
+        if (!operationCoordinatorRef.current.isCurrent(pending.operation)) {
+          return result
+        }
 
         if (successMessage) {
           toast.success(successMessage)
@@ -170,6 +258,12 @@ export function useSecureVerification(
 
         return result
       } catch (error) {
+        if (
+          isAbortError(error) ||
+          !operationCoordinatorRef.current.isCurrent(pending.operation)
+        ) {
+          return
+        }
         const message =
           error instanceof Error
             ? error.message
@@ -178,7 +272,12 @@ export function useSecureVerification(
         onError?.(error)
         throw error
       } finally {
-        setState((prev) => ({ ...prev, loading: false }))
+        if (
+          mountedRef.current &&
+          operationCoordinatorRef.current.isCurrent(pending.operation)
+        ) {
+          setState((prev) => ({ ...prev, loading: false }))
+        }
       }
     },
     [state, successMessage, onSuccess, onError, autoReset, reset]
@@ -197,10 +296,7 @@ export function useSecureVerification(
   }, [reset])
 
   const withVerification = useCallback(
-    async (
-      apiCall: (proofToken?: string) => Promise<unknown>,
-      config: StartVerificationOptions
-    ) => {
+    async (apiCall: ApiCall, config: StartVerificationOptions) => {
       try {
         return await apiCall()
       } catch (error) {
@@ -235,7 +331,7 @@ export function useSecureVerification(
 
   return {
     open,
-    setOpen,
+    setOpen: updateOpen,
     methods,
     state,
     startVerification,

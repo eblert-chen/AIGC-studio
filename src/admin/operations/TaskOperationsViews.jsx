@@ -54,7 +54,7 @@ function TaskFlow({ items, timings }) {
             <div className="ops-flow-segment" key={item.key}>
               <div className="ops-flow-node">
                 <span className="ops-flow-label"><FlowIcon flowKey={item.key} />{item.label}</span>
-                <strong>{item.total == null ? "—" : formatInteger(item.total)}</strong>
+                <strong>{item.total == null ? "待核验" : formatInteger(item.total)}</strong>
                 {item.delta != null ? (
                   <small className={cx(`is-${changeTone(item.delta)}`)}>
                     {item.delta > 0 ? "↑" : item.delta < 0 ? "↓" : ""} {Math.abs(item.delta).toFixed(1)}% vs 昨日
@@ -64,7 +64,7 @@ function TaskFlow({ items, timings }) {
               {item.dropoffLabel ? (
                 <div className="ops-flow-dropoff">
                   <span>{item.dropoffLabel}</span>
-                  <strong>{item.dropoff == null ? "—" : formatInteger(item.dropoff)}</strong>
+                  <strong>{item.dropoff == null ? "待核验" : formatInteger(item.dropoff)}</strong>
                   <small>{item.dropoffRate == null ? "(不可用)" : `(${formatPercent(item.dropoffRate)})`}</small>
                 </div>
               ) : null}
@@ -254,12 +254,12 @@ function ReliabilityTable({ rows, onAction }) {
                 <td><strong>{row.model}</strong></td>
                 <td>{row.channel}</td>
                 <td>{row.channelClass}</td>
-                <td>{row.calls == null ? "—" : formatInteger(row.calls)}</td>
-                <td className={row.successRate == null ? "" : row.successRate < 90 ? "is-negative" : row.successRate < 96 ? "is-warning" : "is-positive"}>{row.successRate == null ? "—" : formatPercent(row.successRate, 2)}</td>
-                <td>{row.p95 == null ? "—" : formatDurationSeconds(row.p95)}</td>
-                <td>{row.rateLimited == null ? "—" : `${formatInteger(row.rateLimited)} 个`}</td>
-                <td>{row.failoverCount == null ? "—" : `${formatInteger(row.failoverCount)} 次（号池）`}</td>
-                <td className={row.costDataStatus === "available" ? "is-positive" : "is-negative"}>{row.costDataStatus === "available" ? "已接入" : "—（未接入）"}</td>
+                <td>{row.calls == null ? "待核验" : formatInteger(row.calls)}</td>
+                <td className={row.successRate == null ? "" : row.successRate < 90 ? "is-negative" : row.successRate < 96 ? "is-warning" : "is-positive"}>{row.successRate == null ? "待核验" : formatPercent(row.successRate, 2)}</td>
+                <td>{row.p95 == null ? "待核验" : formatDurationSeconds(row.p95)}</td>
+                <td>{row.rateLimited == null ? "待核验" : `${formatInteger(row.rateLimited)} 个`}</td>
+                <td>{row.failoverCount == null ? "待核验" : `${formatInteger(row.failoverCount)} 次（号池）`}</td>
+                <td className={row.costDataStatus === "available" ? "is-positive" : "is-negative"}>{row.costDataStatus === "available" ? "已接入" : "未接入"}</td>
                 <td><StatusPill value={row.status} label={row.evidenceStatus === "available" ? ({ healthy: "正常", warning: "降级预警", critical: "异常" }[row.status]) : "数据未接入"} /></td>
                 <td><div className="ops-table-actions"><button type="button" onClick={() => onAction?.("detail", row)} disabled={!onAction}>详情</button><button type="button" onClick={() => onAction?.("monitor", row)} disabled={!onAction}>监控</button></div></td>
               </tr>
@@ -278,16 +278,17 @@ export function TaskOperationsScreen({ data, onExceptionSelect, onShowExceptionC
   const exceptionStatus = data.sourceStatus?.exceptions || "unavailable";
   const reliabilityStatus = data.sourceStatus?.channelHealth || "unavailable";
   return (
-    <>
+    <div className="ops-task-stream">
+      <div className="ops-task-register" aria-hidden="true"><span>实时任务状态流</span><span>人工异常队列</span></div>
       <div className="ops-task-grid">
         <div className="ops-task-main">
           {taskStatus === "available" ? (
             <>
               <section className="ops-panel ops-flow-panel">
                 <div className="ops-alert-strip">
-                  <span><Alarm size={15} />待处理 <strong>{exceptionStatus === "available" ? formatInteger(data.summary.pending) : "—"}</strong></span>
-                  <span><WarningCircle size={15} />告警积压 <strong className="is-negative">{data.summary.alertBacklog == null ? "—" : formatInteger(data.summary.alertBacklog)}</strong></span>
-                  <span><Receipt size={15} />未完成成本对账 <strong>{data.sourceStatus?.operating === "available" ? formatInteger(data.summary.unreconciledCosts) : "—"}</strong></span>
+                  <span><Alarm size={15} />待处理 <strong>{exceptionStatus === "available" ? formatInteger(data.summary.pending) : "待核验"}</strong></span>
+                  <span><WarningCircle size={15} />告警积压 <strong className="is-negative">{data.summary.alertBacklog == null ? "待核验" : formatInteger(data.summary.alertBacklog)}</strong></span>
+                  <span><Receipt size={15} />未完成成本对账 <strong>{data.sourceStatus?.operating === "available" ? formatInteger(data.summary.unreconciledCosts) : "待核验"}</strong></span>
                 </div>
                 <TaskFlow items={data.taskFlow} timings={data.timings} />
               </section>
@@ -321,6 +322,6 @@ export function TaskOperationsScreen({ data, onExceptionSelect, onShowExceptionC
       ) : (
         <section className="ops-panel ops-reliability-panel"><DatasetState status={reliabilityStatus} label="模型与渠道可靠性" detail={data.sourceErrors?.channelHealth} onRetry={onRetry} /></section>
       )}
-    </>
+    </div>
   );
 }

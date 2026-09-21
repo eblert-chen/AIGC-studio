@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 
 type signerOptions struct {
 	routesFile           string
+	validateOnly         bool
 	privateKeyFile       string
 	keyID                string
 	releaseID            string
@@ -34,9 +36,15 @@ type signerOptions struct {
 	notAfter             string
 }
 
+var (
+	openRouteAcceptanceSignerFile      = os.Open
+	afterRouteAcceptanceSignerFileRead = func(string) {}
+)
+
 func main() {
 	options := signerOptions{}
 	flag.StringVar(&options.routesFile, "routes", "", "absolute path to the reviewed route JSON")
+	flag.BoolVar(&options.validateOnly, "validate-only", false, "strictly decode and normalize reviewed routes without signing")
 	flag.StringVar(&options.privateKeyFile, "private-key-file", "", "absolute path to a regular, non-symlink base64 Ed25519 private-key file")
 	flag.StringVar(&options.keyID, "key-id", "", "public verification key id embedded in the manifest")
 	flag.StringVar(&options.releaseID, "release-id", "", "stable UUID namespace for this acceptance release")
@@ -50,7 +58,13 @@ func main() {
 	if flag.NArg() != 0 {
 		fatal(errors.New("positional arguments are not accepted"))
 	}
-	output, err := signRoutes(options)
+	var output []byte
+	var err error
+	if options.validateOnly {
+		output, err = normalizeReviewedRoutes(options.routesFile)
+	} else {
+		output, err = signRoutes(options)
+	}
 	if err != nil {
 		fatal(err)
 	}
@@ -66,16 +80,9 @@ func fatal(err error) {
 }
 
 func signRoutes(options signerOptions) ([]byte, error) {
-	routeBytes, err := readAbsoluteRegularFile(options.routesFile, 16<<20)
+	routes, err := loadReviewedRoutes(options.routesFile)
 	if err != nil {
-		return nil, fmt.Errorf("read reviewed routes: %w", err)
-	}
-	routes := make(map[string][]service.PlatformRelayRouteDeclaration)
-	if err := common.DecodeJsonDisallowUnknownFields(strings.NewReader(string(routeBytes)), &routes); err != nil {
-		return nil, fmt.Errorf("decode reviewed routes: %w", err)
-	}
-	if len(routes) == 0 {
-		return nil, errors.New("reviewed routes must not be empty")
+		return nil, err
 	}
 	privateKey, err := loadEd25519PrivateKey(options.privateKeyFile)
 	if err != nil {
@@ -137,6 +144,37 @@ func signRoutes(options signerOptions) ([]byte, error) {
 	return output, nil
 }
 
+func loadReviewedRoutes(path string) (map[string][]service.PlatformRelayRouteDeclaration, error) {
+	routeBytes, err := readAbsoluteRegularFile(path, 16<<20)
+	if err != nil {
+		return nil, fmt.Errorf("read reviewed routes: %w", err)
+	}
+	defer clear(routeBytes)
+	if err := common.RejectDuplicateJSONKeys(routeBytes); err != nil {
+		return nil, fmt.Errorf("decode reviewed routes: %w", err)
+	}
+	routes := make(map[string][]service.PlatformRelayRouteDeclaration)
+	if err := common.DecodeJsonDisallowUnknownFields(strings.NewReader(string(routeBytes)), &routes); err != nil {
+		return nil, fmt.Errorf("decode reviewed routes: %w", err)
+	}
+	if len(routes) == 0 {
+		return nil, errors.New("reviewed routes must not be empty")
+	}
+	return routes, nil
+}
+
+func normalizeReviewedRoutes(path string) ([]byte, error) {
+	routes, err := loadReviewedRoutes(path)
+	if err != nil {
+		return nil, err
+	}
+	output, err := json.MarshalIndent(routes, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode reviewed routes: %w", err)
+	}
+	return output, nil
+}
+
 func parseCanonicalUTC(name string, value string) (time.Time, error) {
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil || parsed.Location() != time.UTC || parsed.Format(time.RFC3339) != value {
@@ -163,7 +201,7 @@ func readAbsoluteRegularFileWithPolicy(path string, maximumBytes int64, ownerOnl
 	if info.Size() < 1 || info.Size() > maximumBytes {
 		return nil, errors.New("file size is outside the permitted range")
 	}
-	file, err := os.Open(path)
+	file, err := openRouteAcceptanceSignerFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +221,27 @@ func readAbsoluteRegularFileWithPolicy(path string, maximumBytes int64, ownerOnl
 		return nil, err
 	}
 	if int64(len(contents)) > maximumBytes {
+		clear(contents)
 		return nil, errors.New("file exceeds the permitted size")
+	}
+	afterRouteAcceptanceSignerFileRead(path)
+	openedAfter, err := file.Stat()
+	if err != nil {
+		clear(contents)
+		return nil, err
+	}
+	pathAfter, err := os.Lstat(path)
+	if err != nil || !openedAfter.Mode().IsRegular() || !pathAfter.Mode().IsRegular() || pathAfter.Mode()&os.ModeSymlink != 0 ||
+		!os.SameFile(openedInfo, openedAfter) || !os.SameFile(openedAfter, pathAfter) ||
+		openedInfo.Size() != openedAfter.Size() || !openedInfo.ModTime().Equal(openedAfter.ModTime()) ||
+		int64(len(contents)) != openedAfter.Size() {
+		clear(contents)
+		return nil, errors.New("file identity or contents changed while reading")
+	}
+	if ownerOnly && runtime.GOOS != "windows" &&
+		(openedAfter.Mode().Perm()&0o077 != 0 || pathAfter.Mode().Perm()&0o077 != 0) {
+		clear(contents)
+		return nil, errors.New("private-key file must not be group- or world-readable")
 	}
 	return contents, nil
 }
@@ -193,19 +251,29 @@ func loadEd25519PrivateKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read Ed25519 private-key file: %w", err)
 	}
-	value := strings.TrimSpace(string(encoded))
-	decoded, err := base64.StdEncoding.DecodeString(value)
-	if err != nil || base64.StdEncoding.EncodeToString(decoded) != value {
+	defer clear(encoded)
+	value := bytes.TrimSpace(encoded)
+	decodedBuffer := make([]byte, base64.StdEncoding.DecodedLen(len(value)))
+	decodedLength, err := base64.StdEncoding.Decode(decodedBuffer, value)
+	decoded := decodedBuffer[:decodedLength]
+	canonical := make([]byte, base64.StdEncoding.EncodedLen(len(decoded)))
+	base64.StdEncoding.Encode(canonical, decoded)
+	if err != nil || !bytes.Equal(canonical, value) {
+		clear(canonical)
+		clear(decodedBuffer)
 		return nil, errors.New("Ed25519 private-key file must contain canonical base64")
 	}
-	defer clear(decoded)
+	clear(canonical)
+	defer clear(decodedBuffer)
 	switch len(decoded) {
 	case ed25519.SeedSize:
 		return ed25519.NewKeyFromSeed(decoded), nil
 	case ed25519.PrivateKeySize:
 		privateKey := ed25519.PrivateKey(append([]byte(nil), decoded...))
 		derived := ed25519.NewKeyFromSeed(privateKey.Seed())
+		defer clear(derived)
 		if !privateKey.Equal(derived) {
+			clear(privateKey)
 			return nil, errors.New("Ed25519 private-key bytes are internally inconsistent")
 		}
 		return privateKey, nil

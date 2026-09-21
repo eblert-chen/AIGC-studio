@@ -5,6 +5,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
@@ -67,9 +68,9 @@ def test_0028_provider_alert_receipts_are_immutable_and_round_trip(
     assert "relay_provider_alert_events" not in inspect(engine).get_table_names()
     engine.dispose()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0028_provider_alert_bridge")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == "0040_showcase_management"
+    assert _revision(engine) == "0028_provider_alert_bridge"
     assert "relay_provider_alert_events" in inspect(engine).get_table_names()
     with engine.connect() as connection:
         trigger_names = set(
@@ -129,6 +130,7 @@ def test_0028_provider_alert_receipts_are_immutable_and_round_trip(
     engine.dispose()
 
     command.upgrade(config, "head")
+    command.check(config)
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == "0040_showcase_management"
+    assert _revision(engine) == ScriptDirectory.from_config(config).get_current_head()
     engine.dispose()

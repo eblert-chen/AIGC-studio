@@ -6,6 +6,7 @@ import uuid
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
@@ -220,12 +221,12 @@ def test_0022_preserves_history_and_rejects_partial_storage_bindings(
         ).get_table_names()
     engine.dispose()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0038_download_evidence_checks")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     with engine.connect() as connection:
         assert connection.scalar(
             text("SELECT version_num FROM alembic_version")
-        ) == "0040_showcase_management"
+        ) == "0038_download_evidence_checks"
         historical = connection.execute(
             text(
                 "SELECT storage_binding_version, storage_provider, "
@@ -535,3 +536,6 @@ def test_0022_preserves_history_and_rejects_partial_storage_bindings(
             engine
         ).get_table_names()
     engine.dispose()
+    # Current metadata is checked only after this historical round-trip.
+    command.upgrade(config, "head")
+    command.check(config)

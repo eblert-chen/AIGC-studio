@@ -4,6 +4,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, inspect, text
 
@@ -11,7 +12,6 @@ from platform_api.models import GenerationTask, RelaySubmissionOutbox
 
 
 PREVIOUS_HEAD = "0038_download_evidence_checks"
-CURRENT_HEAD = "0040_showcase_management"
 LEGACY_BACKEND_ID = "legacy-default-v1"
 NEW_API_BACKEND_ID = "new-api-v1"
 
@@ -80,6 +80,14 @@ def _insert_defaulted_rows(engine, *, suffix: str) -> None:
         connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
         connection.execute(
             text(
+                "INSERT INTO companies "
+                "(id,name,status,billing_version,created_at,updated_at) VALUES "
+                "('new-company','New API default fixture','ACTIVE',1,"
+                "CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
                 "INSERT INTO generation_tasks "
                 "(id,company_id,user_id,model_id,status,request_payload,quote_cents,"
                 "pricing_snapshot,capability_snapshot,reserved_cents,created_at,updated_at,"
@@ -144,9 +152,10 @@ def test_sqlite_0039_preserves_history_and_switches_only_future_defaults(
     _insert_historical_legacy_rows(engine)
     engine.dispose()
 
-    command.upgrade(config, "head")
+    # The defaulted-row fixture also exercises later billing-version columns.
+    command.upgrade(config, "0055_commercial_plan_revisions")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == CURRENT_HEAD
+    assert _revision(engine) == "0055_commercial_plan_revisions"
     assert _backend_default(engine, "generation_tasks") == NEW_API_BACKEND_ID
     assert _backend_default(engine, "relay_submission_outbox") == NEW_API_BACKEND_ID
     assert _affinities(engine) == (
@@ -169,7 +178,7 @@ def test_sqlite_0039_preserves_history_and_switches_only_future_defaults(
 
     command.upgrade(config, "head")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == CURRENT_HEAD
+    assert _revision(engine) == ScriptDirectory.from_config(config).get_current_head()
     assert ("legacy-task", LEGACY_BACKEND_ID) in _affinities(engine)
     assert ("legacy-outbox", LEGACY_BACKEND_ID) in _affinities(engine)
     engine.dispose()

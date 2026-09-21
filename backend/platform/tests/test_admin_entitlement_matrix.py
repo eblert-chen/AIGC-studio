@@ -6,20 +6,29 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, func, inspect, select
 
 from platform_api.models import (
+    BillingUnit,
     Company,
+    CompanyEntitlementBatchJournal,
     CompanyModelGrant,
     CompanyResourceGrant,
+    ModelDefinition,
     ResourceDefinition,
     ResourceKind,
     User,
+    AuditLog,
 )
 from platform_api.services.admin_entitlements import AdminEntitlementService
 from platform_api.services.errors import ConflictError
+from platform_api.services.company_points_billing import CompanyPointBillingService
 
+from .test_model_capability_v1_contract import (
+    _request_with_fixture_distribution_evidence,
+)
 from .test_server_pricing import add_model_and_grant, recharge
+from .test_model_commercial_release import _admin_headers, _commercial_body, _prepare_video_draft
 
 
 def _seed_entitlements(session):
@@ -109,10 +118,75 @@ def test_matrix_coverage_preview_execute_and_idempotent_replay(app):
         assert target_row["cells"][0]["state"] == "enabled"
         assert target_row["cells"][0]["call_quota"] == 20
         assert target_row["cells"][0]["concurrency_limit"] == 3
-        coverage = AdminEntitlementService.coverage(session)
+        coverage = AdminEntitlementService.coverage(
+            session, now=datetime(2026, 8, 7, tzinfo=timezone.utc)
+        )
         item = next(item for item in coverage["items"] if item["item_id"] == feature.id)
         assert item["enabled_company_count"] == 1
         assert item["unconfigured_company_count"] == 1
+
+
+def test_committed_pending_entitlement_journal_never_auto_reexecutes(app):
+    with app.state.session_factory() as session:
+        admin, _, target, feature = _seed_entitlements(session)
+        session.commit()
+        change = {
+            "company_id": target.id,
+            "item_kind": "resource",
+            "item_id": feature.id,
+            "enabled": True,
+            "config_override": {},
+        }
+        preview = AdminEntitlementService.preview_changes(session, changes=[change])
+        intent = {"operation": "matrix_batch", "cells": [change]}
+        reason = "Exercise unknown journal outcome recovery"
+        key = "matrix-persisted-pending-1"
+        _, normalized_key, request_hash = AdminEntitlementService._execution_identity(
+            expected_snapshot=preview["snapshot"],
+            actor_user_id=admin.id,
+            reason=reason,
+            idempotency_key=key,
+            request_intent=intent,
+        )
+        session.add(
+            CompanyEntitlementBatchJournal(
+                idempotency_key=normalized_key,
+                actor_user_id=admin.id,
+                request_sha256=request_hash,
+                expected_snapshot=preview["snapshot"],
+                state="pending",
+                result_payload=None,
+            )
+        )
+        session.commit()
+
+        with pytest.raises(ConflictError, match="outcome is unknown"):
+            AdminEntitlementService.execute_changes(
+                session,
+                changes=[change],
+                expected_snapshot=preview["snapshot"],
+                actor_user_id=admin.id,
+                reason=reason,
+                request_id="matrix-persisted-pending-request",
+                idempotency_key=key,
+                request_intent=intent,
+            )
+        assert session.scalar(
+            select(func.count())
+            .select_from(CompanyResourceGrant)
+            .where(
+                CompanyResourceGrant.company_id == target.id,
+                CompanyResourceGrant.resource_id == feature.id,
+            )
+        ) == 0
+        assert session.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.action == "company.entitlements.batch",
+                AuditLog.target_id == key,
+            )
+        ) == 0
 
 
 def test_snapshot_conflict_copy_and_template_replace_semantics(app):
@@ -191,6 +265,130 @@ def test_snapshot_conflict_copy_and_template_replace_semantics(app):
         }
         assert template_preview["cells"][0]["after"]["call_quota"] == 12
         assert template_preview["cells"][0]["after"]["concurrency_limit"] == 2
+
+
+def test_point_company_batch_and_copy_contracts_are_unit_safe(app, client):
+    with app.state.session_factory() as session:
+        admin, source, target, _ = _seed_entitlements(session)
+        source.billing_version = 2
+        target.billing_version = 2
+        legacy = Company(name="Legacy cents target", billing_version=1)
+        model = ModelDefinition(
+            slug="point-entitlement-matrix-model",
+            display_name="Point entitlement matrix model",
+            provider_key="point-entitlement-test",
+            billing_mode="per_item",
+        )
+        session.add_all((legacy, model))
+        session.commit()
+
+        change = {
+            "company_id": target.id,
+            "item_kind": "model",
+            "item_id": model.id,
+            "enabled": False,
+            "billing_unit": BillingUnit.POINT.value,
+            "billing_version": 2,
+            "price_per_item_points": 17,
+            "config_override": {},
+        }
+        preview = AdminEntitlementService.preview_changes(
+            session,
+            changes=[change],
+        )
+        after = preview["cells"][0]["after"]
+        assert after["billing_unit"] == BillingUnit.POINT.value
+        assert after["billing_version"] == 2
+        assert after["price_per_item_points"] == 17
+        assert after["price_per_item_cents"] is None
+
+        AdminEntitlementService.execute_changes(
+            session,
+            changes=[change],
+            expected_snapshot=preview["snapshot"],
+            actor_user_id=admin.id,
+            reason="Configure the point price through the batch matrix",
+            request_id="point-entitlement-matrix-request",
+            idempotency_key="point-entitlement-matrix-batch",
+        )
+        session.commit()
+        grant = session.scalar(
+            select(CompanyModelGrant).where(
+                CompanyModelGrant.company_id == target.id,
+                CompanyModelGrant.model_id == model.id,
+            )
+        )
+        assert grant is not None
+        assert grant.price_per_item_points == 17
+        assert grant.price_per_item_cents is None
+
+        copied = AdminEntitlementService.changes_from_company(
+            session,
+            source_company_id=target.id,
+            target_company_ids=[source.id],
+            mode="replace",
+        )
+        copied_model = next(
+            cell for cell in copied if cell["item_kind"] == "model"
+        )
+        assert copied_model["billing_unit"] == BillingUnit.POINT.value
+        assert copied_model["billing_version"] == 2
+        assert copied_model["price_per_item_points"] == 17
+
+        with pytest.raises(ConflictError, match="cross billing versions"):
+            AdminEntitlementService.changes_from_company(
+                session,
+                source_company_id=target.id,
+                target_company_ids=[legacy.id],
+                mode="replace",
+            )
+        with pytest.raises(ConflictError, match="cross billing versions"):
+            AdminEntitlementService.changes_from_template(
+                session,
+                template_cells=[
+                    {
+                        "item_kind": "model",
+                        "item_id": model.id,
+                        "enabled": False,
+                        "billing_unit": BillingUnit.POINT.value,
+                        "billing_version": 2,
+                        "price_per_item_points": 17,
+                    }
+                ],
+                target_company_ids=[legacy.id],
+                mode="replace",
+            )
+
+        with pytest.raises(ConflictError, match="explicit POINT v2"):
+            AdminEntitlementService.preview_changes(
+                session,
+                changes=[
+                    {
+                        **change,
+                        "billing_unit": None,
+                        "billing_version": None,
+                    }
+                ],
+            )
+
+        http_preview = client.post(
+            "/api/v1/platform-admin/entitlements/batch/preview",
+            headers={"X-Platform-Admin-User-ID": admin.id},
+            json={
+                "changes": [
+                    {
+                        **change,
+                        "price_per_item_points": 19,
+                    }
+                ]
+            },
+        )
+        assert http_preview.status_code == 200, http_preview.text
+        http_after = http_preview.json()["cells"][0]["after"]
+        assert http_after["billing_unit"] == BillingUnit.POINT.value
+        assert http_after["billing_version"] == 2
+        assert http_after["price_per_item_points"] == 19
+        assert http_after["price_per_item_cents"] is None
 
 
 def test_schedule_quota_and_concurrency_fail_closed_at_task_admission(
@@ -275,23 +473,19 @@ def test_single_company_grant_apis_round_trip_entitlement_policy(
     app, client, tenant, tenant_headers
 ):
     company_id = tenant["company_id"]
-    model_id = add_model_and_grant(
-        app,
-        company_id,
-        slug="single-grant-policy-model",
-        second_price=None,
-        item_price=100,
-        capability_config={"max_outputs": 1},
-    )
+    admin_headers = _admin_headers(client, "single-policy-admin")
+    with app.state.session_factory.begin() as session:
+        CompanyPointBillingService.migrate(session, company_id=company_id, expected_available_cents=0, idempotency_key="single-policy-points")
+    model = _prepare_video_draft(app, client, admin_headers)
+    model_id = model["id"]
+    plan = client.put(f"/api/v1/platform-admin/models/{model_id}/commercial-release-plan", headers=admin_headers, json=_commercial_body(model=model))
+    assert plan.status_code == 200, plan.text
+    release = client.post("/api/v1/platform-admin/model-commercial-releases/reconcile", headers=admin_headers)
+    assert release.status_code == 200 and release.json()["released_count"] == 1, release.text
     now = datetime.now(timezone.utc)
     effective_at = now - timedelta(minutes=5)
     expires_at = now + timedelta(days=10)
     with app.state.session_factory.begin() as session:
-        admin = User(
-            email="single-policy-admin@example.com",
-            display_name="Single policy admin",
-            is_platform_admin=True,
-        )
         resource = ResourceDefinition(
             key="feature.single_policy",
             kind=ResourceKind.FEATURE,
@@ -299,25 +493,36 @@ def test_single_company_grant_apis_round_trip_entitlement_policy(
             description="",
             active=True,
         )
-        session.add_all((admin, resource))
+        session.add(resource)
         session.flush()
-        admin_id = admin.id
         resource_id = resource.id
-    admin_headers = {"X-Platform-Admin-User-ID": admin_id}
+    grant_version = next(
+        item["updated_at"]
+        for item in client.get(
+            f"/api/v1/companies/{company_id}/model-grants",
+            headers=tenant_headers,
+        ).json()
+        if item["model_id"] == model_id
+    )
 
-    model_response = client.put(
-        f"/api/v1/platform-admin/companies/{company_id}/model-grants",
-        headers=admin_headers,
-        json={
-            "model_id": model_id,
-            "enabled": True,
-            "price_per_item_cents": 125,
-            "config_override": {},
-            "call_quota": 80,
-            "concurrency_limit": 4,
-            "effective_at": effective_at.isoformat(),
-            "expires_at": expires_at.isoformat(),
-        },
+    model_response = _request_with_fixture_distribution_evidence(
+        client,
+        model_id,
+        lambda: client.put(
+            f"/api/v1/platform-admin/companies/{company_id}/model-grants",
+            headers=admin_headers,
+            json={
+                "model_id": model_id,
+                "expected_updated_at": grant_version,
+                "enabled": True,
+                "price_per_second_points": 25,
+                "config_override": {},
+                "call_quota": 80,
+                "concurrency_limit": 4,
+                "effective_at": effective_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+        ),
     )
     assert model_response.status_code == 200, model_response.text
     assert model_response.json()["call_quota"] == 80

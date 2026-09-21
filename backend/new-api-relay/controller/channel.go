@@ -233,6 +233,9 @@ func FetchUpstreamModels(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if rejectNativeManagedProviderChannel(c, id) {
+		return
+	}
 
 	channel, err := model.GetChannelById(id, true)
 	if err != nil {
@@ -424,6 +427,9 @@ func GetChannelKey(c *gin.Context) {
 	channelId, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		common.ApiError(c, fmt.Errorf("渠道ID格式错误: %v", err))
+		return
+	}
+	if rejectNativeManagedProviderChannel(c, channelId) {
 		return
 	}
 
@@ -636,6 +642,10 @@ func AddChannel(c *gin.Context) {
 	if addChannelRequest.Channel != nil && credentialInput.Channel != nil && credentialInput.Channel.Key != nil {
 		addChannelRequest.Channel.Key = *credentialInput.Channel.Key
 	}
+	if model.IsProviderOnboardingManagedChannel(addChannelRequest.Channel) {
+		writeProviderOnboardingError(c, model.ErrProviderOnboardingManagedChannel)
+		return
+	}
 
 	// 使用统一的校验函数
 	if err := validateChannel(addChannelRequest.Channel, true); err != nil {
@@ -733,6 +743,9 @@ func AddChannel(c *gin.Context) {
 
 func DeleteChannel(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	if rejectNativeManagedProviderChannel(c, id) {
+		return
+	}
 	channelName := ""
 	channelProxy := ""
 	channelLookupFailed := false
@@ -808,6 +821,9 @@ func DisableTagChannels(c *gin.Context) {
 		})
 		return
 	}
+	if rejectNativeManagedProviderTag(c, channelTag.Tag) {
+		return
+	}
 	err = model.DisableChannelByTag(channelTag.Tag)
 	if err != nil {
 		common.ApiError(c, err)
@@ -832,6 +848,9 @@ func EnableTagChannels(c *gin.Context) {
 			"success": false,
 			"message": "参数错误",
 		})
+		return
+	}
+	if rejectNativeManagedProviderTag(c, channelTag.Tag) {
 		return
 	}
 	err = model.EnableChannelByTag(channelTag.Tag)
@@ -865,6 +884,13 @@ func EditTagChannels(c *gin.Context) {
 			"success": false,
 			"message": "tag不能为空",
 		})
+		return
+	}
+	if rejectNativeManagedProviderTag(c, channelTag.Tag) {
+		return
+	}
+	if channelTag.NewTag != nil && *channelTag.NewTag == model.ProviderOnboardingManagedChannelTag {
+		writeProviderOnboardingError(c, model.ErrProviderOnboardingManagedChannel)
 		return
 	}
 	if (channelTag.ParamOverride != nil || channelTag.HeaderOverride != nil) &&
@@ -923,6 +949,9 @@ func DeleteChannelBatch(c *gin.Context) {
 			"success": false,
 			"message": "参数错误",
 		})
+		return
+	}
+	if rejectNativeManagedProviderChannels(c, channelBatch.Ids) {
 		return
 	}
 	deletedCount, err := model.BatchDeleteChannels(channelBatch.Ids)
@@ -986,6 +1015,13 @@ func UpdateChannel(c *gin.Context) {
 	}
 	if _, ok := requestData["status"]; ok {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	if rejectNativeManagedProviderChannel(c, channel.Id) {
+		return
+	}
+	if channel.Tag != nil && *channel.Tag == model.ProviderOnboardingManagedChannelTag {
+		writeProviderOnboardingError(c, model.ErrProviderOnboardingManagedChannel)
 		return
 	}
 	clearChannelReadOnlyFields(&channel, requestData)
@@ -1156,6 +1192,9 @@ func UpdateChannelStatus(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
+	if rejectNativeManagedProviderChannel(c, id) {
+		return
+	}
 	req := ChannelStatusRequest{}
 	if err := c.ShouldBindJSON(&req); err != nil || !isManageableChannelStatus(req.Status) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
@@ -1181,6 +1220,9 @@ func BatchUpdateChannelStatus(c *gin.Context) {
 	req := ChannelStatusBatchRequest{}
 	if err := c.ShouldBindJSON(&req); err != nil || len(req.Ids) == 0 || !isManageableChannelStatus(req.Status) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	if rejectNativeManagedProviderChannels(c, req.Ids) {
 		return
 	}
 	changedCount := 0
@@ -1307,6 +1349,9 @@ func FetchModels(c *gin.Context) {
 		})
 		return
 	}
+	if req.ChannelID > 0 && rejectNativeManagedProviderChannel(c, req.ChannelID) {
+		return
+	}
 
 	var channel *model.Channel
 	if req.Type == constant.ChannelTypeAdvancedCustom || req.ChannelID > 0 {
@@ -1362,6 +1407,13 @@ func BatchSetChannelTag(c *gin.Context) {
 			"success": false,
 			"message": "参数错误",
 		})
+		return
+	}
+	if rejectNativeManagedProviderChannels(c, channelBatch.Ids) {
+		return
+	}
+	if channelBatch.Tag != nil && *channelBatch.Tag == model.ProviderOnboardingManagedChannelTag {
+		writeProviderOnboardingError(c, model.ErrProviderOnboardingManagedChannel)
 		return
 	}
 	err = model.BatchSetChannelTag(channelBatch.Ids, channelBatch.Tag)
@@ -1432,6 +1484,9 @@ func CopyChannel(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "invalid id"})
+		return
+	}
+	if rejectNativeManagedProviderChannel(c, id) {
 		return
 	}
 
@@ -1522,6 +1577,9 @@ func ManageMultiKeys(c *gin.Context) {
 	err := c.ShouldBindJSON(&request)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	if rejectNativeManagedProviderChannel(c, request.ChannelId) {
 		return
 	}
 

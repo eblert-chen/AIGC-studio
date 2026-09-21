@@ -31,7 +31,7 @@ import (
 const (
 	PlatformRelaySecretIsolationReceiptKind          = "relay_secret_isolation_commitment"
 	PlatformRelaySecretIsolationReceiptSchemaVersion = 2
-	PlatformRelaySecretIsolationConsumerCount        = 14
+	PlatformRelaySecretIsolationConsumerCount        = 15
 
 	PlatformRelaySecretIsolationConsumerPre                           = "pre"
 	PlatformRelaySecretIsolationConsumerMigrate                       = "migrate"
@@ -44,6 +44,7 @@ const (
 	PlatformRelaySecretIsolationConsumerPlatformAPI                   = "platform-api"
 	PlatformRelaySecretIsolationConsumerPlatformDispatcher            = "platform-dispatcher"
 	PlatformRelaySecretIsolationConsumerPlatformRelaySync             = "platform-relay-sync"
+	PlatformRelaySecretIsolationConsumerPlatformRelayCatalogSync      = "platform-relay-catalog-sync"
 	PlatformRelaySecretIsolationConsumerPlatformTimeoutWorker         = "platform-timeout-worker"
 	PlatformRelaySecretIsolationConsumerPlatformPublishingWorker      = "platform-publishing-worker"
 	PlatformRelaySecretIsolationConsumerPlatformDownloadGatewayWorker = "platform-download-gateway-registration-worker"
@@ -83,6 +84,7 @@ var platformRelaySecretIsolationConsumers = []string{
 	PlatformRelaySecretIsolationConsumerPlatformDownloadGatewayWorker,
 	PlatformRelaySecretIsolationConsumerPlatformMigration,
 	PlatformRelaySecretIsolationConsumerPlatformPublishingWorker,
+	PlatformRelaySecretIsolationConsumerPlatformRelayCatalogSync,
 	PlatformRelaySecretIsolationConsumerPlatformRelaySync,
 	PlatformRelaySecretIsolationConsumerPlatformTimeoutWorker,
 	PlatformRelaySecretIsolationConsumerPost,
@@ -882,6 +884,7 @@ func platformRelaySecretIsolationReceiptForConsumer(
 			"platform_migration_password":               {},
 			"platform_api_password":                     {},
 			"platform_dispatcher_password":              {},
+			"platform_relay_catalog_sync_password":      {},
 			"platform_relay_sync_password":              {},
 			"platform_timeout_worker_password":          {},
 			"platform_publishing_worker_password":       {},
@@ -898,6 +901,9 @@ func platformRelaySecretIsolationReceiptForConsumer(
 		},
 		PlatformRelaySecretIsolationConsumerPlatformRelaySync: {
 			"platform_relay_sync_runtime": {}, "platform_database_ca": {},
+		},
+		PlatformRelaySecretIsolationConsumerPlatformRelayCatalogSync: {
+			"platform_relay_catalog_sync_runtime": {}, "platform_database_ca": {},
 		},
 		PlatformRelaySecretIsolationConsumerPlatformTimeoutWorker: {
 			"platform_timeout_worker_runtime": {}, "platform_database_ca": {},
@@ -1154,7 +1160,7 @@ func ValidateAndCommitPlatformRelaySecretIsolation() error {
 		directories[consumer] = opened
 	}
 	// Revoke the shared commit marker first. Until a new marker is atomically
-	// committed after all fourteen receipts, no complete-looking partial set can
+	// committed after all fifteen receipts, no complete-looking partial set can
 	// be consumed after a kill or power loss.
 	if removeErr := commitDirectory.remove("receipt.json"); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		return errors.New("Relay secret isolation stale commit marker could not be removed")
@@ -1445,6 +1451,8 @@ func platformRelaySecretIsolationReadConsumerSources(consumer string) ([]platfor
 			role = "dispatcher"
 		case PlatformRelaySecretIsolationConsumerPlatformRelaySync:
 			role = "relay-sync"
+		case PlatformRelaySecretIsolationConsumerPlatformRelayCatalogSync:
+			role = "relay-catalog-sync"
 		case PlatformRelaySecretIsolationConsumerPlatformTimeoutWorker:
 			role = "timeout-worker"
 		case PlatformRelaySecretIsolationConsumerPlatformPublishingWorker:

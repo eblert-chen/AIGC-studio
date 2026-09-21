@@ -49,7 +49,11 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var lifecycleLost atomic.Bool
+	databaseCleanupHandled := false
 	defer func() {
+		if databaseCleanupHandled {
+			return
+		}
 		if lifecycleLost.Load() {
 			runtimeLifecycleLock.Close()
 			return
@@ -80,27 +84,21 @@ func run() error {
 		}()
 	}
 	defer stopLifecycleMonitor()
-	var schemaStatus model.RelaySchemaStatus
+	var databaseRoleProof model.RelayDownloadEdgeDatabaseRoleProof
 	if protected {
-		schemaStatus, err = model.RequireRelaySchemaCurrent(model.DB)
+		databaseRoleProof, err = model.AttestRelayDownloadEdgeDatabaseRole(model.DB)
 	} else {
-		schemaStatus, err = model.RequireRelaySchemaCompatible(model.DB)
+		_, err = model.RequireRelaySchemaCompatible(model.DB)
 	}
 	if err != nil {
 		return err
 	}
+	var gateway *service.PlatformDownloadEdgeGateway
 	if protected {
-		if err := model.VerifyRelayDownloadEdgeDatabaseRole(model.DB, schemaStatus.CurrentVersion); err != nil {
-			return err
-		}
-		if err := service.VerifyPlatformRelayDatabaseReleaseProof(
-			model.DB,
-			service.PlatformRelaySecretIsolationConsumerEdge,
-		); err != nil {
-			return err
-		}
+		gateway, err = service.NewProtectedPlatformDownloadEdgeGateway(ctx, config, model.DB, databaseRoleProof)
+	} else {
+		gateway, err = service.NewPlatformDownloadEdgeGateway(config)
 	}
-	gateway, err := service.NewPlatformDownloadEdgeGateway(config)
 	if err != nil {
 		return err
 	}
@@ -191,21 +189,95 @@ func run() error {
 		if drainErr != nil && !errors.Is(drainErr, context.Canceled) {
 			runtimeErr = errors.Join(runtimeErr, drainErr)
 		}
-		lossContext, cancelLoss := context.WithDeadline(context.Background(), drainOutcome.LifecycleLossDeadline)
-		poolClosed := make(chan error, 1)
-		go func() { poolClosed <- model.CloseDB() }()
-		select {
-		case closeErr := <-poolClosed:
-			if closeErr != nil {
-				runtimeErr = errors.Join(runtimeErr, closeErr)
-			}
-		case <-lossContext.Done():
-			runtimeErr = errors.Join(runtimeErr, errors.New("download edge database pool did not close before the lifecycle-loss deadline"))
-		}
-		cancelLoss()
-		return runtimeErr
 	}
-	return errors.Join(runtimeErr, drainErr)
+	// Normal drain and database cleanup have distinct bounded budgets. Computing
+	// this deadline after the HTTP/worker drain prevents a successful drain from
+	// consuming the refresh-join/database-close budget. Lifecycle loss remains
+	// bound to the single hard deadline established by the escalation helper.
+	shutdownDeadline := time.Now().Add(30 * time.Second)
+	if drainOutcome.LifecycleLoss != nil {
+		shutdownDeadline = drainOutcome.LifecycleLossDeadline
+	} else {
+		runtimeErr = errors.Join(runtimeErr, drainErr)
+	}
+	shutdownContext, cancelShutdown := context.WithDeadline(context.Background(), shutdownDeadline)
+	var readinessStopper downloadEdgeReadinessStopper
+	if protected {
+		readinessStopper = gateway
+	}
+	databaseCleanupHandled = true
+	closeAnchor := func() error {
+		runtimeLifecycleLock.Close()
+		return nil
+	}
+	releaseAnchor := func() error {
+		return model.ReleaseRelayLifecycleLockBounded(runtimeLifecycleLock)
+	}
+	if drainOutcome.LifecycleLoss != nil {
+		releaseAnchor = closeAnchor
+	}
+	cleanupErr := finalizeDownloadEdgeDatabaseShutdown(
+		shutdownContext,
+		readinessStopper,
+		model.CloseDB,
+		stopLifecycleMonitor,
+		releaseAnchor,
+		closeAnchor,
+	)
+	cancelShutdown()
+	return errors.Join(runtimeErr, cleanupErr)
+}
+
+type downloadEdgeReadinessStopper interface {
+	StopProtectedReadinessRefresh(context.Context) error
+}
+
+// stopDownloadEdgeReadinessAndCloseDatabase enforces the normal and
+// lifecycle-loss ordering: no catalog query may outlive the pool it uses. If
+// the refresh does not join by the shared deadline, the explicit close is
+// skipped and the process remains fail-closed until exit.
+func stopDownloadEdgeReadinessAndCloseDatabase(
+	ctx context.Context,
+	readiness downloadEdgeReadinessStopper,
+	closeDatabase func() error,
+) error {
+	if ctx == nil || closeDatabase == nil {
+		return errors.New("download edge database shutdown is invalid")
+	}
+	if readiness != nil {
+		if err := readiness.StopProtectedReadinessRefresh(ctx); err != nil {
+			return err
+		}
+	}
+	poolClosed := make(chan error, 1)
+	go func() { poolClosed <- closeDatabase() }()
+	select {
+	case closeErr := <-poolClosed:
+		return closeErr
+	case <-ctx.Done():
+		return errors.Join(errors.New("download edge database pool did not close before the shutdown deadline"), ctx.Err())
+	}
+}
+
+func finalizeDownloadEdgeDatabaseShutdown(
+	ctx context.Context,
+	readiness downloadEdgeReadinessStopper,
+	closeDatabase func() error,
+	stopMonitor func(),
+	releaseAnchor func() error,
+	closeAnchor func() error,
+) error {
+	if stopMonitor == nil || releaseAnchor == nil || closeAnchor == nil {
+		return errors.New("download edge lifecycle shutdown is invalid")
+	}
+	closeErr := stopDownloadEdgeReadinessAndCloseDatabase(ctx, readiness, closeDatabase)
+	stopMonitor()
+	if closeErr != nil {
+		// The pool is deliberately left open if refresh join failed. Closing the
+		// anchor after the monitor has joined fences the process until OS teardown.
+		return errors.Join(closeErr, closeAnchor())
+	}
+	return releaseAnchor()
 }
 
 func waitForDownloadEdgeWorker(ctx context.Context, done <-chan error) error {
@@ -214,6 +286,9 @@ func waitForDownloadEdgeWorker(ctx context.Context, done <-chan error) error {
 	}
 	select {
 	case err := <-done:
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
 		return err
 	case <-ctx.Done():
 		return errors.Join(errors.New("download edge worker did not stop before the drain deadline"), ctx.Err())

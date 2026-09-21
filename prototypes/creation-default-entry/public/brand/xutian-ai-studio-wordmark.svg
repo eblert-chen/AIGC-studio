@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 180" role="img" aria-labelledby="xutian-wordmark-title">
+  <title id="xutian-wordmark-title">旭天 AI studio</title>
+  <defs>
+    <mask id="xutian-wordmark-play-cutout" maskUnits="userSpaceOnUse" x="0" y="0" width="520" height="180">
+      <rect width="520" height="180" fill="#fff" />
+      <path d="M90 58q-5-3-5 5v28q0 8 5 5l21-13q6-4 0-8Z" fill="#000" />
+    </mask>
+    <mask id="xutian-camera-window-cutout" maskUnits="userSpaceOnUse" x="0" y="0" width="520" height="180">
+      <rect width="520" height="180" fill="#fff" />
+      <path d="M301 41h20q6 0 6 6v25q0 6-6 6h-20q-6 0-6-6V47q0-6 6-6Z" fill="#000" />
+    </mask>
+    <path id="glyph-latin-a" d="M-3 0 560 1466H769L1369 0H1148L977 444H364L203 0ZM420 602H917L764 1008Q694 1193 660 1312Q632 1171 581 1032Z" />
+    <path id="glyph-latin-i-cap" d="M191 0V1466H385V0Z" />
+    <path id="glyph-latin-s" d="M63 317 241 345Q256 238 324.5 181Q393 124 516 124Q640 124 700 174.5Q760 225 760 293Q760 354 707 389Q670 413 523 450Q325 500 248.5 536.5Q172 573 132.5 637.5Q93 702 93 780Q93 851 125.5 911.5Q158 972 214 1012Q256 1043 328.5 1064.5Q401 1086 484 1086Q609 1086 703.5 1050Q798 1014 843 952.5Q888 891 905 788L729 764Q717 846 659.5 892Q602 938 497 938Q373 938 320 897Q267 856 267 801Q267 766 289 738Q311 709 358 690Q385 680 517 644Q708 593 783.5 560.5Q859 528 902 466Q945 404 945 312Q945 222 892.5 142.5Q840 63 741 19.5Q642-24 517-24Q310-24 201.5 62Q93 148 63 317Z" />
+    <path id="glyph-latin-t" d="M528 161 554 2Q478-14 418-14Q320-14 266 17Q212 48 190 98.5Q168 149 168 311V922H36V1062H168V1325L347 1433V1062H528V922H347V301Q347 224 356.5 202Q366 180 387.5 167Q409 154 449 154Q479 154 528 161Z" />
+    <path id="glyph-latin-u" d="M831 0V156Q707-24 494-24Q400-24 318.5 12Q237 48 197.5 102.5Q158 157 142 236Q131 289 131 404V1062H311V473Q311 332 322 283Q339 212 394 171.5Q449 131 530 131Q611 131 682 172.5Q753 214 782.5 285.5Q812 357 812 493V1062H992V0Z" />
+    <path id="glyph-latin-d" d="M824 0V134Q723-24 527-24Q400-24 293.5 46Q187 116 128.5 241.5Q70 367 70 530Q70 689 123 818.5Q176 948 282 1017Q388 1086 519 1086Q615 1086 690 1045.5Q765 1005 812 940V1466H991V0ZM255 530Q255 326 341 225Q427 124 544 124Q662 124 744.5 220.5Q827 317 827 515Q827 733 743 835Q659 937 536 937Q416 937 335.5 839Q255 741 255 530Z" />
+    <path id="glyph-latin-i" d="M136 1259V1466H316V1259ZM136 0V1062H316V0Z" />
+    <path id="glyph-latin-o" d="M68 531Q68 826 232 968Q369 1086 566 1086Q785 1086 924 942.5Q1063 799 1063 546Q1063 341 1001.5 223.5Q940 106 822.5 41Q705-24 566-24Q343-24 205.5 119Q68 262 68 531ZM253 531Q253 327 342 225.5Q431 124 566 124Q700 124 789 226Q878 328 878 537Q878 734 788.5 835.5Q699 937 566 937Q431 937 342 836Q253 735 253 531Z" />
+  </defs>
+
+  <g fill="#087b80" mask="url(#xutian-wordmark-play-cutout)">
+    <path d="M20 23h43.4L198 105.4V132h-43.4L20 49.6Z" />
+    <path d="M154.6 23H198v26.6L63.4 132H20v-26.6Z" />
+  </g>
+
+  <g id="xutian-xu-frame" fill="none" stroke="#087b80" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M247 18v70q0 18-20 28" />
+    <path d="M229 38h35v52q0 26 18 26h65" />
+  </g>
+
+  <g id="xutian-camera-glyph">
+    <g fill="#087b80" mask="url(#xutian-camera-window-cutout)">
+      <path d="M290 23h41q7 0 7 7v63q0 7-7 7h-41q-7 0-7-7V30q0-7 7-7Z" />
+      <path d="m338 45 10-6q5-3 5 4v44q0 7-5 4l-10-6Z" />
+    </g>
+    <path d="M303 50q-4-3-4 3v14q0 6 4 3l16-9q5-3 0-6Z" fill="#087b80" />
+  </g>
+
+  <g fill="#087b80" transform="translate(367 106.6) scale(.063 -.052)">
+    <path d="M54 949H841Q866 1112 873 1317H164V1589H1892V1317H1165Q1157 1142 1143 949H1994V673H1229Q1450 168 2012 3Q1930-89 1780-281Q1252-59 1012 497Q834 40 258-271Q180-171 32-15Q672 275 779 673H54Z" />
+  </g>
+
+  <g fill="none" stroke="#13b8a6" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M268 90v15.5" />
+    <path d="M275 113h9" />
+    <circle cx="268" cy="113" r="6.5" />
+    <path d="M422 66h55.5" />
+    <circle cx="485" cy="66" r="7.5" />
+  </g>
+
+  <g fill="#087b80">
+    <use href="#glyph-latin-a" transform="translate(226 161) scale(.015 -.015)" />
+    <use href="#glyph-latin-i-cap" transform="translate(270 161) scale(.015 -.015)" />
+    <use href="#glyph-latin-s" transform="translate(312 161) scale(.015 -.015)" />
+    <use href="#glyph-latin-t" transform="translate(348 161) scale(.015 -.015)" />
+    <use href="#glyph-latin-u" transform="translate(379 161) scale(.015 -.015)" />
+    <use href="#glyph-latin-d" transform="translate(416 161) scale(.015 -.015)" />
+    <use href="#glyph-latin-i" transform="translate(452 161) scale(.015 -.015)" />
+    <use href="#glyph-latin-o" transform="translate(474 161) scale(.015 -.015)" />
+  </g>
+</svg>

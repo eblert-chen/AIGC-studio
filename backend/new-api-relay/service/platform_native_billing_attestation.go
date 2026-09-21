@@ -22,10 +22,14 @@ const protectedPlatformNativeBillingAttestationMaxRows = 10_000
 // the scheduler starts, on each polling pass and on readiness. Ordinary/legacy
 // or ambiguous tasks are never polled in a protected deployment.
 func ValidateProtectedPlatformNativeBillingState() error {
+	return ValidateProtectedPlatformNativeBillingStateWithDB(model.DB)
+}
+
+func ValidateProtectedPlatformNativeBillingStateWithDB(db *gorm.DB) error {
 	if !model.RelayDatabaseRoleAttestationRequired() {
 		return nil
 	}
-	_, err := loadProtectedPlatformNativeUnfinishedTasks()
+	_, err := loadProtectedPlatformNativeUnfinishedTasksWithDB(db)
 	return err
 }
 
@@ -35,11 +39,15 @@ func protectedPlatformTaskIsUnfinished(task *model.Task) bool {
 }
 
 func loadProtectedPlatformNativeUnfinishedTasks() ([]*model.Task, error) {
-	if model.DB == nil {
+	return loadProtectedPlatformNativeUnfinishedTasksWithDB(model.DB)
+}
+
+func loadProtectedPlatformNativeUnfinishedTasksWithDB(db *gorm.DB) ([]*model.Task, error) {
+	if db == nil {
 		return nil, fmt.Errorf("%w: database is unavailable", ErrProtectedPlatformNativeBillingState)
 	}
 	var tasks []*model.Task
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		loaded, err := loadProtectedPlatformNativeUnfinishedTasksTx(tx)
 		if err != nil {
 			return err

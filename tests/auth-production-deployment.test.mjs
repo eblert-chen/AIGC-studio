@@ -10,7 +10,7 @@ const runbook = read("docs/deployment-runbook.md");
 const releaseReadiness = read("docs/release-readiness.md");
 const traceability = read("docs/requirements-traceability.md");
 const stagingReadiness = read("docs/internal-staging-deployment-readiness-form.md");
-const databasePrivilegesV5 = read("backend/platform/platform_api/database_privileges_v5.py");
+const databasePrivilegesV10 = read("backend/platform/platform_api/database_privileges_v10.py");
 const platformIngress = read("infra/nginx/platform-api.conf");
 const platformTrustedEdge = read("infra/nginx/platform-api-trusted-edge.conf.template");
 
@@ -24,6 +24,46 @@ function serviceBlock(source, name) {
   );
   assert.ok(match, `missing Compose service ${name}`);
   return match[0];
+}
+
+function nginxLocationBlocks(source) {
+  const lines = source.split(/\r?\n/);
+  const blocks = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^ {4}location\s/.test(lines[index])) continue;
+    const header = lines[index].trim();
+    const blockLines = [];
+    let depth = 0;
+    let started = false;
+    let quote = null;
+    let escaped = false;
+    let end = index;
+    for (; end < lines.length; end += 1) {
+      const line = lines[end];
+      blockLines.push(line);
+      for (const character of line) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (quote !== null) {
+          if (character === "\\") escaped = true;
+          else if (character === quote) quote = null;
+          continue;
+        }
+        if (character === '"' || character === "'") quote = character;
+        else if (character === "{") {
+          depth += 1;
+          started = true;
+        } else if (character === "}") depth -= 1;
+      }
+      if (started && depth === 0) break;
+    }
+    assert.equal(depth, 0, `unterminated Nginx location: ${header}`);
+    blocks.push({ header, source: blockLines.join("\n") });
+    index = end;
+  }
+  return blocks;
 }
 
 test("secure Platform API uses public OIDC PKCE and disables legacy browser bearer", () => {
@@ -79,10 +119,22 @@ test("protected browser ingress has one non-spoofable proxy boundary", () => {
   assert.match(secure, /PLATFORM_API_INGRESS_SUBNET:\?set a dedicated non-overlapping Platform ingress subnet/);
 
   assert.doesNotMatch(platformIngress, /proxy_add_x_forwarded_for/);
-  assert.equal(
-    [...platformIngress.matchAll(/proxy_set_header X-Forwarded-For \$remote_addr;/g)].length,
-    4,
+  const proxyLocations = nginxLocationBlocks(platformIngress).filter(({ source }) =>
+    /\bproxy_pass\b/.test(source),
   );
+  assert.ok(proxyLocations.length > 0, "missing proxied Platform ingress locations");
+  for (const { header, source } of proxyLocations) {
+    const forwardedForValues = [
+      ...source.matchAll(
+        /^\s*proxy_set_header\s+X-Forwarded-For\s+([^;]+);/gm,
+      ),
+    ].map((match) => match[1].trim());
+    assert.deepEqual(
+      forwardedForValues,
+      ["$remote_addr"],
+      `${header} must replace, never extend, the caller-supplied forwarding chain`,
+    );
+  }
   assert.match(platformTrustedEdge, /set_real_ip_from \$\{PLATFORM_TRUSTED_EDGE_CIDR\};/);
   assert.match(platformTrustedEdge, /real_ip_header X-Forwarded-For;/);
   assert.match(platformTrustedEdge, /real_ip_recursive on;/);
@@ -103,6 +155,7 @@ test("OIDC browser configuration is not copied into non-API Platform processes",
     "platform-migrate",
     "platform-dispatcher",
     "platform-relay-sync",
+    "platform-relay-catalog-sync",
     "platform-timeout-worker",
     "platform-publishing-worker",
     "platform-download-gateway-registration-worker",
@@ -157,8 +210,9 @@ test("current release documents describe the native auth lifecycle and migration
   for (const document of [releaseReadiness, traceability, stagingReadiness]) {
     assert.match(document, /OIDC/);
     assert.match(document, /BFF/);
-    assert.match(document, /0040_showcase_management/);
-    assert.match(document, /0039_new_api_relay_defaults/);
+    assert.match(document, /0045_system_audit_actor/);
+    assert.match(document, /0044_account_product_partition/);
+    assert.match(document, /0041_model_capability_releases/);
     assert.match(document, /0038_download_evidence_checks/);
     assert.match(document, /0037_production_auth_lifecycle|`0037`/);
   }
@@ -171,9 +225,9 @@ test("current release documents describe the native auth lifecycle and migration
     /生产 Bearer JWT 验签、issuer\/audience、公司与管理员声明校验已实现/,
   );
   assert.match(releaseReadiness, /目标 IdP.*canary/);
-  const catalog = databasePrivilegesV5.match(/CATALOG_SHA256\s*=\s*"([0-9a-f]{64})"/);
-  assert.ok(catalog, "missing protected Platform v5 catalog fingerprint");
-  assert.notEqual(catalog[1], "0".repeat(64), "protected Platform v5 catalog is not qualified");
+  const catalog = databasePrivilegesV10.match(/CATALOG_SHA256\s*=\s*"([0-9a-f]{64})"/);
+  assert.ok(catalog, "missing protected Platform v10 catalog fingerprint");
+  assert.notEqual(catalog[1], "0".repeat(64), "protected Platform v10 catalog is not qualified");
   assert.match(releaseReadiness, new RegExp(catalog[1]));
   assert.match(stagingReadiness, new RegExp(catalog[1]));
 });

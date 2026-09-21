@@ -93,13 +93,20 @@ type PlatformArtifactVersionedStore interface {
 }
 
 type PlatformArtifactTransferRequest struct {
-	SourceURL         string
-	TenantID          string
-	JobID             string
-	AssetID           string
-	MediaType         string
-	ExpectedSizeBytes *int64
-	ExpectedSHA256    string
+	SourceURL string
+	TenantID  string
+	JobID     string
+	AssetID   string
+	MediaType string
+	// SourceAuthorization is transient provider material. It is attached only
+	// after the downloader has pinned the exact source host and is never part of
+	// a persisted transfer manifest or storage record.
+	SourceAuthorization *PlatformArtifactDownloadAuthorization `json:"-"`
+	ExpectedSizeBytes   *int64
+	ExpectedSHA256      string
+	ExpectedContentType string
+	ExpectedImageWidth  int
+	ExpectedImageHeight int
 }
 
 type platformFilesystemArtifactMetadata struct {
@@ -559,10 +566,19 @@ func TransferPlatformProviderArtifact(
 	if err != nil {
 		return PlatformStoredArtifact{}, err
 	}
-	downloaded, err := downloader.Download(ctx, request.SourceURL, PlatformArtifactDownloadExpectation{
-		SizeBytes: request.ExpectedSizeBytes,
-		SHA256:    request.ExpectedSHA256,
-	})
+	expectation := PlatformArtifactDownloadExpectation{
+		SizeBytes:           request.ExpectedSizeBytes,
+		SHA256:              request.ExpectedSHA256,
+		ExpectedContentType: request.ExpectedContentType,
+		ExpectedImageWidth:  request.ExpectedImageWidth,
+		ExpectedImageHeight: request.ExpectedImageHeight,
+	}
+	var downloaded *PlatformDownloadedArtifact
+	if request.SourceAuthorization == nil {
+		downloaded, err = downloader.Download(ctx, request.SourceURL, expectation)
+	} else {
+		downloaded, err = downloader.DownloadAuthorized(ctx, request.SourceURL, expectation, *request.SourceAuthorization)
+	}
 	if err != nil {
 		return PlatformStoredArtifact{}, err
 	}

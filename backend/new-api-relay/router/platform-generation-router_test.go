@@ -95,8 +95,14 @@ func TestPlatformModelCatalogDispatchUsesServiceAuthAndETag(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.Code)
 	var catalog dto.PlatformModelCatalog
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &catalog))
-	require.Len(t, catalog.Data, 1)
-	assert.Equal(t, "video-model", catalog.Data[0].ID)
+	require.Len(t, catalog.Data, 12)
+	var configuredModelCount int
+	for _, resource := range catalog.Data {
+		if resource.ID == "video-model" {
+			configuredModelCount++
+		}
+	}
+	assert.Equal(t, 1, configuredModelCount)
 	etag := response.Header().Get("ETag")
 	assert.Equal(t, `"`+catalog.CatalogRevision+`"`, etag)
 	assert.Equal(t, "catalog-request", response.Header().Get("X-Request-ID"))

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
@@ -88,12 +89,12 @@ def test_0021_preserves_history_but_requires_verified_new_rows(tmp_path, monkeyp
         )
     engine.dispose()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0021_download_completion_proof")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0040_showcase_management"
+            == "0021_download_completion_proof"
         )
         historical = connection.execute(
             text(
@@ -160,3 +161,5 @@ def test_0021_preserves_history_but_requires_verified_new_rows(tmp_path, monkeyp
             == 1
         )
     engine.dispose()
+    command.upgrade(config, "head")
+    command.check(config)

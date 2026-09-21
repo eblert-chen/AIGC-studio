@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 )
 
 func Unmarshal(data []byte, v any) error {
@@ -55,7 +56,7 @@ func RejectDuplicateJSONKeys(raw []byte) error {
 		}
 		switch delimiter {
 		case '{':
-			seen := make(map[string]struct{})
+			seen := make([]string, 0)
 			for decoder.More() {
 				keyToken, err := decoder.Token()
 				if err != nil {
@@ -65,10 +66,15 @@ func RejectDuplicateJSONKeys(raw []byte) error {
 				if !ok {
 					return errors.New("JSON object key is invalid")
 				}
-				if _, duplicate := seen[key]; duplicate {
-					return errors.New("JSON object key is duplicated")
+				for _, seenKey := range seen {
+					// encoding/json matches struct fields with Unicode simple
+					// folding. EqualFold mirrors that rule; lowercasing does not
+					// catch characters such as long-s or the Kelvin sign.
+					if strings.EqualFold(seenKey, key) {
+						return errors.New("JSON object key is duplicated or case-ambiguous")
+					}
 				}
-				seen[key] = struct{}{}
+				seen = append(seen, key)
 				if err := visit(); err != nil {
 					return err
 				}

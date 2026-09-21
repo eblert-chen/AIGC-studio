@@ -1,7 +1,7 @@
-export const BRAND_NAME = "旭天 AI VIDEO";
+export const BRAND_NAME = "旭天 AI studio";
 
-const WORDMARK_SOURCE = "/brand/xutian-wordmark-light.png";
-const SYMBOL_SOURCE = "/brand/xutian-symbol-light.png";
+const WORDMARK_SOURCE = "/brand/xutian-ai-studio-wordmark.svg";
+const SYMBOL_SOURCE = "/brand/xutian-ai-studio-symbol.svg";
 
 export function BrandLogo({
   variant = "wordmark",

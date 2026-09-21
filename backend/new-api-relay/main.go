@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -55,9 +56,254 @@ var platformRelayRuntimeLifecycleLock *model.RelayLifecycleLock
 var platformRelayRuntimeLifecycleFailures <-chan error
 var stopPlatformRelayRuntimeLifecycleMonitor = func() {}
 var platformRelayRuntimeLifecycleLost atomic.Bool
+var platformRelayDatabaseWorkersJoined atomic.Bool
 var readPlatformRelayDatabasePasswordSecretFile = common.ReadProtectedSecretFile
 var verifyPlatformRelaySecretIsolationReceipt = service.VerifyPlatformRelaySecretIsolationReceipt
 var verifyPlatformRelayRootSecretIsolationReceipt = service.VerifyPlatformRelayRootSecretIsolationReceipt
+var stopProtectedPlatformRelayAPIReadiness = service.StopInstalledProtectedPlatformRelayAPIReadiness
+var closePlatformRelayDatabase = model.CloseDB
+var stopPlatformGenerationDatabaseWorkers = service.StopPlatformGenerationWorkers
+var stopPlatformProviderDatabaseWorkers = service.StopPlatformProviderRuntimeWorkers
+var stopPlatformSystemTaskDatabaseRunner = stopPlatformRelaySystemDatabaseWorkers
+var releaseRelayRuntimeLifecycleLockBounded = model.ReleaseRelayLifecycleLockBounded
+
+var runPlatformRelayManagedChannelSync = model.SyncChannelCacheWithContext
+var runPlatformRelayManagedOptionSync = model.SyncOptionsWithContext
+var runPlatformRelayManagedPolicySync = authz.StartPolicySyncWithContext
+var runPlatformRelayManagedQuotaData = model.UpdateQuotaDataWithContext
+var runPlatformRelayManagedSubscriptionReset = service.RunSubscriptionQuotaResetTask
+var runPlatformRelayManagedSystemReporter = service.RunSystemInstanceReporter
+
+const platformRelayDatabaseWorkerStopComponentCount = 4
+
+type platformRelayDatabaseWorkerStopAttempt struct {
+	done   chan struct{}
+	err    error
+	joined [platformRelayDatabaseWorkerStopComponentCount]atomic.Bool
+}
+
+var platformRelayDatabaseWorkerStopMu sync.Mutex
+var platformRelayDatabaseWorkerStopCurrent *platformRelayDatabaseWorkerStopAttempt
+
+type platformRelayManagedDatabaseTasks struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+var platformRelayManagedDatabaseTasksMu sync.Mutex
+var platformRelayManagedDatabaseTasksCurrent *platformRelayManagedDatabaseTasks
+
+func resetPlatformRelayDatabaseWorkerStopAttempt(joined bool) {
+	platformRelayDatabaseWorkerStopMu.Lock()
+	platformRelayDatabaseWorkerStopCurrent = nil
+	platformRelayDatabaseWorkersJoined.Store(joined)
+	platformRelayDatabaseWorkerStopMu.Unlock()
+}
+
+func startPlatformRelayManagedDatabaseTasks(syncFrequency int, channelCacheEnabled bool) error {
+	if syncFrequency <= 0 {
+		return errors.New("protected Relay database task sync frequency must be positive")
+	}
+	platformRelayManagedDatabaseTasksMu.Lock()
+	defer platformRelayManagedDatabaseTasksMu.Unlock()
+	if platformRelayManagedDatabaseTasksCurrent != nil {
+		return errors.New("protected Relay database tasks are already running")
+	}
+	lifecycle, cancel := context.WithCancel(context.Background())
+	current := &platformRelayManagedDatabaseTasks{cancel: cancel, done: make(chan struct{})}
+	platformRelayManagedDatabaseTasksCurrent = current
+
+	tasks := make([]func(), 0, 6)
+	if channelCacheEnabled {
+		tasks = append(tasks, func() { runPlatformRelayManagedChannelSync(lifecycle, syncFrequency) })
+	}
+	tasks = append(tasks,
+		func() { runPlatformRelayManagedOptionSync(lifecycle, syncFrequency) },
+		func() { runPlatformRelayManagedPolicySync(lifecycle, syncFrequency) },
+		func() { runPlatformRelayManagedQuotaData(lifecycle) },
+		func() { runPlatformRelayManagedSystemReporter(lifecycle) },
+	)
+	if common.IsMasterNode {
+		tasks = append(tasks, func() { runPlatformRelayManagedSubscriptionReset(lifecycle) })
+	}
+	var workers sync.WaitGroup
+	workers.Add(len(tasks))
+	for _, task := range tasks {
+		go func(run func()) {
+			defer workers.Done()
+			run()
+		}(task)
+	}
+	go func() {
+		workers.Wait()
+		close(current.done)
+	}()
+	return nil
+}
+
+func stopPlatformRelayManagedDatabaseTasks(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("protected Relay database task stop context is required")
+	}
+	platformRelayManagedDatabaseTasksMu.Lock()
+	current := platformRelayManagedDatabaseTasksCurrent
+	platformRelayManagedDatabaseTasksMu.Unlock()
+	if current == nil {
+		return nil
+	}
+	current.cancel()
+	select {
+	case <-current.done:
+		platformRelayManagedDatabaseTasksMu.Lock()
+		if platformRelayManagedDatabaseTasksCurrent == current {
+			platformRelayManagedDatabaseTasksCurrent = nil
+		}
+		platformRelayManagedDatabaseTasksMu.Unlock()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func stopPlatformRelaySystemDatabaseWorkers(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("platform Relay system database worker stop context is required")
+	}
+	results := make(chan error, 2)
+	go func() { results <- service.StopSystemTaskRunner(ctx) }()
+	go func() { results <- stopPlatformRelayManagedDatabaseTasks(ctx) }()
+	var combined error
+	for range 2 {
+		combined = errors.Join(combined, <-results)
+	}
+	return combined
+}
+
+func closePlatformRelayDatabaseAfterReadiness(
+	ctx context.Context,
+	stopReadiness func(context.Context) error,
+	closeDatabase func() error,
+) error {
+	if ctx == nil || stopReadiness == nil || closeDatabase == nil {
+		return errors.New("Relay API readiness database close ownership is invalid")
+	}
+	if err := stopReadiness(ctx); err != nil {
+		return err
+	}
+	return closePlatformRelayDatabaseBounded(ctx, closeDatabase)
+}
+
+func finalizePlatformRelayInitializationDatabaseOwnership(
+	ctx context.Context,
+	stopReadiness func(context.Context) error,
+	closeDatabase func() error,
+	stopMonitor func(),
+	closeAnchor func(),
+) error {
+	if ctx == nil || stopReadiness == nil || closeDatabase == nil || stopMonitor == nil || closeAnchor == nil {
+		return errors.New("Relay initialization database ownership cleanup is invalid")
+	}
+	if err := closePlatformRelayDatabaseAfterReadiness(ctx, stopReadiness, closeDatabase); err != nil {
+		return err
+	}
+	stopMonitor()
+	closeAnchor()
+	return nil
+}
+
+func closePlatformRelayDatabaseBounded(ctx context.Context, closeDatabase func() error) error {
+	if ctx == nil || closeDatabase == nil {
+		return errors.New("Relay database close ownership is invalid")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- closeDatabase() }()
+	select {
+	case err := <-closed:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func joinPlatformRelayHTTPHandlersAndDatabaseWorkers(
+	ctx context.Context,
+	httpHandlers *service.RelayHTTPHandlerTracker,
+	stopWorkers func(context.Context) error,
+) error {
+	if ctx == nil || stopWorkers == nil {
+		return errors.New("Relay handler and database worker join ownership is invalid")
+	}
+	if httpHandlers == nil {
+		return stopWorkers(ctx)
+	}
+	httpHandlers.BeginDrain()
+	results := make(chan error, 2)
+	go func() { results <- httpHandlers.Wait(ctx) }()
+	go func() { results <- stopWorkers(ctx) }()
+	var combined error
+	for range 2 {
+		combined = errors.Join(combined, <-results)
+	}
+	return combined
+}
+
+func finalizePlatformRelayNormalDatabaseOwnership(
+	ctx context.Context,
+	httpHandlers *service.RelayHTTPHandlerTracker,
+	stopWorkers func(context.Context) error,
+	closeDatabase func() error,
+	stopMonitor func(),
+	lifecycleLost func() bool,
+	releaseAnchor func() error,
+	closeAnchor func(),
+) error {
+	if ctx == nil || stopWorkers == nil || closeDatabase == nil || stopMonitor == nil ||
+		lifecycleLost == nil || releaseAnchor == nil || closeAnchor == nil {
+		return errors.New("Relay runtime database ownership cleanup is invalid")
+	}
+	if err := joinPlatformRelayHTTPHandlersAndDatabaseWorkers(ctx, httpHandlers, stopWorkers); err != nil {
+		return err
+	}
+	if err := closePlatformRelayDatabaseBounded(ctx, closeDatabase); err != nil {
+		return err
+	}
+	stopMonitor()
+	if lifecycleLost() {
+		closeAnchor()
+		return nil
+	}
+	if err := releaseAnchor(); err != nil {
+		closeAnchor()
+		return err
+	}
+	return nil
+}
+
+func finalizePlatformRelayLostDatabaseOwnership(
+	ctx context.Context,
+	httpHandlers *service.RelayHTTPHandlerTracker,
+	stopWorkers func(context.Context) error,
+	closeDatabase func() error,
+	stopMonitor func(),
+	closeAnchor func(),
+) error {
+	if ctx == nil || stopWorkers == nil || closeDatabase == nil || stopMonitor == nil || closeAnchor == nil {
+		return errors.New("Relay lifecycle-loss database ownership cleanup is invalid")
+	}
+	if err := joinPlatformRelayHTTPHandlersAndDatabaseWorkers(ctx, httpHandlers, stopWorkers); err != nil {
+		return err
+	}
+	if err := closePlatformRelayDatabaseBounded(ctx, closeDatabase); err != nil {
+		return err
+	}
+	// Even after external lifecycle loss, retain this process's monitor/anchor
+	// object until no handler or database worker can touch the pool and CloseDB
+	// has completed. The object is shutdown-order evidence, not permission for
+	// new work; admission was already closed by the loss sentinel.
+	stopMonitor()
+	closeAnchor()
+	return nil
+}
 
 func main() {
 	if platformRelayOfflineCommandRequested(os.Args) {
@@ -85,7 +331,15 @@ func main() {
 		common.FatalLog("failed to initialize resources: " + err.Error())
 		return
 	}
-
+	// FatalLog calls os.Exit and therefore skips deferred ownership cleanup.
+	// Record every post-initialization fatal condition and emit it only after
+	// the handler/worker/pool/anchor defer has run.
+	var runtimeFatalErr error
+	defer func() {
+		if runtimeFatalErr != nil {
+			common.FatalLog(runtimeFatalErr.Error())
+		}
+	}()
 	common.SysLog("New API " + common.Version + " started")
 	if os.Getenv("GIN_MODE") != "debug" {
 		gin.SetMode(gin.ReleaseMode)
@@ -97,20 +351,46 @@ func main() {
 	kitutil.Debug.Store(common.DebugEnabled)
 
 	lifecycleLost := false
+	runtimeOwnershipFinalized := false
+	var httpHandlers *service.RelayHTTPHandlerTracker
 	defer func() {
-		if !lifecycleLost {
-			err := model.CloseDB()
-			if err != nil {
-				common.SysError("failed to close database: " + err.Error())
-			}
+		if runtimeOwnershipFinalized {
+			return
 		}
+		stopContext, cancelStop := context.WithTimeout(context.Background(), platformGenerationStartupShutdownTimeout)
+		defer cancelStop()
+		var cleanupErr error
 		if lifecycleLost {
-			closePlatformRelayRuntimeLifecycleLock()
-		} else if err := releasePlatformRelayRuntimeLifecycleLock(); err != nil {
-			common.SysError("failed to release Relay runtime lifecycle lock: " + err.Error())
+			cleanupErr = finalizePlatformRelayLostDatabaseOwnership(
+				stopContext,
+				httpHandlers,
+				stopPlatformRelayDatabaseWorkers,
+				closePlatformRelayDatabase,
+				stopPlatformRelayRuntimeLifecycleMonitor,
+				closePlatformRelayRuntimeLifecycleLock,
+			)
+		} else {
+			cleanupErr = finalizePlatformRelayNormalDatabaseOwnership(
+				stopContext,
+				httpHandlers,
+				stopPlatformRelayDatabaseWorkers,
+				closePlatformRelayDatabase,
+				stopPlatformRelayRuntimeLifecycleMonitor,
+				func() bool {
+					return platformRelayRuntimeLifecycleLost.Load() ||
+						(model.RelayRuntimeDatabaseLifecycleFencingEnabled() && !model.RelayRuntimeDatabaseLifecycleHealthy())
+				},
+				releasePlatformRelayRuntimeLifecycleLock,
+				closePlatformRelayRuntimeLifecycleLock,
+			)
+		}
+		if cleanupErr != nil {
+			// Preserve the monitor and anchor when handlers/workers/readiness or
+			// CloseDB did not finish. Releasing ownership would let another process
+			// migrate while this process can still touch the old pool.
+			common.SysError("Relay runtime database ownership cleanup did not finish: " + cleanupErr.Error())
 		}
 	}()
-	defer stopPlatformRelayRuntimeLifecycleMonitor()
 
 	if common.RedisEnabled {
 		// for compatibility with old versions
@@ -121,6 +401,7 @@ func main() {
 		common.SysLog(fmt.Sprintf("sync frequency: %d seconds", common.SyncFrequency))
 
 		// Add panic recovery and retry for InitChannelCache
+		var channelCacheInitErr error
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -128,52 +409,65 @@ func main() {
 					// Retry once
 					_, _, fixErr := model.FixAbility()
 					if fixErr != nil {
-						common.FatalLog(fmt.Sprintf("InitChannelCache failed: %s", fixErr.Error()))
+						channelCacheInitErr = fmt.Errorf("InitChannelCache failed: %w", fixErr)
 					}
 				}
 			}()
 			model.InitChannelCache()
 		}()
+		if channelCacheInitErr != nil {
+			runtimeFatalErr = channelCacheInitErr
+			return
+		}
 
-		go model.SyncChannelCache(common.SyncFrequency)
+		if platformRelayUnmanagedDatabaseBackgroundTasksAllowed() {
+			go model.SyncChannelCache(common.SyncFrequency)
+		}
 	}
 
 	// Warm pricing after channel cache initialization so Advanced Custom
 	// endpoint inference can read cached route settings on first request.
 	model.GetPricing()
 	if err := service.ValidatePlatformArtifactCleanupMaintenanceConfiguration(); err != nil {
-		common.FatalLog("invalid platform artifact cleanup maintenance configuration: " + err.Error())
+		runtimeFatalErr = fmt.Errorf("invalid platform artifact cleanup maintenance configuration: %w", err)
 		return
 	}
 	if service.PlatformRelayCompatEnabled() {
 		if err := service.ValidatePlatformGenerationWorkerConfiguration(); err != nil {
-			common.FatalLog("invalid platform generation worker configuration: " + err.Error())
+			runtimeFatalErr = fmt.Errorf("invalid platform generation worker configuration: %w", err)
 			return
 		}
 		if err := service.SyncPlatformGenerationProviderRoutes(); err != nil {
-			common.FatalLog("failed to synchronize platform generation provider routes: " + err.Error())
+			runtimeFatalErr = fmt.Errorf("failed to synchronize platform generation provider routes: %w", err)
+			return
+		}
+		if _, err := service.MaterializePlatformRelayModelMetadata(); err != nil {
+			runtimeFatalErr = fmt.Errorf("failed to materialize platform Relay model metadata: %w", err)
 			return
 		}
 		if err := service.ValidatePlatformProviderRuntimeConfiguration(); err != nil {
-			common.FatalLog("invalid platform provider runtime configuration: " + err.Error())
+			runtimeFatalErr = fmt.Errorf("invalid platform provider runtime configuration: %w", err)
 			return
 		}
 	}
-	// 热更新配置
-	go model.SyncOptions(common.SyncFrequency)
-
-	// 周期性重载授权策略，保证多节点/多 master 部署下权限变更能传播到每个实例
-	go authz.StartPolicySync(common.SyncFrequency)
-
-	// 数据看板
-	go model.UpdateQuotaData()
+	if platformRelayUnmanagedDatabaseBackgroundTasksAllowed() {
+		// These upstream loops have no cancel/join contract. They remain available
+		// for compatibility deployments, but a protected database owner may never
+		// start a goroutine that could query after the ordered CloseDB boundary.
+		go model.SyncOptions(common.SyncFrequency)
+		go authz.StartPolicySync(common.SyncFrequency)
+		go model.UpdateQuotaData()
+	}
 
 	if os.Getenv("CHANNEL_UPDATE_FREQUENCY") != "" {
 		frequency, err := strconv.Atoi(os.Getenv("CHANNEL_UPDATE_FREQUENCY"))
 		if err != nil {
-			common.FatalLog("failed to parse CHANNEL_UPDATE_FREQUENCY: " + err.Error())
+			runtimeFatalErr = fmt.Errorf("failed to parse CHANNEL_UPDATE_FREQUENCY: %w", err)
+			return
 		}
-		go controller.AutomaticallyUpdateChannels(frequency)
+		if platformRelayUnmanagedDatabaseBackgroundTasksAllowed() {
+			go controller.AutomaticallyUpdateChannels(frequency)
+		}
 	}
 
 	// Codex refresh rotates an upstream credential before persisting its
@@ -181,25 +475,30 @@ func main() {
 	// has durable unknown-outcome reconciliation.
 	codexRefreshEnabled, codexRefreshErr := service.CodexCredentialAutoRefreshEnabled()
 	if codexRefreshErr != nil {
-		common.FatalLog("invalid Codex credential refresh configuration: " + codexRefreshErr.Error())
+		runtimeFatalErr = fmt.Errorf("invalid Codex credential refresh configuration: %w", codexRefreshErr)
 		return
 	}
 	if err := service.ValidateCodexCredentialAutoRefreshLifecycle(
 		codexRefreshEnabled, model.RelayDatabaseRoleAttestationRequired(),
 	); err != nil {
-		common.FatalLog("unsafe Codex credential refresh lifecycle: " + err.Error())
+		runtimeFatalErr = fmt.Errorf("unsafe Codex credential refresh lifecycle: %w", err)
 		return
 	}
-	if codexRefreshEnabled {
+	if codexRefreshEnabled && platformRelayUnmanagedDatabaseBackgroundTasksAllowed() {
 		service.StartCodexCredentialAutoRefreshTask()
 	}
 
-	// Subscription quota reset task (daily/weekly/monthly/custom)
-	service.StartSubscriptionQuotaResetTask()
-
-	// Report this process as a system instance so the System Info page can show
-	// all currently alive nodes in multi-instance deployments.
-	service.StartSystemInstanceReporter()
+	if !platformRelayUnmanagedDatabaseBackgroundTasksAllowed() {
+		if err := startPlatformRelayManagedDatabaseTasks(common.SyncFrequency, common.MemoryCacheEnabled); err != nil {
+			runtimeFatalErr = fmt.Errorf("protected Relay database background tasks failed to start: %w", err)
+			return
+		}
+	} else {
+		// Compatibility deployments retain the upstream singleton launchers.
+		// Protected Relay runs their context-bound variants in the joined manager.
+		service.StartSubscriptionQuotaResetTask()
+		service.StartSystemInstanceReporter()
+	}
 
 	// Wire task polling adaptor factory (breaks service -> relay import cycle).
 	// Must run before the system task runner starts: the async_task_poll handler
@@ -241,7 +540,7 @@ func main() {
 
 	// Initialize HTTP server
 	server := gin.New()
-	httpHandlers := service.NewRelayHTTPHandlerTracker()
+	httpHandlers = service.NewRelayHTTPHandlerTracker()
 	var httpAdmissionReady atomic.Bool
 	server.Use(func(c *gin.Context) {
 		if !httpHandlers.Enter() {
@@ -261,7 +560,7 @@ func main() {
 		c.Next()
 	})
 	if err := middleware.ConfigureTrustedProxies(server); err != nil {
-		common.FatalLog("failed to configure trusted proxies: " + err.Error())
+		runtimeFatalErr = fmt.Errorf("failed to configure trusted proxies: %w", err)
 		return
 	}
 	server.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
@@ -297,40 +596,75 @@ func main() {
 		Handler: server,
 	}
 	if model.RelayRuntimeDatabaseLifecycleFencingEnabled() && !model.RelayRuntimeDatabaseLifecycleHealthy() {
-		common.FatalLog("Relay runtime lifecycle was lost before HTTP admission opened")
+		lifecycleLost = true
+		runtimeFatalErr = errors.New("Relay runtime lifecycle was lost before HTTP admission opened")
 		return
 	}
 
+	serverFailures := make(chan error, 1)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			common.FatalLog("failed to start HTTP server: " + err.Error())
+			serverFailures <- err
 		}
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	startupTimer := time.NewTimer(100 * time.Millisecond)
+	select {
+	case <-startupTimer.C:
+	case serverErr := <-serverFailures:
+		if !startupTimer.Stop() {
+			select {
+			case <-startupTimer.C:
+			default:
+			}
+		}
+		drainErr := drainPlatformRelayStartupFailure(httpHandlers, srv)
+		runtimeFatalErr = errors.Join(fmt.Errorf("failed to start HTTP server: %w", serverErr), drainErr)
+		return
+	case failure, open := <-platformRelayRuntimeLifecycleFailures:
+		if !startupTimer.Stop() {
+			select {
+			case <-startupTimer.C:
+			default:
+			}
+		}
+		if !open {
+			// A closed observation stream without the loss latch is not evidence
+			// of ownership loss; preserve the listener settle window.
+			time.Sleep(100 * time.Millisecond)
+			break
+		}
+		lifecycleLost = true
+		drainErr := drainPlatformRelayStartupFailure(httpHandlers, srv)
+		runtimeFatalErr = errors.Join(errors.New("Relay runtime lifecycle was lost before generation workers started"), failure, drainErr)
+		return
+	}
 	if model.RelayRuntimeDatabaseLifecycleFencingEnabled() && !model.RelayRuntimeDatabaseLifecycleHealthy() {
-		_ = drainPlatformRelayStartupFailure(httpHandlers, srv)
-		common.FatalLog("Relay runtime lifecycle was lost before generation workers started")
+		lifecycleLost = true
+		drainErr := drainPlatformRelayStartupFailure(httpHandlers, srv)
+		runtimeFatalErr = errors.Join(errors.New("Relay runtime lifecycle was lost before generation workers started"), drainErr)
 		return
 	}
 	if err := service.StartPlatformGenerationWorkers(); err != nil {
-		_ = drainPlatformRelayStartupFailure(httpHandlers, srv)
-		common.FatalLog("platform generation workers failed to start: " + err.Error())
+		drainErr := drainPlatformRelayStartupFailure(httpHandlers, srv)
+		runtimeFatalErr = errors.Join(fmt.Errorf("platform generation workers failed to start: %w", err), drainErr)
 		return
 	}
 	if model.RelayRuntimeDatabaseLifecycleFencingEnabled() && !model.RelayRuntimeDatabaseLifecycleHealthy() {
-		_ = drainPlatformRelayStartupFailure(httpHandlers, srv)
-		common.FatalLog("Relay runtime lifecycle was lost while generation workers started")
+		lifecycleLost = true
+		drainErr := drainPlatformRelayStartupFailure(httpHandlers, srv)
+		runtimeFatalErr = errors.Join(errors.New("Relay runtime lifecycle was lost while generation workers started"), drainErr)
 		return
 	}
 	if err := service.StartPlatformProviderRuntimeWorkers(); err != nil {
-		_ = drainPlatformRelayStartupFailure(httpHandlers, srv)
-		common.FatalLog("platform provider runtime workers failed to start: " + err.Error())
+		drainErr := drainPlatformRelayStartupFailure(httpHandlers, srv)
+		runtimeFatalErr = errors.Join(fmt.Errorf("platform provider runtime workers failed to start: %w", err), drainErr)
 		return
 	}
 	if model.RelayRuntimeDatabaseLifecycleFencingEnabled() && !model.RelayRuntimeDatabaseLifecycleHealthy() {
-		_ = drainPlatformRelayStartupFailure(httpHandlers, srv)
-		common.FatalLog("Relay runtime lifecycle was lost while provider workers started")
+		lifecycleLost = true
+		drainErr := drainPlatformRelayStartupFailure(httpHandlers, srv)
+		runtimeFatalErr = errors.Join(errors.New("Relay runtime lifecycle was lost while provider workers started"), drainErr)
 		return
 	}
 	// Open non-liveness HTTP admission only after every database side-effect
@@ -352,6 +686,8 @@ func main() {
 		if open {
 			lifecycleLoss = failure
 		}
+	case serverErr := <-serverFailures:
+		runtimeFatalErr = fmt.Errorf("HTTP server exited unexpectedly: %w", serverErr)
 	}
 	// A signal and anchor failure can become ready simultaneously. Always
 	// reconcile the server-owned loss bit and the database lifecycle state after
@@ -390,20 +726,42 @@ func main() {
 			common.SysError(fmt.Sprintf("Relay HTTP handlers or database workers required forced lifecycle-loss drain: %v", drainErr))
 		}
 		lossContext, cancelLoss := context.WithDeadline(context.Background(), drainOutcome.LifecycleLossDeadline)
-		poolClosed := make(chan error, 1)
-		go func() { poolClosed <- model.CloseDB() }()
-		select {
-		case closeErr := <-poolClosed:
-			if closeErr != nil {
-				common.SysError("failed to close Relay database after lifecycle loss: " + closeErr.Error())
-			}
-		case <-lossContext.Done():
-			common.SysError("Relay database pool did not close before the lifecycle-loss hard deadline")
-		}
+		lossCleanupErr := finalizePlatformRelayLostDatabaseOwnership(
+			lossContext,
+			httpHandlers,
+			stopPlatformRelayDatabaseWorkers,
+			closePlatformRelayDatabase,
+			stopPlatformRelayRuntimeLifecycleMonitor,
+			closePlatformRelayRuntimeLifecycleLock,
+		)
 		cancelLoss()
-		stopPlatformRelayRuntimeLifecycleMonitor()
-		closePlatformRelayRuntimeLifecycleLock()
-		common.FatalLog("Relay runtime exited after lifecycle lock loss")
+		if lossCleanupErr != nil {
+			common.SysError("Relay lifecycle-loss cleanup did not finish; database close was skipped unless every handler and worker joined: " + lossCleanupErr.Error())
+		}
+		runtimeOwnershipFinalized = true
+		runtimeFatalErr = errors.Join(runtimeFatalErr, errors.New("Relay runtime exited after lifecycle lock loss"))
+		return
+	}
+	if platformRelayRuntimeLifecycleLost.Load() ||
+		(model.RelayRuntimeDatabaseLifecycleFencingEnabled() && !model.RelayRuntimeDatabaseLifecycleHealthy()) {
+		// Loss may race the final drain result. Reclassify before releasing the
+		// anchor and use a fresh hard-loss budget; a normal release is forbidden.
+		lifecycleLost = true
+		lateLossContext, cancelLateLoss := context.WithTimeout(context.Background(), 8*time.Second)
+		lateStopErr := finalizePlatformRelayLostDatabaseOwnership(
+			lateLossContext,
+			httpHandlers,
+			stopPlatformRelayDatabaseWorkers,
+			closePlatformRelayDatabase,
+			stopPlatformRelayRuntimeLifecycleMonitor,
+			closePlatformRelayRuntimeLifecycleLock,
+		)
+		cancelLateLoss()
+		if lateStopErr != nil {
+			common.SysError("late Relay lifecycle loss cleanup did not join; database close was skipped: " + lateStopErr.Error())
+		}
+		runtimeOwnershipFinalized = true
+		common.SysError("Relay runtime exited after late lifecycle lock loss")
 		return
 	}
 	if drainErr != nil {
@@ -451,20 +809,79 @@ func stopPlatformRelayDatabaseWorkers(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("platform Relay database worker stop context is required")
 	}
-	results := make(chan error, 3)
-	go func() { results <- service.StopPlatformGenerationWorkers(ctx) }()
-	go func() { results <- service.StopPlatformProviderRuntimeWorkers(ctx) }()
-	go func() { results <- service.StopSystemTaskRunner(ctx) }()
-	var combined error
-	for range 3 {
-		select {
-		case err := <-results:
-			combined = errors.Join(combined, err)
-		case <-ctx.Done():
-			return errors.Join(combined, ctx.Err())
-		}
+	platformRelayDatabaseWorkerStopMu.Lock()
+	if platformRelayDatabaseWorkersJoined.Load() {
+		platformRelayDatabaseWorkerStopMu.Unlock()
+		return nil
 	}
-	return combined
+	attempt := platformRelayDatabaseWorkerStopCurrent
+	if attempt == nil {
+		attempt = &platformRelayDatabaseWorkerStopAttempt{done: make(chan struct{})}
+		platformRelayDatabaseWorkerStopCurrent = attempt
+		stops := [platformRelayDatabaseWorkerStopComponentCount]func(context.Context) error{
+			stopProtectedPlatformRelayAPIReadiness,
+			stopPlatformGenerationDatabaseWorkers,
+			stopPlatformProviderDatabaseWorkers,
+			stopPlatformSystemTaskDatabaseRunner,
+		}
+		go func(current *platformRelayDatabaseWorkerStopAttempt) {
+			results := make(chan struct {
+				index int
+				err   error
+			}, platformRelayDatabaseWorkerStopComponentCount)
+			// The attempt owns its cancellation/join lifecycle. Caller deadlines
+			// only bound how long that caller waits; they cannot orphan the four
+			// exactly-once Stop calls or cause a second stop generation to start.
+			for index, stop := range stops {
+				go func(component int, stopComponent func(context.Context) error) {
+					stopErr := func() (err error) {
+						defer func() {
+							if recover() != nil {
+								err = fmt.Errorf("Relay database worker stop component %d panicked", component)
+							}
+						}()
+						if stopComponent == nil {
+							return fmt.Errorf("Relay database worker stop component %d is unavailable", component)
+						}
+						return stopComponent(context.Background())
+					}()
+					results <- struct {
+						index int
+						err   error
+					}{index: component, err: stopErr}
+				}(index, stop)
+			}
+			var combined error
+			for range platformRelayDatabaseWorkerStopComponentCount {
+				result := <-results
+				if result.err == nil {
+					current.joined[result.index].Store(true)
+				}
+				combined = errors.Join(combined, result.err)
+			}
+			current.err = combined
+			if combined == nil {
+				platformRelayDatabaseWorkersJoined.Store(true)
+			}
+			close(current.done)
+		}(attempt)
+	}
+	platformRelayDatabaseWorkerStopMu.Unlock()
+
+	select {
+	case <-attempt.done:
+		return attempt.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// platformRelayUnmanagedDatabaseBackgroundTasksAllowed is deliberately false
+// for every role-attested runtime. The listed upstream compatibility loops use
+// process-global databases and have no cancel/done contract; starting them in a
+// protected process would make the ordered handler/worker join proof incomplete.
+func platformRelayUnmanagedDatabaseBackgroundTasksAllowed() bool {
+	return !model.RelayDatabaseRoleAttestationRequired()
 }
 
 func validatePlatformRelayBatchUpdateLifecycle(protected bool) error {
@@ -636,17 +1053,28 @@ func runPlatformRelaySecretIsolation(output io.Writer) error {
 }
 
 func verifyPlatformRelaySecretIsolationForProtectedConsumer(consumer string) error {
-	if platformRelayLocalDatabaseRoleRehearsalEnabled() {
-		return nil
-	}
-	environment := os.Getenv("APP_ENV")
-	if !model.RelayDatabaseRoleAttestationRequired() && environment != "staging" && environment != "production" {
+	if !platformRelayProtectedConsumerVerificationRequired() {
 		return nil
 	}
 	if err := verifyPlatformRelaySecretIsolationReceipt(consumer); err != nil {
 		return errors.New("Relay secret isolation commitment is unavailable or invalid")
 	}
 	return nil
+}
+
+// platformRelayProtectedConsumerVerificationRequired keeps secret-isolation
+// and database-release-proof verification on one boundary. Ordinary local and
+// integration development may initialize an isolated database without
+// manufacturing production receipts, while staging, production, and any
+// explicitly role-attested topology continue to fail closed. The repository's
+// exact local database-role rehearsal is the only deliberate attested bypass.
+func platformRelayProtectedConsumerVerificationRequired() bool {
+	if platformRelayLocalDatabaseRoleRehearsalEnabled() {
+		return false
+	}
+	environment := os.Getenv("APP_ENV")
+	return model.RelayDatabaseRoleAttestationRequired() ||
+		environment == "staging" || environment == "production"
 }
 
 func runPlatformRelayDatabaseRoleProvision(output io.Writer) error {
@@ -772,7 +1200,7 @@ func runPlatformRelayEdgeLoginProvision(output io.Writer) error {
 	if err := model.InitDB(); err != nil {
 		return errors.New("Relay download edge role-admin database could not be opened")
 	}
-	if !platformRelayLocalDatabaseRoleRehearsalEnabled() {
+	if platformRelayProtectedConsumerVerificationRequired() {
 		if err := service.VerifyPlatformRelayDatabaseReleaseProof(
 			model.DB,
 			service.PlatformRelaySecretIsolationConsumerPost,
@@ -843,7 +1271,7 @@ func runPlatformRelayMigrationCommand(output io.Writer, resumeAttemptID string) 
 		return errors.New("Relay migration database could not be opened")
 	}
 	defer func() { _ = model.CloseDB() }()
-	if !platformRelayLocalDatabaseRoleRehearsalEnabled() {
+	if platformRelayProtectedConsumerVerificationRequired() {
 		if err := service.VerifyPlatformRelayDatabaseReleaseProof(
 			model.DB,
 			service.PlatformRelaySecretIsolationConsumerMigrate,
@@ -876,7 +1304,7 @@ func runPlatformRelaySchemaCommand(output io.Writer, resumeAttemptID string) err
 		return errors.New("Relay schema status database could not be opened")
 	}
 	defer func() { _ = model.CloseDB() }()
-	if !platformRelayLocalDatabaseRoleRehearsalEnabled() {
+	if platformRelayProtectedConsumerVerificationRequired() {
 		if err := service.VerifyPlatformRelayDatabaseReleaseProof(
 			model.DB,
 			service.PlatformRelaySecretIsolationConsumerMigrate,
@@ -932,17 +1360,17 @@ func validatePlatformRelaySchemaCommandEnvironment(command string) error {
 }
 
 // platformRelayLocalDatabaseRoleRehearsalEnabled permits the repository's
-// loopback-only development Compose profile to exercise the exact PostgreSQL
-// role topology without pretending that Docker Desktop provides a managed TLS
-// endpoint or production secret-isolation receipts.  The opt-in is deliberately
-// unusable in staging or production; those environments continue through the
-// protected TLS, release-proof, and secret-isolation gates above.
+// development-only rehearsal to exercise the exact PostgreSQL role topology
+// over either local plaintext or real attested TLS. The protection boundary is
+// the exact development environment, explicit rehearsal opt-in, and exact role
+// attestation opt-in; TLS validation remains enforced independently when it is
+// enabled. Staging and production continue through the release-proof and
+// secret-isolation gates above.
 func platformRelayLocalDatabaseRoleRehearsalEnabled() bool {
 	return os.Getenv("RELAY_LOCAL_DATABASE_ROLE_REHEARSAL") == "true" &&
 		os.Getenv("APP_ENV") == "development" &&
 		os.Getenv("DEPLOYMENT_ENV") == "development" &&
-		model.RelayDatabaseRoleAttestationRequired() &&
-		!model.RelayDatabaseTLSAttestationRequired()
+		os.Getenv("RELAY_DATABASE_ROLE_ATTESTATION_REQUIRED") == "true"
 }
 
 func validatePlatformRelayOfflineBuildProvenance() error {
@@ -1461,6 +1889,7 @@ func InjectGoogleAnalytics() {
 
 func InitResources() (err error) {
 	platformRelayRuntimeLifecycleLost.Store(false)
+	resetPlatformRelayDatabaseWorkerStopAttempt(true)
 	protectedRuntime, err := installPlatformRelayProtectedRuntimeSecrets()
 	if err != nil {
 		return err
@@ -1498,22 +1927,49 @@ func InitResources() (err error) {
 		common.FatalLog("failed to initialize database: " + err.Error())
 		return err
 	}
+	resourcesTransferred := false
+	readinessInstalled := false
+	var ownedAPIReadiness *service.PlatformRelayAPIReadiness
+	var runtimeLifecycleLock *model.RelayLifecycleLock
+	stopLifecycleMonitor := func() {}
+	// From the first successful pool open onward every failure path preserves
+	// one ownership order: cancel/join readiness, close the database only after
+	// that join, then stop the lifecycle monitor and release the anchor.
+	defer func() {
+		if resourcesTransferred {
+			return
+		}
+		cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), platformGenerationStartupShutdownTimeout)
+		defer cancelCleanup()
+		stopReadiness := func(context.Context) error { return nil }
+		if readinessInstalled {
+			stopReadiness = stopProtectedPlatformRelayAPIReadiness
+		} else if ownedAPIReadiness != nil {
+			stopReadiness = ownedAPIReadiness.Stop
+		}
+		cleanupErr := finalizePlatformRelayInitializationDatabaseOwnership(
+			cleanupContext,
+			stopReadiness,
+			closePlatformRelayDatabase,
+			stopLifecycleMonitor,
+			func() {
+				if runtimeLifecycleLock != nil {
+					runtimeLifecycleLock.Close()
+				}
+			},
+		)
+		if cleanupErr != nil {
+			common.SysError("Relay API readiness/database startup cleanup failed: " + cleanupErr.Error())
+			return
+		}
+	}()
 	if model.RelayDatabaseRoleAttestationRequired() && strings.TrimSpace(os.Getenv("LOG_SQL_DSN")) != "" {
 		return errors.New("production Relay runtime does not support a separate LOG_SQL_DSN")
 	}
-	runtimeLifecycleLock, err := model.AcquireRelayRuntimeLifecycleLock(context.Background(), model.DB)
+	runtimeLifecycleLock, err = model.AcquireRelayRuntimeLifecycleLock(context.Background(), model.DB)
 	if err != nil {
 		return err
 	}
-	lockTransferred := false
-	stopLifecycleMonitor := func() {}
-	defer func() {
-		if !lockTransferred {
-			stopLifecycleMonitor()
-			_ = model.CloseDB()
-			runtimeLifecycleLock.Close()
-		}
-	}()
 	var lifecycleFailures <-chan error
 	if model.RelayLifecycleLockRequiresMonitoring(runtimeLifecycleLock) {
 		rawFailures, stopMonitor, monitorErr := model.MonitorRelayLifecycleLock(
@@ -1541,24 +1997,30 @@ func InitResources() (err error) {
 		}()
 	}
 	if model.RelayDatabaseRoleAttestationRequired() {
-		if _, err = model.RequireRelaySchemaCurrent(model.DB); err != nil {
+		runtimeProof, proofErr := model.AttestRelayRuntimeDatabaseRole(model.DB)
+		if proofErr != nil {
+			return proofErr
+		}
+		apiReadiness, readinessErr := service.NewProtectedPlatformRelayAPIReadiness(
+			context.Background(), model.DB, runtimeProof,
+		)
+		if readinessErr != nil {
+			return readinessErr
+		}
+		ownedAPIReadiness = apiReadiness
+		if readinessErr = service.InstallProtectedPlatformRelayAPIReadiness(apiReadiness); readinessErr != nil {
+			return readinessErr
+		}
+		readinessInstalled = true
+	} else {
+		if _, err = model.RequireRelaySchemaCompatible(model.DB); err != nil {
 			return err
 		}
-	} else if _, err = model.RequireRelaySchemaCompatible(model.DB); err != nil {
-		return err
-	}
-	if err = model.VerifyRelayRuntimeDatabaseRole(model.DB); err != nil {
-		return err
+		if err = model.VerifyRelayRuntimeDatabaseRole(model.DB); err != nil {
+			return err
+		}
 	}
 	protected := model.RelayDatabaseRoleAttestationRequired()
-	if protected {
-		if err = service.VerifyPlatformRelayDatabaseReleaseProof(
-			model.DB,
-			service.PlatformRelaySecretIsolationConsumerAPI,
-		); err != nil {
-			return err
-		}
-	}
 	if err = model.CheckSetup(); err != nil {
 		return fmt.Errorf("invalid protected setup state: %w", err)
 	}
@@ -1635,7 +2097,11 @@ func InitResources() (err error) {
 		// Don't return error, custom OAuth is not critical
 	}
 
-	service.StartAuthArtifactCleanup()
+	if !protected {
+		// The upstream auth cleanup ticker has no Stop/Wait contract. Protected
+		// ownership cannot start it before handing the pool to main's joined set.
+		service.StartAuthArtifactCleanup()
+	}
 	if lifecycleFailures != nil {
 		select {
 		case failure := <-lifecycleFailures:
@@ -1643,10 +2109,8 @@ func InitResources() (err error) {
 		default:
 		}
 	}
-	platformRelayRuntimeLifecycleLock = runtimeLifecycleLock
-	platformRelayRuntimeLifecycleFailures = lifecycleFailures
-	stopPlatformRelayRuntimeLifecycleMonitor = stopLifecycleMonitor
-	lockTransferred = true
+	publishPlatformRelayRuntimeDatabaseOwnership(runtimeLifecycleLock, lifecycleFailures, stopLifecycleMonitor)
+	resourcesTransferred = true
 
 	return nil
 }
@@ -1656,8 +2120,13 @@ func releasePlatformRelayRuntimeLifecycleLock() error {
 		return nil
 	}
 	lock := platformRelayRuntimeLifecycleLock
+	if err := releaseRelayRuntimeLifecycleLockBounded(lock); err != nil {
+		// Keep the handle reachable so the caller's fail-closed fallback can
+		// terminate the same anchor after a graceful release failure.
+		return err
+	}
 	platformRelayRuntimeLifecycleLock = nil
-	return model.ReleaseRelayLifecycleLockBounded(lock)
+	return nil
 }
 
 func closePlatformRelayRuntimeLifecycleLock() {
@@ -1667,4 +2136,18 @@ func closePlatformRelayRuntimeLifecycleLock() {
 	lock := platformRelayRuntimeLifecycleLock
 	platformRelayRuntimeLifecycleLock = nil
 	lock.Close()
+}
+
+func publishPlatformRelayRuntimeDatabaseOwnership(
+	lock *model.RelayLifecycleLock,
+	failures <-chan error,
+	stopMonitor func(),
+) {
+	platformRelayRuntimeLifecycleLock = lock
+	platformRelayRuntimeLifecycleFailures = failures
+	stopPlatformRelayRuntimeLifecycleMonitor = stopMonitor
+	// Bootstrap uses joined=true while InitResources owns cleanup directly.
+	// Publishing the pool/readiness/anchor to main atomically changes that proof:
+	// every later return must run the complete four-component Stop attempt.
+	resetPlatformRelayDatabaseWorkerStopAttempt(false)
 }

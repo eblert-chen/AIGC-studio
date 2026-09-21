@@ -14,6 +14,10 @@ import {
 
 const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
 const creationSource = await readFile(new URL("../src/CreationHub.jsx", import.meta.url), "utf8");
+const creationWorkbenchSource = await readFile(
+  new URL("../src/pages/studio/CreationWorkbenchViews.jsx", import.meta.url),
+  "utf8",
+);
 const publishingSource = await readFile(new URL("../src/PublishingCenter.jsx", import.meta.url), "utf8");
 
 test("preview leases reject missing TTL and stop before the signed URL expires", () => {
@@ -48,7 +52,7 @@ test("all live preview consumers validate leases and clear failed media", () => 
   assert.match(appSource, /removeExpiredPreviewLeases\(current\)/);
   assert.match(studioSource, /onError=\{leasedPreviewUrl \? \(\) => onPreviewError\?\.\(key\) : undefined\}/);
   assert.match(creationSource, /activePreviewUrl\(previewUrls\[previewKey\]\)/);
-  assert.match(creationSource, /onError=\{previewUrl \? onPreviewError : undefined\}/);
+  assert.match(creationWorkbenchSource, /onError=\{take\.previewUrl \? onPreviewError : undefined\}/);
   assert.match(publishingSource, /activePreviewUrl\(previewUrls\[previewKey\]\)/);
   assert.match(publishingSource, /onError=\{previewUrl \? onPreviewError : undefined\}/);
 });

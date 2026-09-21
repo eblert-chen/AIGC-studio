@@ -10,6 +10,8 @@ from platform_api.models import (
     ModelDefinition,
     TaskStatus,
 )
+from platform_api.services.task_admission import TaskCapabilityAdmission
+from .legacy_commercial_isolation import isolate_legacy_commercial_gate
 
 
 def seed_model(
@@ -21,6 +23,16 @@ def seed_model(
     capability_key: str = "text-to-video",
     capability_config: dict | None = None,
 ) -> str:
+    isolate_legacy_commercial_gate(app)
+    resolved_capability_config = capability_config or {
+        "durations": [5, 10],
+        "ratios": ["16:9", "9:16"],
+    }
+    approved_capability = TaskCapabilityAdmission.effective_capabilities(
+        capability_map={capability_key: resolved_capability_config},
+        require_usable=True,
+    )
+    relay_revision = "sha256:" + ("1" * 64)
     with app.state.session_factory.begin() as session:
         model = ModelDefinition(
             slug="video-pro",
@@ -31,7 +43,10 @@ def seed_model(
                 if price_per_second_cents is not None
                 else "per_item"
             ),
-            relay_capability_revision="sha256:" + ("1" * 64),
+            relay_capability_revision=relay_revision,
+            relay_capability_candidate_revision=relay_revision,
+            relay_capability_candidate=approved_capability,
+            relay_capability_approved_ceiling=approved_capability,
         )
         session.add(model)
         session.flush()
@@ -39,8 +54,7 @@ def seed_model(
             ModelCapability(
                 model_id=model.id,
                 capability_key=capability_key,
-                config=capability_config
-                or {"durations": [5, 10], "ratios": ["16:9", "9:16"]},
+                config=resolved_capability_config,
             )
         )
         session.add(
@@ -77,8 +91,12 @@ def test_recharge_reserve_and_success_settlement_are_integer_and_idempotent(
     assert repeated_recharge.status_code == 200
     assert repeated_recharge.json()["wallet"] == {
         "company_id": company_id,
+        "billing_unit": "CNY_CENT",
+        "billing_version": 1,
         "available_cents": 1000,
         "reserved_cents": 0,
+        "available_points": None,
+        "reserved_points": None,
     }
 
     created = client.post(
@@ -131,8 +149,12 @@ def test_recharge_reserve_and_success_settlement_are_integer_and_idempotent(
     ).json()
     assert wallet == {
         "company_id": company_id,
+        "billing_unit": "CNY_CENT",
+        "billing_version": 1,
         "available_cents": 600,
         "reserved_cents": 0,
+        "available_points": None,
+        "reserved_points": None,
     }
 
     with app.state.session_factory() as session:

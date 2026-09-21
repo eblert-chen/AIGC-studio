@@ -31,6 +31,14 @@
     overflow-x: clip;
   }
 
+  .ops-route-selection-evidence {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-route-selection-evidence > span:nth-child(odd) {
+    border-right: 0;
+  }
+
   /* One compact command bar, followed by a dedicated module rail. */
   .ops-console .ops-topbar {
     position: sticky;
@@ -41,7 +49,8 @@
     grid-template-rows: 56px 52px;
     height: 108px;
     padding: 0;
-    border-block-end: 1px solid var(--ops-line-strong);
+    border-block-start: 0;
+    border-block-end: 1px solid var(--ops-line);
     background: var(--ops-surface);
     box-shadow: 0 1px 0 color-mix(in srgb, var(--ops-ink) 3%, transparent);
     isolation: isolate;
@@ -56,14 +65,16 @@
     justify-content: center;
     padding: 0;
     border: 0;
-    border-block-end: 1px solid var(--ops-line);
+    border-inline-end: 0;
+    border-block-end: 0;
   }
 
-  .ops-console .ops-brand > span {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-md, 8px);
-    background: var(--ops-accent-soft);
+  .ops-console .ops-brand .brand-logo {
+    width: 30px;
+  }
+
+  .ops-console .ops-surface-name {
+    display: none;
   }
 
   .ops-console .ops-brand strong {
@@ -83,30 +94,40 @@
     background: var(--ops-surface);
   }
 
-  .ops-console .ops-admin-tools .skin-switcher,
+  .ops-console .ops-workspace-actions {
+    height: 44px;
+    flex: 0 0 auto;
+  }
+
+  .ops-console .ops-creation-entry {
+    height: 44px;
+    min-height: 44px;
+    padding-inline: 10px;
+  }
+
+  .ops-console .ops-admin-tools .skin-switcher-trigger,
   .ops-console .ops-admin-tools .demo-account-switcher,
   .ops-console .ops-admin-tools .ops-account-button,
-  .ops-console .ops-basic-config-button {
+  .ops-console .ops-basic-config-button,
+  .ops-console .ops-help-button {
     height: 44px;
     min-height: 44px;
     border: 1px solid var(--ops-line-strong);
-    border-radius: var(--radius-control, 6px);
+    border-radius: var(--radius-control, 10px);
     background: var(--ops-surface);
   }
 
   .ops-console .ops-admin-tools .skin-switcher {
-    width: 74px;
-    min-width: 74px;
-    gap: 3px;
-    padding-inline: 7px 4px;
+    width: 88px;
+    min-width: 88px;
   }
 
-  .ops-console .ops-admin-tools .skin-switcher select {
-    width: 46px;
+  .ops-console .ops-admin-tools .skin-switcher-trigger {
+    width: 100%;
     min-width: 0;
     height: 44px;
     min-height: 44px;
-    padding: 0;
+    padding-inline: 7px;
   }
 
   .ops-console .ops-admin-tools .demo-account-switcher {
@@ -114,6 +135,7 @@
     min-width: 0;
     gap: 5px;
     padding-inline: 7px;
+    overflow: hidden;
   }
 
   .ops-console .ops-admin-tools .demo-account-switcher > svg {
@@ -126,12 +148,17 @@
 
   .ops-console .ops-admin-tools .demo-account-switcher select {
     width: 100%;
-    max-width: none;
+    max-width: 100%;
     min-width: 0;
     height: 44px;
     min-height: 44px;
+    box-sizing: border-box;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .ops-console .ops-chart-data > summary {
+    min-height: 44px;
   }
 
   .ops-console .ops-account-menu {
@@ -150,8 +177,26 @@
     text-overflow: ellipsis;
   }
 
-  .ops-console .ops-help-button,
   .ops-console .ops-top-divider {
+    display: none;
+  }
+
+  .ops-console .ops-help-button {
+    width: 44px;
+    min-width: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .ops-console .ops-basic-config-button {
+    width: 44px;
+    min-width: 44px;
+    justify-content: center;
+    gap: 0;
+    padding: 0;
+  }
+
+  .ops-console :is(.ops-help-label, .ops-basic-config-label) {
     display: none;
   }
 
@@ -197,8 +242,8 @@
   }
 
   .ops-console .ops-topbar nav button.is-active {
-    color: var(--ops-ink);
-    background: color-mix(in srgb, var(--ops-accent-soft) 56%, var(--ops-surface));
+    color: var(--ops-accent-dark);
+    background: var(--ops-accent-soft);
   }
 
   .ops-console .ops-nav-scroll-button {
@@ -207,7 +252,7 @@
     height: 51px;
     min-height: 51px;
     border: 0;
-    border-radius: 0;
+    border-radius: var(--radius-control, 10px);
     background: var(--ops-surface);
   }
 
@@ -237,14 +282,21 @@
 
   .ops-console .ops-page-title > div:first-child {
     min-width: 0;
+    flex-basis: auto;
+    grid-template-columns: 48px minmax(0, 1fr);
+    padding: 0;
   }
 
-  .ops-console .ops-page-title .ops-eyebrow {
-    display: block;
-    margin-block-end: 4px;
-    color: var(--ops-accent-dark);
-    font-size: var(--text-caption, 12px);
-    font-weight: var(--weight-semibold, 600);
+  .ops-console .ops-page-index {
+    min-height: 48px;
+  }
+
+  .ops-console .ops-page-index strong {
+    font-size: var(--text-heading-sm);
+  }
+
+  .ops-console .ops-page-copy > div {
+    padding: 0;
   }
 
   .ops-console .ops-page-title h1 {
@@ -265,7 +317,12 @@
     display: grid;
     width: 100%;
     max-width: none;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
     gap: 8px;
+    padding: 0;
+    border-inline-start: 0;
+    border-block-start: 0;
   }
 
   .ops-console .ops-range-controls {
@@ -355,11 +412,22 @@
 
   /* Task operations: urgent work appears before analysis, and the state
    * chain becomes a deliberate horizontal rail with visible continuation. */
+  .ops-console .ops-task-stream {
+    border: 0;
+    background: transparent;
+  }
+
+  .ops-console .ops-task-register {
+    display: none;
+  }
+
   .ops-console[data-active-section="task-operations"] .ops-task-grid {
     display: flex;
     min-width: 0;
     flex-direction: column;
-    gap: 24px;
+    gap: 20px;
+    border: 0;
+    background: transparent;
   }
 
   .ops-console[data-active-section="task-operations"] .ops-exception-queue {
@@ -368,7 +436,16 @@
 
   .ops-console[data-active-section="task-operations"] .ops-task-main {
     order: 0;
-    gap: 24px;
+    gap: 20px;
+    padding: 0;
+    border-inline: 0;
+  }
+
+  .ops-console .ops-exception-queue,
+  .ops-console .ops-flow-panel,
+  .ops-console .ops-reliability-panel {
+    border-inline: 1px solid var(--ops-structure-line);
+    border-block-end: 1px solid var(--ops-structure-line);
   }
 
   .ops-console .ops-exception-queue > .ops-panel-header {
@@ -516,7 +593,7 @@
   .ops-console .ops-flow-segment {
     min-height: 174px;
     padding: 15px 12px 12px;
-    border-inline-end: 1px solid var(--ops-line-strong);
+    border-inline-end: 1px solid var(--ops-structure-line);
     scroll-snap-align: start;
   }
 
@@ -587,7 +664,15 @@
   .ops-console .ops-cockpit-grid {
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: 20px;
+    border: 0;
+  }
+
+  .ops-console .ops-cockpit-grid > .ops-panel,
+  .ops-console .ops-cockpit-lower > .ops-panel,
+  .ops-console .ops-worklist-grid > .ops-panel {
+    border-inline: 1px solid var(--ops-structure-line);
+    border-block-end: 1px solid var(--ops-structure-line);
   }
 
   .ops-console .ops-cockpit-grid > .ops-action-panel {
@@ -795,6 +880,37 @@
     min-height: 44px;
   }
 
+  .ops-console .ops-prompt-demo-banner {
+    padding-inline: var(--ops-mobile-gutter);
+  }
+
+  .ops-console .ops-prompt-filterbar {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    padding: 10px var(--ops-mobile-gutter);
+  }
+
+  .ops-console .ops-prompt-filterbar .ops-search {
+    grid-column: 1 / -1;
+  }
+
+  .ops-console .ops-prompt-filterbar > .ops-secondary-button {
+    grid-column: 2;
+    justify-self: stretch;
+  }
+
+  .ops-console .ops-prompt-pagination {
+    align-items: center;
+    gap: 10px;
+  }
+
+  .ops-console .ops-prompt-pagination button {
+    min-height: 44px;
+  }
+
+  .ops-console .ops-prompt-entry summary {
+    min-height: 44px;
+  }
+
   .ops-console .ops-segmented-tabs {
     width: 100%;
     overflow-x: auto;
@@ -892,6 +1008,65 @@
   }
 }
 
+@media (max-width: 420px) {
+  .ops-console .ops-admin-tools {
+    justify-content: flex-start;
+    gap: 4px;
+    padding-inline-end: 8px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .ops-console .ops-workspace-actions {
+    order: -2;
+  }
+
+  .ops-console .ops-admin-tools::-webkit-scrollbar {
+    display: none;
+  }
+
+  .ops-console .ops-admin-tools .skin-switcher {
+    width: 44px;
+    min-width: 44px;
+  }
+
+  .ops-console .ops-admin-tools .skin-switcher-trigger {
+    width: 44px;
+    min-width: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .ops-console .ops-admin-tools .skin-switcher-current,
+  .ops-console .ops-admin-tools .skin-switcher-caret {
+    display: none;
+  }
+
+  .ops-console .ops-admin-tools .demo-account-switcher {
+    order: -1;
+    width: 168px;
+    min-width: 168px;
+    flex: 0 0 168px;
+  }
+
+  .ops-console .ops-admin-tools .demo-account-switcher .demo-account-origin {
+    display: none;
+  }
+
+  .ops-console .ops-admin-tools .ops-account-menu {
+    order: -1;
+    width: 168px;
+    min-width: 168px;
+    flex: 0 0 168px;
+  }
+
+  .ops-console .ops-admin-tools .ops-account-button {
+    width: 168px;
+    min-width: 168px;
+  }
+}
+
 @media (max-width: 360px) {
   .ops-console {
     --ops-mobile-gutter: 12px;
@@ -905,38 +1080,40 @@
     width: 48px;
   }
 
-  .ops-console .ops-admin-tools {
-    gap: 4px;
-    padding-inline-end: 8px;
-  }
-
-  .ops-console .ops-admin-tools .skin-switcher {
-    position: relative;
-    width: 44px;
-    min-width: 44px;
-    justify-content: center;
-    padding: 0;
-  }
-
-  .ops-console .ops-admin-tools .skin-switcher > svg {
-    display: block;
-  }
-
-  .ops-console .ops-admin-tools .skin-switcher select {
-    position: absolute;
-    inset: 0;
-    width: 44px;
-    max-width: none;
-    opacity: 0;
-  }
-
   .ops-console .ops-admin-tools .demo-account-switcher {
-    width: min(146px, 48vw);
-    padding-inline: 5px;
+    width: 168px;
+    min-width: 168px;
+    flex-basis: 168px;
+    padding-inline: 7px;
   }
 
   .ops-console .ops-admin-tools .ops-account-button {
-    width: min(116px, 38vw);
+    width: 168px;
+    min-width: 168px;
+  }
+
+  .ops-console .ops-range-controls.has-time-range {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+
+  .ops-console .ops-range-controls.has-time-range > :is(.ops-select-control, .ops-environment-label):first-child {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .ops-console .ops-range-controls.has-time-range > :is(.ops-select-control, .ops-environment-label):nth-child(2) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .ops-console .ops-range-controls.has-time-range .ops-icon-button {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .ops-console .ops-range-controls.has-time-range .ops-last-refresh {
+    grid-column: 1 / -1;
+    grid-row: 3;
   }
 
   .ops-console .ops-flow {
@@ -959,6 +1136,32 @@
   .ops-console .ops-filterbar > .ops-secondary-button {
     grid-column: 2;
     grid-row: 2;
+  }
+
+  .ops-console .ops-prompt-filterbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ops-console .ops-prompt-filterbar > label,
+  .ops-console .ops-prompt-filterbar .ops-search,
+  .ops-console .ops-prompt-filterbar > .ops-secondary-button {
+    grid-column: 1;
+    grid-row: auto;
+    width: 100%;
+  }
+
+  .ops-console .ops-prompt-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ops-console .ops-prompt-pagination > div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .ops-console .ops-prompt-pagination button {
+    width: 100%;
   }
 }
 

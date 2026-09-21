@@ -29,6 +29,33 @@ test("serves existing static assets without a fallback", async () => {
   assert.match(response.headers.get("strict-transport-security"), /max-age=/);
 });
 
+test("allows only the isolated StoryAI document to be framed by this product", async () => {
+  const response = await worker.fetch(
+    new Request("https://app.example.test/director-desk/index.html", {
+      headers: { accept: "text/html" },
+    }),
+    {
+      ASSETS: { fetch: async () => new Response("director", { status: 200 }) },
+    },
+  );
+
+  assert.equal(response.headers.get("x-frame-options"), "SAMEORIGIN");
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  const csp = response.headers.get("content-security-policy");
+  assert.match(csp, /frame-ancestors 'self'/);
+  assert.match(csp, /sandbox allow-scripts allow-downloads/);
+  assert.match(csp, /connect-src 'none'/);
+  assert.doesNotMatch(csp, /frame-ancestors 'none'/);
+  assert.doesNotMatch(csp, /form-action 'self'/);
+
+  const appResponse = await worker.fetch(
+    new Request("https://app.example.test/index.html", { headers: { accept: "text/html" } }),
+    { ASSETS: { fetch: async () => new Response("app", { status: 200 }) } },
+  );
+  assert.equal(appResponse.headers.get("x-frame-options"), "DENY");
+  assert.match(appResponse.headers.get("content-security-policy"), /frame-ancestors 'none'/);
+});
+
 test("allows only the deployment-controlled Platform origin for browser API calls", async () => {
   const response = await worker.fetch(new Request("https://app.example.test/"), {
     PLATFORM_API_ORIGIN: "https://platform.example.test/",

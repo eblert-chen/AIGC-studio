@@ -283,6 +283,24 @@ func platformGenerationReconciliationApprovalPayload(
 	} {
 		appendPlatformGenerationApprovalField(&buffer, value)
 	}
+	// Keep the v1 payload byte-for-byte compatible when no synchronous result
+	// is present. Image-created reconciliation appends a separately framed
+	// extension so the approval signature binds every provider receipt field,
+	// including the temporary artifact URL that Relay will transfer.
+	if evidence := request.SynchronousResult; evidence != nil {
+		appendPlatformGenerationApprovalField(&buffer, "synchronous-result-v1")
+		for _, value := range []string{
+			evidence.ProviderModelID,
+			evidence.ProviderResponseSHA256,
+			evidence.ArtifactURL,
+			evidence.ProviderCreatedAt,
+			strconv.Itoa(evidence.GeneratedImages),
+			strconv.Itoa(evidence.OutputTokens),
+			strconv.Itoa(evidence.TotalTokens),
+		} {
+			appendPlatformGenerationApprovalField(&buffer, value)
+		}
+	}
 	return buffer.Bytes()
 }
 

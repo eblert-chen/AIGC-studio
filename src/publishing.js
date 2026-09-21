@@ -1,6 +1,6 @@
 export const PUBLICATION_STATUS = Object.freeze({
   pending_approval: { label: "待审核", tone: "warning" },
-  scheduled: { label: "已计划", tone: "scheduled" },
+  scheduled: { label: "已排期", tone: "scheduled" },
   queued: { label: "等待执行", tone: "progress" },
   submitting: { label: "正在发布", tone: "progress" },
   published: { label: "发布成功", tone: "success" },
@@ -10,9 +10,36 @@ export const PUBLICATION_STATUS = Object.freeze({
   cancelled: { label: "已取消", tone: "muted" },
 });
 
+export const PUBLICATION_STATUS_FILTER_GROUPS = Object.freeze([
+  Object.freeze({
+    label: "待处理",
+    options: Object.freeze([
+      Object.freeze(["pending_approval", PUBLICATION_STATUS.pending_approval.label]),
+      Object.freeze(["submission_unknown", PUBLICATION_STATUS.submission_unknown.label]),
+      Object.freeze(["failed", PUBLICATION_STATUS.failed.label]),
+      Object.freeze(["requires_reauth", PUBLICATION_STATUS.requires_reauth.label]),
+    ]),
+  }),
+  Object.freeze({
+    label: "已排期",
+    options: Object.freeze([
+      Object.freeze(["scheduled", PUBLICATION_STATUS.scheduled.label]),
+      Object.freeze(["queued", PUBLICATION_STATUS.queued.label]),
+      Object.freeze(["submitting", PUBLICATION_STATUS.submitting.label]),
+    ]),
+  }),
+  Object.freeze({
+    label: "历史",
+    options: Object.freeze([
+      Object.freeze(["published", PUBLICATION_STATUS.published.label]),
+      Object.freeze(["cancelled", PUBLICATION_STATUS.cancelled.label]),
+    ]),
+  }),
+]);
+
 export const PUBLICATION_STATUS_FILTERS = Object.freeze([
-  ["", "全部状态"],
-  ...Object.entries(PUBLICATION_STATUS).map(([value, { label }]) => [value, label]),
+  Object.freeze(["", "全部任务"]),
+  ...PUBLICATION_STATUS_FILTER_GROUPS.flatMap(({ options }) => options),
 ]);
 
 export const PUBLISHING_TIME_ZONES = Object.freeze([
@@ -30,7 +57,7 @@ export function collectionItems(payload) {
 
 export function publicationStatus(value) {
   return PUBLICATION_STATUS[value] || {
-    label: value ? `未知状态：${value}` : "状态未记录",
+    label: value ? "状态待确认" : "状态未记录",
     tone: "muted",
   };
 }

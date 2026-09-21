@@ -26,6 +26,7 @@ from ..auth import (
 from ..models import (
     AccountSecurityEvent,
     AuditOutcome,
+    AuthProductContextSwitch,
     AuthSession,
     Company,
     CompanyInvitation,
@@ -36,13 +37,17 @@ from ..models import (
     MembershipRole,
     MembershipStatus,
     OidcLoginTransaction,
+    PersonalWorkspace,
+    ProductContext,
     Role,
     User,
+    UserAccountType,
     UserStatus,
     utcnow,
 )
 from ..platform_owner_identity import is_platform_owner_identity
 from .access_lifecycle import AccessLifecycleService
+from .account_partition import AccountPartitionService, AccountProductType
 from .audit import AuditService
 from .errors import ConflictError, DomainError, NotFoundError, PermissionDeniedError
 from .personal import PersonalWorkspaceService
@@ -54,6 +59,7 @@ OIDC_STATE_COOKIE_NAME = "__Host-ai_video_oidc_state"
 INVITATION_HANDOFF_COOKIE_NAME = "__Secure-ai_video_invitation"
 INVITATION_HANDOFF_TTL_SECONDS = 1800
 CSRF_HEADER_NAME = "X-CSRF-Token"
+OIDC_UI_LOCALES = "zh-CN"
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -126,6 +132,9 @@ def _security_details(**values: Any) -> dict[str, Any]:
         "revoked_count",
         "previous_auth_version",
         "new_auth_version",
+        "source_context",
+        "target_context",
+        "context_switch_id",
     }
     result: dict[str, Any] = {}
     for key, value in values.items():
@@ -197,6 +206,10 @@ class CookieSessionPrincipal:
     def authentication_methods(self) -> tuple[str, ...]:
         return tuple(self.auth_session.amr)
 
+    @property
+    def active_product_context(self) -> ProductContext:
+        return self.auth_session.active_product_context
+
 
 @dataclass(frozen=True)
 class OidcExchangeContext:
@@ -232,10 +245,37 @@ class SessionService:
             if auth_session.external_identity_id
             else None
         )
+        context_valid = False
+        if user is not None:
+            if user.account_type == UserAccountType.PERSONAL:
+                context_valid = (
+                    auth_session.active_product_context == ProductContext.PERSONAL
+                )
+            elif user.account_type == UserAccountType.COMPANY:
+                context_valid = (
+                    auth_session.active_product_context == ProductContext.COMPANY
+                )
+            elif user.account_type == UserAccountType.PLATFORM_ADMIN:
+                context_valid = (
+                    auth_session.active_product_context == ProductContext.PLATFORM
+                )
+                if (
+                    auth_session.active_product_context == ProductContext.PERSONAL
+                    and identity is not None
+                ):
+                    workspace = session.scalar(
+                        select(PersonalWorkspace).where(
+                            PersonalWorkspace.user_id == user.id,
+                            PersonalWorkspace.active.is_(True),
+                            PersonalWorkspace.owner_self_identity_id == identity.id,
+                        )
+                    )
+                    context_valid = workspace is not None
         invalid = (
             user is None
             or identity is None
             or identity.user_id != auth_session.user_id
+            or not context_valid
             or user.status != UserStatus.ACTIVE
             or auth_session.auth_version != user.auth_version
             or _as_utc(auth_session.expires_at) <= current
@@ -282,6 +322,11 @@ class SessionService:
             user_id=user.id,
             external_identity_id=identity.id,
             auth_version=user.auth_version,
+            active_product_context={
+                UserAccountType.PERSONAL: ProductContext.PERSONAL,
+                UserAccountType.COMPANY: ProductContext.COMPANY,
+                UserAccountType.PLATFORM_ADMIN: ProductContext.PLATFORM,
+            }[user.account_type],
             amr=list(claims.authentication_methods),
             auth_time=authentication_time,
             created_at=now,
@@ -302,6 +347,139 @@ class SessionService:
             request_id=request_id,
         )
         return auth_session, raw_token, raw_csrf
+
+    @staticmethod
+    def switch_product_context(
+        session: Session,
+        *,
+        principal: CookieSessionPrincipal,
+        target_context: ProductContext,
+        idempotency_key: str,
+        pepper: str | None,
+        ip_hash: str | None,
+        user_agent: str,
+        request_id: str,
+    ) -> tuple[CookieSessionPrincipal, str | None, str | None, bool]:
+        """Atomically rotate one Owner session into the other product context.
+
+        The old session is locked and revalidated before any workspace or new
+        session is created. A replay made with the already-rotated session and
+        the same key returns the existing result and cannot mint another session.
+        """
+
+        fingerprint = _request_fingerprint(
+            {"target_context": target_context.value}
+        )
+        locked = session.scalar(
+            select(AuthSession)
+            .where(AuthSession.id == principal.auth_session.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if (
+            locked is None
+            or locked.user_id != principal.user_id
+            or locked.revoked_at is not None
+            or locked.auth_version != principal.user.auth_version
+        ):
+            raise DomainError("Session is missing or invalid", "session_invalid", 401)
+
+        prior = session.scalar(
+            select(AuthProductContextSwitch)
+            .where(
+                AuthProductContextSwitch.user_id == principal.user_id,
+                AuthProductContextSwitch.idempotency_key == idempotency_key,
+            )
+            .with_for_update()
+        )
+        if prior is not None:
+            if (
+                prior.request_fingerprint != fingerprint
+                or prior.target_context != target_context
+            ):
+                raise ConflictError("幂等键已用于不同的产品主体切换")
+            if prior.target_session_id != locked.id:
+                raise ConflictError("该产品主体切换已经由另一会话完成")
+            return principal, None, None, False
+
+        source_context = locked.active_product_context
+        if source_context == target_context:
+            raise ConflictError("当前会话已经处于目标产品主体")
+        if {source_context, target_context} != {
+            ProductContext.PLATFORM,
+            ProductContext.PERSONAL,
+        }:
+            raise PermissionDeniedError("不允许切换到该产品主体")
+
+        if target_context == ProductContext.PERSONAL:
+            PersonalWorkspaceService.ensure_owner_self(
+                session,
+                user_id=principal.user_id,
+                external_identity_id=principal.identity.id,
+            )
+        else:
+            AccountPartitionService.require_owner_self_personal(
+                session,
+                user=principal.user,
+                external_identity_id=principal.identity.id,
+            )
+
+        raw_token = secrets.token_urlsafe(48)
+        raw_csrf = secrets.token_urlsafe(32)
+        now = utcnow()
+        replacement = AuthSession(
+            token_digest=_digest(raw_token, pepper=pepper),
+            csrf_digest=_digest(raw_csrf, pepper=pepper),
+            user_id=locked.user_id,
+            external_identity_id=locked.external_identity_id,
+            auth_version=locked.auth_version,
+            active_product_context=target_context,
+            amr=list(locked.amr),
+            auth_time=locked.auth_time,
+            created_at=now,
+            last_seen_at=now,
+            # A context switch never extends the IdP-authenticated lifetime.
+            expires_at=locked.expires_at,
+            user_agent=user_agent.strip()[:512],
+        )
+        session.add(replacement)
+        session.flush()
+        switch = AuthProductContextSwitch(
+            user_id=principal.user_id,
+            source_session_id=locked.id,
+            target_session_id=replacement.id,
+            source_context=source_context,
+            target_context=target_context,
+            idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
+        )
+        session.add(switch)
+        locked.revoked_at = now
+        locked.revoked_reason = "product_context_switched"
+        session.flush()
+        append_security_event(
+            session,
+            event_type="auth.product_context.switched",
+            user_id=principal.user_id,
+            auth_session_id=replacement.id,
+            ip_hash=ip_hash,
+            user_agent=user_agent,
+            issuer=principal.identity.issuer,
+            request_id=request_id,
+            source_context=source_context.value,
+            target_context=target_context.value,
+            context_switch_id=switch.id,
+        )
+        return (
+            CookieSessionPrincipal(
+                user=principal.user,
+                auth_session=replacement,
+                identity=principal.identity,
+            ),
+            raw_token,
+            raw_csrf,
+            True,
+        )
 
     @staticmethod
     def rotate_csrf(
@@ -539,6 +717,10 @@ class OidcService:
             "client_id": settings.oidc_client_id,
             "redirect_uri": settings.oidc_redirect_uri,
             "scope": "openid email profile",
+            # The customer product is Chinese-first. Keep the locale
+            # server-owned so a browser query cannot downgrade the hosted
+            # identity flow to an inconsistent language.
+            "ui_locales": OIDC_UI_LOCALES,
             "state": state,
             "nonce": nonce,
             "code_challenge": challenge,
@@ -817,6 +999,12 @@ class OidcService:
                     )
                     raise DomainError("Sign-in is unavailable", "oidc_login_failed", 409)
             if owner_subject and not user.is_platform_admin:
+                if user.account_type != UserAccountType.PLATFORM_ADMIN:
+                    raise DomainError(
+                        "Platform owner account requires explicit provisioning",
+                        "account_type_conflict",
+                        409,
+                    )
                 user.is_platform_admin = True
                 append_security_event(
                     session,
@@ -831,7 +1019,15 @@ class OidcService:
             identity.last_login_at = now
             user.last_login_at = now
             user.email_verified_at = user.email_verified_at or now
-            PersonalWorkspaceService.ensure(session, user_id=user.id)
+            account_type = AccountPartitionService.resolve(session, user=user)
+            if account_type == AccountProductType.PERSONAL:
+                PersonalWorkspaceService.ensure(session, user_id=user.id)
+            elif account_type == AccountProductType.UNAVAILABLE:
+                raise DomainError(
+                    "Account product type is not provisioned",
+                    "account_type_unavailable",
+                    403,
+                )
             session.flush()
             return user, identity
 
@@ -937,6 +1133,11 @@ class OidcService:
                 email_verified_at=now,
                 last_login_at=now,
                 is_platform_admin=owner_subject,
+                account_type=(
+                    UserAccountType.PLATFORM_ADMIN
+                    if owner_subject
+                    else UserAccountType.PERSONAL
+                ),
             )
             session.add(user)
             session.flush()
@@ -950,8 +1151,22 @@ class OidcService:
         user.email_verified_at = user.email_verified_at or now
         user.last_login_at = now
         if owner_subject and not user.is_platform_admin:
+            if user.account_type != UserAccountType.PLATFORM_ADMIN:
+                raise DomainError(
+                    "Platform owner account requires explicit provisioning",
+                    "account_type_conflict",
+                    409,
+                )
             user.is_platform_admin = True
-        PersonalWorkspaceService.ensure(session, user_id=user.id)
+        account_type = AccountPartitionService.resolve(session, user=user)
+        if account_type == AccountProductType.PERSONAL:
+            PersonalWorkspaceService.ensure(session, user_id=user.id)
+        elif account_type == AccountProductType.UNAVAILABLE:
+            raise DomainError(
+                "Account product type is not provisioned",
+                "account_type_unavailable",
+                403,
+            )
         session.add(identity)
         session.flush()
         append_security_event(
@@ -1519,6 +1734,7 @@ class InvitationService:
                 email=normalized_email,
                 display_name=normalized_name,
                 status=UserStatus.PENDING,
+                account_type=UserAccountType.COMPANY,
             )
             session.add(invited_user)
             session.flush()
@@ -1530,6 +1746,10 @@ class InvitationService:
             )
         elif invited_user.status in {UserStatus.SUSPENDED, UserStatus.DEACTIVATED}:
             raise ConflictError("Invitation cannot be created")
+        AccountPartitionService.require_company_provisioning_eligible(
+            session,
+            user=invited_user,
+        )
         existing_membership = session.scalar(
             select(CompanyMembership.id)
             .where(
@@ -1646,6 +1866,21 @@ class InvitationService:
             )
         if invitation.status == CompanyInvitationStatus.ACCEPTED:
             raise ConflictError("Accepted invitation cannot be reissued")
+        invited_user = session.scalar(
+            select(User)
+            .where(func.lower(User.email) == invitation.email.lower())
+            .with_for_update()
+        )
+        if invited_user is None:
+            raise DomainError(
+                "Invitation account is unavailable",
+                "invitation_account_unavailable",
+                409,
+            )
+        AccountPartitionService.require_company_provisioning_eligible(
+            session,
+            user=invited_user,
+        )
         raw_token = secrets.token_urlsafe(48)
         before = InvitationService._effective_status(invitation)
         invitation.token_digest = _digest(raw_token, pepper=pepper)
@@ -1888,6 +2123,7 @@ class InvitationService:
                     email=normalized_email,
                     display_name=normalized_name,
                     status=UserStatus.PENDING,
+                    account_type=UserAccountType.COMPANY,
                 )
                 session.add(target_user)
                 session.flush()
@@ -1900,6 +2136,11 @@ class InvitationService:
                     "owner_onboarding_replacement_conflict",
                     409,
                 )
+
+            AccountPartitionService.require_company_provisioning_eligible(
+                session,
+                user=target_user,
+            )
 
             if target_user.id != current_user.id:
                 same_company_membership = session.scalar(
@@ -2078,6 +2319,20 @@ class InvitationService:
                 "invitation_email_mismatch",
                 403,
             )
+        locked_user = session.scalar(
+            select(User).where(User.id == user.id).with_for_update()
+        )
+        if locked_user is None:
+            raise DomainError(
+                "Invitation cannot be accepted by this account",
+                "invitation_account_unavailable",
+                403,
+            )
+        AccountPartitionService.require_company_provisioning_eligible(
+            session,
+            user=locked_user,
+        )
+        user = locked_user
         company = session.scalar(
             select(Company)
             .where(Company.id == invitation.company_id)

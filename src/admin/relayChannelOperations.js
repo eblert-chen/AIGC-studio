@@ -1,8 +1,26 @@
 const OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 const REVISION_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const ROUTE_IDENTITY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const ROUTE_TEST_MODES = new Set(["text_to_image", "text_to_video", "image_to_video", "video_to_video"]);
 const CHANNEL_STATUSES = new Set(["enabled", "manually_disabled", "auto_disabled"]);
 const TARGET_STATUSES = new Set(["enabled", "manually_disabled"]);
 const OPERATION_STATES = new Set(["pending", "succeeded", "failed"]);
+export const RELAY_CHANNEL_TEST_ERROR_META = Object.freeze({
+  CHANNEL_TEST_FAILED: "渠道测试失败",
+  CHANNEL_TEST_UNAVAILABLE: "渠道暂不可用",
+  CHANNEL_TEST_PROVIDER_VALIDATION: "供应商拒绝了请求参数或模型配置",
+  CHANNEL_TEST_PROVIDER_AUTH: "供应商身份凭证或模型授权无效",
+  CHANNEL_TEST_PROVIDER_QUOTA: "供应商余额、配额或限流阻止了本次测试",
+  CHANNEL_TEST_PROVIDER_TERMINAL: "供应商已返回终态失败",
+  CHANNEL_TEST_ARTIFACT_INVALID: "生成产物未通过完整性验证",
+  CHANNEL_TEST_ROUTE_DRIFT: "受控路由在测试期间发生漂移",
+  CHANNEL_TEST_RECONCILED_NO_CREATION: "已核对确认供应商未创建任务",
+});
+const RELAY_CHANNEL_TEST_ERROR_CODES = new Set(Object.keys(RELAY_CHANNEL_TEST_ERROR_META));
+
+export function relayChannelTestErrorLabel(errorCode) {
+  return RELAY_CHANNEL_TEST_ERROR_META[errorCode] || "渠道测试失败";
+}
 
 function requiredReason(value) {
   const reason = String(value || "").trim();
@@ -25,7 +43,24 @@ export function buildRelayChannelOperationRequest(kind, values = {}) {
     reason: requiredReason(values.reason),
     approved: true,
   };
-  if (kind === "test") return request;
+  if (kind === "test") {
+    const publicModelId = String(values.publicModelId || "").trim();
+    const routeId = String(values.routeId || "").trim();
+    if (!publicModelId || !routeId) {
+      throw new Error("精确路由测试必须选择受控的 public_model_id 和 route_id。");
+    }
+    if (
+      !ROUTE_IDENTITY_PATTERN.test(publicModelId)
+      || !ROUTE_IDENTITY_PATTERN.test(routeId)
+    ) {
+      throw new Error("public_model_id 或 route_id 格式无效。");
+    }
+    const mode = String(values.mode || "").trim();
+    if (mode && !ROUTE_TEST_MODES.has(mode)) {
+      throw new Error("精确路由测试模式无效。");
+    }
+    return { ...request, publicModelId, routeId, ...(mode ? { mode } : {}) };
+  }
   if (kind !== "status") throw new Error("Relay 渠道操作类型无效。");
   if (!REVISION_PATTERN.test(String(values.expectedRevision || ""))) {
     throw new Error("渠道 revision 无效，请刷新详情后重新审批。");
@@ -53,7 +88,7 @@ function adaptResult(raw, kind) {
       typeof success !== "boolean"
       || !Number.isInteger(responseTimeMs)
       || responseTimeMs < 0
-      || ![null, "CHANNEL_TEST_FAILED", "CHANNEL_TEST_UNAVAILABLE"].includes(errorCode)
+      || (errorCode !== null && !RELAY_CHANNEL_TEST_ERROR_CODES.has(errorCode))
       || success === Boolean(errorCode)
     ) {
       throw new Error("Relay 渠道测试回执无效。");

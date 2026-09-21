@@ -71,7 +71,7 @@ export function MemberAccessFields({ roles, permissions, member }) {
           <span>历史角色配置异常；本次提交会修复为唯一的运营或组长级别。</span>
         </div>
       )}
-      <fieldset>
+      <fieldset className="control-access-role-fieldset is-primary-role">
         <legend>公司级别（必选）</legend>
         {primaryRoles.map((role) => (
           <label className="control-check" key={role.id}>
@@ -88,7 +88,7 @@ export function MemberAccessFields({ roles, permissions, member }) {
         ))}
       </fieldset>
       {!!customRoles.length && (
-        <fieldset>
+        <fieldset className="control-access-role-fieldset is-custom-role">
           <legend>附加权限角色（可选）</legend>
           {customRoles.map((role) => (
             <label className="control-check" key={role.id}>
@@ -113,9 +113,14 @@ export function MemberAccessFields({ roles, permissions, member }) {
           <ArrowClockwise size={14} /> 全部跟随模板
         </button>
       </div>
+      <div className="control-permission-matrix">
+        <header>
+          <div><strong>逐项个人权限</strong><small>最终权限 = 角色模板 + 个人允许或禁止；清除调整后重新跟随模板。</small></div>
+          <span>{catalog.length} 项服务端权限</span>
+        </header>
       <div className="control-permission-groups">
         {Object.entries(groupedPermissions).map(([group, items]) => (
-          <fieldset key={group}>
+          <fieldset className="control-permission-group" key={group}>
             <legend>{group}</legend>
             {items.map((permission) => {
               const effect = overrides[permission.code] || "inherit";
@@ -133,6 +138,7 @@ export function MemberAccessFields({ roles, permissions, member }) {
                   <select
                     name={`permission:${permission.code}`}
                     value={effect}
+                    data-effect={effect}
                     onChange={(event) => setPermissionEffect(permission.code, event.target.value)}
                     aria-label={`${permission.description}的个人权限`}
                     aria-describedby={`${statusId}-template ${statusId}-effective`}
@@ -149,6 +155,7 @@ export function MemberAccessFields({ roles, permissions, member }) {
             })}
           </fieldset>
         ))}
+      </div>
       </div>
     </>
   );

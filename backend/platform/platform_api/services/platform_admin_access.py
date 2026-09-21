@@ -9,7 +9,7 @@ from datetime import datetime
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from ..models import PlatformAdminActivity, User
+from ..models import PlatformAdminActivity, User, UserAccountType
 from ..platform_admin_access_catalog import (
     PLATFORM_ADMIN_PERMISSION_CATALOG,
     PLATFORM_ADMIN_PERMISSION_CODES,
@@ -749,6 +749,11 @@ class PlatformAdminAccessService:
         if target_user_id in platform_owner_user_ids:
             raise ConflictError(
                 "Product owner administrator status is controlled by the server allowlist"
+            )
+        if target.account_type != UserAccountType.PLATFORM_ADMIN:
+            raise ConflictError(
+                "Only a provisioned platform-administrator account can change "
+                "administrator status"
             )
         if target.is_platform_admin != expected_is_platform_admin:
             raise ConflictError("Platform administrator status was changed elsewhere")

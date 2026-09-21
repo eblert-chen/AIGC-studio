@@ -38,9 +38,50 @@ server default 从 `legacy-default-v1` 改为 `new-api-v1`，合同仍为 `gener
 
 new-api 使用自己的 PostgreSQL、Redis、artifact/OBS namespace 和 release proof。Python
 Alembic head `0012_generation_contract_v1` 只描述离线 oracle artifact 的冻结形状，不能替代
-new-api `target=3,min=1,max=3` schema/release-proof 链，也不属于正常生产发布步骤。fresh v3
-ledger 只能是 `[3]`；exact v1 必须经 historical frozen v1→v2 与当前 v2→v3 后得到
-`[1,2,3]`。v3 成功后 max-v2 镜像会判为 `ahead`，不能直接回滚。
+new-api 当前源码合同为 `target=8,min=1,max=8`，也不属于正常生产发布步骤。fresh-v8
+ledger 只能是 `[8]`；exact v1 必须经 historical frozen v1→v2 no-catalog-delta bridge、
+pinned v3 correction（v2→v3）、冻结的 v3→v4 route-binding、pinned v4→v5 diagnostic-taxonomy、
+不可变 pinned-v6 的 v5→v6 durable route-test lifecycle、历史 v7 的 v6→v7 artifact
+content-type release，再由 current-v8 仅从 exact v7 增加不可变的 provider-cost allocation
+evidence，预期得到 `[1,2,3,4,5,6,7,8]`。current-v8 不得跳过 exact v7；v8 成功后
+max-v7 镜像必须判为 `ahead`，不能直接回滚。
+
+v8 source/model/checksum/catalog 已冻结，但这只是代码身份：专用 PostgreSQL 用例
+`TestRelaySchemaPostgresConstructedV7ToV8ProviderCostEvidence` 已通过
+`TEST_RELAY_SCHEMA_V7_TO_V8_DSN` 在一次性 `postgres:16-alpine` 上完成
+`PG16-constructed-v7→v8-gate=PASS (9.021s)`，证明构造 v7→v8、v7 ledger 不变、v8 表与
+UPDATE/DELETE 不可变 guard。该专项没有覆盖 TLS 或 pgAudit；
+`PG16+TLS+pgAudit-full-qualification-gate=NOT_RUN`，尚未完成生产资格并保持
+`BLOCKED / NO-GO`。下述 v7 门禁证据只是 v8 的历史前置，不得把它写成完整生产 v8 PASS。
+四个 v8 冻结值依次为
+`sha256:4d1422f6f691d1440600536f9b89c3e1fb9af9e69f880437b95d437b101f71dd`、
+`sha256:24f03d665ed5df5958cbf82075bfd28fb8aeb97fee277164e443a0218132776d`、
+`sha256:1def22667e226cf8dfbd467e18445874dcce6959a8b9e74b43623e14bbc31de7` 与
+`sha256:6374866475d3b9c404592c39ef5ad8be1b63066308b502e5362dbc47e469823c`。
+
+跨版本顺序固定为 `pinned-v3 migration -> pre-v4 zero-ACL role-pre -> pinned-v4 migration ->
+pinned-v4 full verifier -> pre-v5 zero-ACL role-pre -> pinned-v5 migration -> pinned-v5 rollback verifier ->
+pre-v6 zero-ACL role-pre -> pinned-v6 migration -> pinned-v6 rollback verifier -> pre-v7 zero-ACL role-pre ->
+historical-v7 migration`；role-pre does not perform schema migration。历史 v7 门禁必须归档
+`pre-v4-zero-acl-role-stub-gate=PASS`、`pre-v5-zero-acl-role-stub-gate=PASS`、
+`pre-v6-zero-acl-role-stub-gate=PASS` 与 `pre-v7-zero-acl-role-stub-gate=PASS`。pinned-v6 固定为
+`ai-video/new-api-relay:v6-canary-0b0b8bf5`，image/repo digest 为
+`sha256:576b836d26f19825532feaca1f9f7950f28affc78477d61d7b29dca474b8817f`；v7 checksum/catalog
+分别为 `sha256:da3ddb86260818f894b13fc6b3ad34031b6089dddb83954172984d07e451c4c3` 与
+`sha256:af1377416cb2788093391a03491d2bb380fc4b81db5f08d0d628f3f8a2abef01`。
+
+v4 把已经接受任务的 adapter profile、model release 与 route snapshot 绑定纳入数据库合同，
+使滚动升级或进程重启后仍按原不可变版本恢复；历史空绑定只允许一次原子回填，半组或已绑定
+篡改一律失败关闭。v5 不重写这些绑定，只把渠道测试回执的结果码收口为封闭、无秘密的诊断
+分类，并由数据库 guard 拒绝供应商自由文本、删除、截断或已完成回执篡改。v6 进一步持久化
+transport revision/digest、单次 provider submission、sticky task、无密 artifact evidence 和 owner
+reconciliation；provider success 后 proof/artifact 验收失败必须保持 `pending+submitted`。v7
+只扩展受保护 artifact 回执的允许类型为 `video/mp4` 与 `image/png`，并保留其余五组 v6 guard。
+发布门禁中的 pinned-v4/pinned-v5 都是 immutable binary behavior fixture，只允许在门禁自有
+exact-v3 合成数据库证明 3→4 与 4→5 行为；
+pinned-v6 是经固定 digest/provenance 验证的 5→6 release owner。所有 pinned image 都不得读取
+或迁移业务/live 数据库，也不是运营迁移源；业务升级仅能由本次经审阅的 current-v8 migrator 按冻结历史步骤执行，
+且在 v8 独立生产资格完成前不得运行。
 
 ## 3. 一次性切换前排空
 
@@ -92,7 +133,7 @@ ledger 只能是 `[3]`；exact v1 必须经 historical frozen v1→v2 与当前 
 生产回滚的目标只能是**上一版已验证、schema-compatible 的 new-api 不可变镜像**；Python Relay 不是生产回滚目标。
 
 1. 立即关闭新准入，保持当前 new-api 对已经接受的任务、unknown submission、artifact、callback 和 cost evidence 的所有权。
-2. 若旧镜像仍兼容 Current v3 schema 和 release proof，按同一 role/proof/secret-isolation 链部署旧 digest；`max=2` 镜像必须因 `ahead` 失败关闭，不能直接回滚。其他不兼容情况同样只能前向修复，不能降级数据库或伪造 proof。
+2. 若旧镜像仍兼容 Current v8 schema 和 release proof，按同一 role/proof/secret-isolation 链部署旧 digest；`max=7` 镜像必须因 `ahead` 失败关闭，不能直接回滚。其他不兼容情况同样只能前向修复，不能降级数据库或伪造 proof。
 3. 已接受任务绝不改写 `relay_backend_id`、Provider route 或 submission token，也不跨数据面重投。
 4. 数据库 restore 只允许在任何生产流量和业务写入之前使用已验证恢复点；一旦当前 release 接受业务写入，默认采用前向迁移/修复。
 5. 回滚后继续保存失败 release 的数据库、日志、callback、Provider 和成本证据，直到全部对账完成。

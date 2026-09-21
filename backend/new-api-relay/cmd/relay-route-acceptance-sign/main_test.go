@@ -103,3 +103,89 @@ func TestOfflineSignerRejectsGroupOrWorldReadablePrivateKeyOnPOSIX(t *testing.T)
 	_, err := loadEd25519PrivateKey(privatePath)
 	require.ErrorContains(t, err, "group- or world-readable")
 }
+
+func TestReviewedRouteValidationRejectsDuplicateKeysBeforeNormalization(t *testing.T) {
+	directory := t.TempDir()
+	duplicatePath := filepath.Join(directory, "duplicate-routes.json")
+	require.NoError(t, os.WriteFile(
+		duplicatePath,
+		[]byte(`{"video-model":[],"video-model":[]}`),
+		0o600,
+	))
+
+	_, err := normalizeReviewedRoutes(duplicatePath)
+	require.ErrorContains(t, err, "duplicate")
+}
+
+func TestReviewedRouteValidationNormalizesStrictInputWithoutSigning(t *testing.T) {
+	directory := t.TempDir()
+	route := service.PlatformRelayRouteDeclaration{
+		RouteID: "route-a", ProviderName: "provider-a", AccountID: "account-a",
+		ChannelID: 42, NativeChannelType: constant.ChannelTypeKling, KeyIndex: 0,
+		KeyFingerprint: strings.Repeat("a", 64), ChannelClass: service.PlatformChannelClassOfficial,
+		UpstreamModel: "provider-video-v1", RPMLimit: 10, ActiveTaskLimit: 2,
+		Capabilities: dto.PlatformGenerationCapabilities{
+			SchemaVersion: 1,
+			Modes: map[string]dto.PlatformModeCapability{
+				"text_to_video": {
+					InputMediaTypes: []string{}, RequiredResourceKeys: []string{},
+					Limits: dto.PlatformCapabilityLimits{
+						MaxPromptLength: 1000, DurationSeconds: []int{5}, AspectRatios: []string{"16:9"},
+						Resolutions: []string{"720p"}, OutputCounts: []int{1},
+					},
+				},
+			},
+		},
+	}
+	routesJSON, err := json.Marshal(map[string][]service.PlatformRelayRouteDeclaration{"video-model": {route}})
+	require.NoError(t, err)
+	routesPath := filepath.Join(directory, "reviewed-routes.json")
+	require.NoError(t, os.WriteFile(routesPath, routesJSON, 0o600))
+
+	first, err := normalizeReviewedRoutes(routesPath)
+	require.NoError(t, err)
+	second, err := normalizeReviewedRoutes(routesPath)
+	require.NoError(t, err)
+	require.Equal(t, first, second)
+	require.NotContains(t, string(first), `"acceptance"`)
+}
+
+func TestReviewedRouteValidationRejectsPostOpenFileReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("atomic replacement of an open file is not portable on Windows")
+	}
+	directory := t.TempDir()
+	original := filepath.Join(directory, "reviewed-routes.json")
+	replacement := filepath.Join(directory, "replacement-routes.json")
+	require.NoError(t, os.WriteFile(original, []byte(`{"video-model":[]}`), 0o600))
+	require.NoError(t, os.WriteFile(replacement, []byte(`{"other-model":[]}`), 0o600))
+	previousHook := afterRouteAcceptanceSignerFileRead
+	afterRouteAcceptanceSignerFileRead = func(path string) {
+		require.NoError(t, os.Rename(replacement, path))
+	}
+	t.Cleanup(func() { afterRouteAcceptanceSignerFileRead = previousHook })
+
+	_, err := normalizeReviewedRoutes(original)
+	require.ErrorContains(t, err, "changed while reading")
+}
+
+func TestOfflineSignerRejectsPrivateKeyPermissionDriftAfterRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not authoritative on Windows")
+	}
+	directory := t.TempDir()
+	privatePath := filepath.Join(directory, "permission-drift.key")
+	require.NoError(t, os.WriteFile(
+		privatePath,
+		[]byte(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, ed25519.SeedSize))),
+		0o600,
+	))
+	previousHook := afterRouteAcceptanceSignerFileRead
+	afterRouteAcceptanceSignerFileRead = func(path string) {
+		require.NoError(t, os.Chmod(path, 0o644))
+	}
+	t.Cleanup(func() { afterRouteAcceptanceSignerFileRead = previousHook })
+
+	_, err := loadEd25519PrivateKey(privatePath)
+	require.ErrorContains(t, err, "group- or world-readable")
+}

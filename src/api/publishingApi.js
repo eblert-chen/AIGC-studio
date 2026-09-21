@@ -2,6 +2,8 @@ export function createPublishingApi(core) {
   const { request, companyPath, makeRequestId, withQuery, PlatformApiError } = core;
 
   return {
+    getPublishingReadiness: ({ signal } = {}) =>
+      request(companyPath("/publishing/readiness"), { signal }),
     listPublisherConnections: (filters = {}, { signal } = {}) =>
       request(
         withQuery(companyPath("/publishing/connections"), filters),
@@ -115,12 +117,12 @@ export function createPublishingApi(core) {
       { signal } = {},
     ) => {
       if (!["published", "failed"].includes(outcome)) {
-        throw new PlatformApiError("人工核销结果必须是已发布或失败", {
+        throw new PlatformApiError("渠道核对结果必须是已发布或确认未发布", {
           code: "INVALID_RECONCILIATION_OUTCOME",
         });
       }
       if (outcome === "published" && !String(externalPostId || "").trim()) {
-        throw new PlatformApiError("核销为已发布时必须填写渠道作品号", {
+        throw new PlatformApiError("确认为已发布时必须填写渠道作品号", {
           code: "EXTERNAL_POST_ID_REQUIRED",
         });
       }

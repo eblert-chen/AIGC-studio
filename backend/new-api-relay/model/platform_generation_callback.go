@@ -72,14 +72,21 @@ type PlatformGenerationCallbackCounts struct {
 }
 
 func GetPlatformGenerationCallbackCounts() (PlatformGenerationCallbackCounts, error) {
+	return GetPlatformGenerationCallbackCountsWithDB(DB)
+}
+
+func GetPlatformGenerationCallbackCountsWithDB(db *gorm.DB) (PlatformGenerationCallbackCounts, error) {
 	var counts PlatformGenerationCallbackCounts
+	if db == nil {
+		return counts, fmt.Errorf("generation callback database is unavailable")
+	}
 	for state, target := range map[string]*int64{
 		PlatformGenerationCallbackPending:    &counts.Pending,
 		PlatformGenerationCallbackClaimed:    &counts.Claimed,
 		PlatformGenerationCallbackDelivered:  &counts.Delivered,
 		PlatformGenerationCallbackDeadLetter: &counts.DeadLetter,
 	} {
-		if err := DB.Model(&PlatformGenerationCallbackDelivery{}).Where("state = ?", state).Count(target).Error; err != nil {
+		if err := db.Model(&PlatformGenerationCallbackDelivery{}).Where("state = ?", state).Count(target).Error; err != nil {
 			return counts, err
 		}
 	}

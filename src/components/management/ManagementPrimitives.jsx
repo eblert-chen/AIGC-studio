@@ -23,7 +23,9 @@ export const STATUS_LABELS = {
   queued: "排队中",
   failed: "失败",
   cancelled: "已取消",
-  recharge: "充值",
+  timed_out: "已超时",
+  reconciliation_required: "待人工确认",
+  recharge: "人工入账",
   reserve: "预留",
   settle: "结算",
   release: "释放",
@@ -66,9 +68,9 @@ export function ModelCapabilitySummary({ model, compact = false }) {
 
 export function StatusPill({ value, label }) {
   return (
-    <span className={`control-status is-${value || "unknown"}`}>
-      <span aria-hidden="true" />
-      {label || STATUS_LABELS[value] || value || "未知"}
+    <span className={`control-status is-${value || "unknown"}`} data-status={value || "unknown"}>
+      <span className="control-status-mark" aria-hidden="true" />
+      <span className="control-status-label">{label || STATUS_LABELS[value] || value || "未知"}</span>
     </span>
   );
 }
@@ -76,10 +78,10 @@ export function StatusPill({ value, label }) {
 export function PageHeader({ eyebrow, title, detail, children }) {
   return (
     <header className="control-page-header">
-      <div>
-        <span>{eyebrow}</span>
+      <div className="control-page-copy">
         <h1>{title}</h1>
         <p>{detail}</p>
+        <span className="control-page-context"><span aria-hidden="true" />{eyebrow}</span>
       </div>
       {children && <div className="control-page-actions">{children}</div>}
     </header>
@@ -118,7 +120,7 @@ export function EmptyRows({ colSpan, message = "暂无数据" }) {
 export function CollectionState({ state = "empty", title, detail, onRetry }) {
   const isLoading = state === "loading";
   return (
-    <div className={`control-collection-state is-${state}`} role={state === "error" ? "alert" : "status"} aria-live="polite">
+    <div className={`control-collection-state is-${state}`} data-state={state} role={state === "error" ? "alert" : "status"} aria-live="polite">
       {isLoading ? <SpinnerGap size={18} className="spin" aria-hidden="true" /> : <WarningCircle size={18} aria-hidden="true" />}
       <div>
         <strong>{title}</strong>
@@ -174,7 +176,7 @@ export function AuditChangeSummary({ before, after }) {
 
 export function PrimaryButton({ children, ...props }) {
   return (
-    <button className="control-button is-primary" type="button" {...props}>
+    <button className="control-button is-primary" data-variant="submit" type="button" {...props}>
       {children}
     </button>
   );
@@ -182,7 +184,7 @@ export function PrimaryButton({ children, ...props }) {
 
 export function QuietButton({ children, ...props }) {
   return (
-    <button className="control-button" type="button" {...props}>
+    <button className="control-button" data-variant="quiet" type="button" {...props}>
       {children}
     </button>
   );
@@ -190,9 +192,9 @@ export function QuietButton({ children, ...props }) {
 
 export function SummaryStrip({ items }) {
   return (
-    <dl className="control-summary-strip">
-      {items.map((item) => (
-        <div key={item.label}>
+    <dl className="control-summary-strip" aria-label="当前模块关键数据">
+      {items.map((item, index) => (
+        <div key={item.label} data-ledger-position={`${index + 1}/${items.length}`}>
           <dt>{item.label}</dt>
           <dd>{item.value}</dd>
           {item.note && <small>{item.note}</small>}

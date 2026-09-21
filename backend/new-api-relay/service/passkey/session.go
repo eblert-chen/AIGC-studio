@@ -1,6 +1,7 @@
 package passkey
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -17,13 +18,26 @@ const passkeyFlowTTL = 5 * time.Minute
 type flowPayload struct {
 	SessionData webauthn.SessionData `json:"session_data"`
 	Scope       string               `json:"scope,omitempty"`
+	Binding     json.RawMessage      `json:"binding,omitempty"`
 }
 
 func CreateSessionDataFlow(purpose string, userID int, sessionID, scope string, data *webauthn.SessionData) (string, int64, error) {
+	return CreateSessionDataFlowWithBinding(purpose, userID, sessionID, scope, nil, data)
+}
+
+func CreateSessionDataFlowWithBinding(purpose string, userID int, sessionID, scope string, binding any, data *webauthn.SessionData) (string, int64, error) {
 	if data == nil {
 		return "", 0, errors.New("Passkey 会话数据不能为空")
 	}
-	payload, err := common.Marshal(flowPayload{SessionData: *data, Scope: scope})
+	var bindingJSON json.RawMessage
+	if binding != nil {
+		encoded, err := common.Marshal(binding)
+		if err != nil {
+			return "", 0, err
+		}
+		bindingJSON = encoded
+	}
+	payload, err := common.Marshal(flowPayload{SessionData: *data, Scope: scope, Binding: bindingJSON})
 	if err != nil {
 		return "", 0, err
 	}
@@ -42,6 +56,11 @@ func CreateSessionDataFlow(purpose string, userID int, sessionID, scope string, 
 }
 
 func PopSessionDataFlow(token, purpose string, userID int, sessionID string) (*webauthn.SessionData, string, error) {
+	sessionData, scope, _, err := PopSessionDataFlowWithBinding(token, purpose, userID, sessionID)
+	return sessionData, scope, err
+}
+
+func PopSessionDataFlowWithBinding(token, purpose string, userID int, sessionID string) (*webauthn.SessionData, string, json.RawMessage, error) {
 	flow, err := model.ConsumeAuthFlow(token, model.AuthFlowMatch{
 		Purpose:   purpose,
 		UserId:    userID,
@@ -49,13 +68,13 @@ func PopSessionDataFlow(token, purpose string, userID int, sessionID string) (*w
 	})
 	if err != nil {
 		if errors.Is(err, model.ErrAuthFlowInvalid) || errors.Is(err, model.ErrAuthFlowExpired) || errors.Is(err, model.ErrAuthFlowConsumed) {
-			return nil, "", errSessionNotFound
+			return nil, "", nil, errSessionNotFound
 		}
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	var payload flowPayload
 	if err := common.UnmarshalJsonStr(flow.Payload, &payload); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	return &payload.SessionData, payload.Scope, nil
+	return &payload.SessionData, payload.Scope, append(json.RawMessage(nil), payload.Binding...), nil
 }

@@ -10,11 +10,14 @@ from ..dependencies import PlatformAdminContext, get_db, require_platform_admin
 from ..services.audit import AuditService
 
 router = APIRouter(
-    prefix="/api/v1/platform-admin/relay/native-console",
+    prefix="/api/v1/platform-admin/relay",
     tags=["platform-admin-relay-native-console"],
 )
 
-_CONSOLE_PATH = "/channels"
+_CONSOLE_DESTINATIONS = {
+    "native_break_glass": ("/channels", "relay.native_console.launch_authorized", "relay_native_console", "RELAY_NATIVE_CONSOLE"),
+    "provider_onboarding": ("/provider-onboarding", "relay.provider_onboarding.launch_authorized", "relay_provider_onboarding", "RELAY_PROVIDER_ONBOARDING"),
+}
 _RESPONSE_HEADERS = {
     "Cache-Control": "private, no-store",
     "Pragma": "no-cache",
@@ -35,32 +38,44 @@ class RelayNativeConsoleLaunch(BaseModel):
     mode: Literal["native_break_glass"]
 
 
+class RelayProviderOnboardingLaunch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    mode: Literal["provider_onboarding"]
+
+
 def _protect_response(response: Response) -> None:
     for name, value in _RESPONSE_HEADERS.items():
         response.headers[name] = value
 
 
-@router.post("/open", response_model=RelayNativeConsoleLaunch)
-def open_relay_native_console(
-    _body: OpenRelayNativeConsoleRequest,
+def _authorize_console_launch(
+    *,
+    mode: Literal["native_break_glass", "provider_onboarding"],
     request: Request,
     response: Response,
-    admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
-    session: Annotated[Session, Depends(get_db, scope="function")],
-) -> RelayNativeConsoleLaunch:
+    admin: PlatformAdminContext,
+    session: Session,
+) -> dict[str, str]:
     _protect_response(response)
     settings = request.app.state.settings
+    # Only these two server-selected destinations exist. Neither endpoint
+    # accepts a path, origin, redirect URL, credential or impersonation token.
+    destination_path, audit_action, target_type, error_prefix = _CONSOLE_DESTINATIONS[mode]
+    console_name = "Relay provider onboarding" if mode == "provider_onboarding" else "Relay native console"
 
-    # This console can expose provider credentials and arbitrary native channel
-    # mutation. Delegated administrators remain fail-closed in every
-    # environment even when they have Relay health-management permission.
+    # Both destinations reach privileged Relay management. Returning a URL
+    # does not establish a Relay session or grant any provider/model authority.
+    # Delegated administrators remain fail-closed in every environment even
+    # when they have Relay health-management permission.
     if not admin.is_platform_owner:
         raise HTTPException(
             status_code=403,
             detail={
-                "code": "RELAY_NATIVE_CONSOLE_OWNER_REQUIRED",
+                "code": f"{error_prefix}_OWNER_REQUIRED",
                 "message": (
-                    "Relay native console access is restricted to the platform owner"
+                    f"{console_name} access is restricted to the platform owner"
                 ),
             },
             headers=_RESPONSE_HEADERS,
@@ -71,8 +86,12 @@ def open_relay_native_console(
         raise HTTPException(
             status_code=503,
             detail={
-                "code": "RELAY_NATIVE_CONSOLE_NOT_CONFIGURED",
-                "message": "Relay native administrator console is not configured",
+                "code": f"{error_prefix}_NOT_CONFIGURED",
+                "message": (
+                    "Relay provider onboarding console is not configured"
+                    if mode == "provider_onboarding"
+                    else "Relay native administrator console is not configured"
+                ),
             },
             headers=_RESPONSE_HEADERS,
         )
@@ -80,14 +99,14 @@ def open_relay_native_console(
     AuditService.append(
         session,
         actor_user_id=admin.user_id,
-        action="relay.native_console.launch_authorized",
-        target_type="relay_native_console",
+        action=audit_action,
+        target_type=target_type,
         target_id="new-api",
         before_summary={},
         after_summary={
-            "mode": "native_break_glass",
+            "mode": mode,
             "destination_origin": origin,
-            "destination_path": _CONSOLE_PATH,
+            "destination_path": destination_path,
         },
         request_id=str(request.state.request_id),
     )
@@ -95,7 +114,32 @@ def open_relay_native_console(
     # native destination.  The surrounding dependency's second commit is safe.
     session.commit()
 
-    return RelayNativeConsoleLaunch(
-        url=f"{origin}{_CONSOLE_PATH}",
-        mode="native_break_glass",
-    )
+    return {"url": f"{origin}{destination_path}", "mode": mode}
+
+
+@router.post("/native-console/open", response_model=RelayNativeConsoleLaunch)
+def open_relay_native_console(
+    _body: OpenRelayNativeConsoleRequest,
+    request: Request,
+    response: Response,
+    admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
+) -> RelayNativeConsoleLaunch:
+    return RelayNativeConsoleLaunch(**_authorize_console_launch(
+        mode="native_break_glass", request=request, response=response,
+        admin=admin, session=session,
+    ))
+
+
+@router.post("/provider-onboarding/open", response_model=RelayProviderOnboardingLaunch)
+def open_relay_provider_onboarding(
+    _body: OpenRelayNativeConsoleRequest,
+    request: Request,
+    response: Response,
+    admin: Annotated[PlatformAdminContext, Depends(require_platform_admin)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
+) -> RelayProviderOnboardingLaunch:
+    return RelayProviderOnboardingLaunch(**_authorize_console_launch(
+        mode="provider_onboarding", request=request, response=response,
+        admin=admin, session=session,
+    ))

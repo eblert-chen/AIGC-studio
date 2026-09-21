@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "kind": "provider_model_onboarding_intent",
+  "environment": "development",
+  "providers": {
+    "google": {
+      "enabled": true,
+      "channel_id": 990001,
+      "base_url": "https://generativelanguage.googleapis.com"
+    },
+    "minimax": {
+      "enabled": true,
+      "channel_id": 990002,
+      "region": "cn",
+      "base_url": "https://api.minimax.cn"
+    },
+    "volcengine": {
+      "enabled": true,
+      "channel_id": 990003,
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3"
+    }
+  },
+  "models": [
+    { "public_model_id": "gemini-omni-1.1-flash", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "veo-3.1", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "veo-3.1-fast", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "minimax-h3", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "minimax-h3-max", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "seedance-2.5", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "seedance-2.0", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "seedance-2.0-fast", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "seedance-2.0-mini", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "seedance-1.0-pro", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "seedance-1.0-pro-fast", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" },
+    { "public_model_id": "seedream-5", "route_enabled": true, "commercial_policy": "automatic_when_cost_ceiling_is_qualified" }
+  ],
+  "commercial_release": {
+    "pricing_policy": "provider_cost_plus_30_percent_margin_ceil_to_point",
+    "points_per_cny": 10,
+    "approval_reason": "平台所有者批准：官方价目、不可变汇率、Relay 实际成本和服务端能力上限一致后，按 30% 目标毛利自动向上取整为积分价格",
+    "idempotency_prefix": "provider-onboarding-20260902-"
+  },
+  "paid_acceptance": {
+    "enabled": true,
+    "scope": "commercially_qualified_only",
+    "acknowledgement": "I_ACKNOWLEDGE_PROVIDER_CHARGES_AND_CUSTOMER_DISTRIBUTION",
+    "max_total_provider_cost_cny": "100.00"
+  },
+  "customer_smoke": {
+    "enabled": true,
+    "model_id": "seedream-5",
+    "seed_balance_cents": 10000,
+    "prompt": "一张白色背景上的青绿色玻璃风铃，柔和产品摄影，验证供应商路由、积分预占、任务结算与成本回传"
+  }
+}

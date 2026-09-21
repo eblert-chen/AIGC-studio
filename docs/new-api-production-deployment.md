@@ -6,53 +6,126 @@ has passed. The committed environment examples are deliberately non-runnable:
 their zero provenance, empty routes/rates, `.invalid` URLs, and
 `replace-with-*` secrets must be replaced from an approved secret manager.
 
+## Current v8 source contract and blocked qualification
+
+The current source contract is `target=8,min=1,max=8`. A fresh-v8 database is
+expected to contain the single ledger row `[8]`; an exact historical chain ends
+at `[1,2,3,4,5,6,7,8]`, with v8 accepting only the exact v7 state and adding
+immutable, receipt-bound provider-cost allocation evidence. Current-v8
+protected consumers require exact v8; after a successful v8 migration a max-v7
+image must classify the database as `ahead` and fail closed.
+
+The frozen v8 source/model/checksum/catalog values are respectively
+`sha256:4d1422f6f691d1440600536f9b89c3e1fb9af9e69f880437b95d437b101f71dd`,
+`sha256:24f03d665ed5df5958cbf82075bfd28fb8aeb97fee277164e443a0218132776d`,
+`sha256:1def22667e226cf8dfbd467e18445874dcce6959a8b9e74b43623e14bbc31de7`, and
+`sha256:6374866475d3b9c404592c39ef5ad8be1b63066308b502e5362dbc47e469823c`.
+Those frozen code identities are not production qualification. The dedicated
+PostgreSQL test `TestRelaySchemaPostgresConstructedV7ToV8ProviderCostEvidence`
+was run against a one-shot `postgres:16-alpine` database through
+`TEST_RELAY_SCHEMA_V7_TO_V8_DSN`: `PG16-constructed-v7→v8-gate=PASS (9.021s)`
+proved the constructed v7-to-v8 transition, preservation of the v7 ledger, the
+v8 provider-cost table, and immutable UPDATE/DELETE guards. That focused run did
+not use TLS or pgAudit and is not a production qualification run;
+`PG16+TLS+pgAudit-full-qualification-gate=NOT_RUN`. The legacy gate documented
+below still terminates at v7, so it is only prerequisite/history for v8 and
+cannot authorize it. Protected promotion remains `BLOCKED / NO-GO`.
+All v7 gate names retained below describe that historical pre-v8 boundary.
+
 ## Mandatory previous-candidate schema gate
 
 Every release that can migrate an existing new-api database must pass the
 named `make test-relay-schema-legacy-pg16` gate before an image is promoted or
 any deployment Compose file is applied. This is not an optional developer
-smoke test. It boots two isolated PostgreSQL 16.14/pgaudit 16.1 TLS clusters
-from the same pinned image, creates the exact raw legacy schema with the
-immutable previous-candidate image, and inserts only synthetic secret-free
-fixtures. Raw/unversioned state is first converted by the immutable schema-v1
+ smoke test. It boots three isolated PostgreSQL 16.14/pgaudit 16.1 TLS clusters
+ from the same pinned image: the raw legacy upgrade database, an independent
+ fresh-v7 database, and an independent pinned-v1 application-catalog reference.
+ It creates the exact raw legacy schema with the immutable previous-candidate
+ image and inserts only synthetic secret-free fixtures. Raw/unversioned state
+ is first converted by the immutable schema-v1
 source revision `709e9b45b25a6baa415ab985078bd7764a35eaf9`; only after that test
 records an explicit, non-skipped PASS may the frozen historical v2 contract
-execute its v1-to-v2 no-catalog-delta bridge. The current v3 image then executes
-only the versioned v2-to-v3 credential-order correction. The current image must
+ execute its v1-to-v2 no-catalog-delta bridge. The pinned v3 binary then
+ executes only the versioned v2-to-v3 credential-order correction. On the
+ gate-owned exact-v3 synthetic database, the immutable pinned-v4 digest
+ `ai-video/new-api-relay@sha256:53a5d65cefbc4400e9e572665b227cf4a9628774aa77c814be4082f1abd7f84f`
+ executes only the v3-to-v4 route-release binding migration. The immutable
+ pinned-v5 digest
+ `ai-video/new-api-relay@sha256:d5998561f1142e5189ca15f6086b42da31127ecb5d58269ac492dc4aa3f61b9a`
+ then owns v4-to-v5 diagnostic taxonomy. The pinned-v6 release
+ `ai-video/new-api-relay:v6-canary-0b0b8bf5` / image and RepoDigest
+ `sha256:576b836d26f19825532feaca1f9f7950f28affc78477d61d7b29dca474b8817f`
+ owns only v5-to-v6 durable route-test lifecycle; the historical v7 release owns only the
+ v6-to-v7 artifact content-type release. The v7 release must never execute 5-to-7.
+ The current image must
 never replay its live v1 or frozen v2 bootstrap against raw legacy state. The
 immutable-v1 stage creates only the
 exact schema, ledger, catalog, and protected roles. The synthetic legacy
 candidate already contains one exact production-shaped root and its setup
 marker; immutable v1 must preserve both byte-for-byte while also preserving
 the ordinary user and credential fixtures. It must create no service-principal
-rows, and no protected API or edge runtime may start at v1.
-The gate compares the catalog with an independently bootstrapped fresh-v3
-database, verifies the complete business-row evidence and intended v1 data
+ rows, and no protected API or edge runtime may start at v1. The exact legacy
+ v1 catalog and one-row ledger are compared with the independently bootstrapped
+ pinned-v1 application reference. That reference proves only the frozen v1
+ application catalog; it does not claim old-v1 binary runtime or system
+ attestation and cannot substitute for historical-v7 runtime acceptance. The
+ independent fresh-v7 database proves the clean-install v7 contract. The gate
+ verifies the complete business-row evidence and intended v1 data
 transforms, and decrypts the migrated synthetic credentials through the
-production vault boundary. After the historical v2 bridge and current v3
-correction it compares every legacy fixture and encrypted credential row with
+ production vault boundary. After the historical v2 bridge, pinned v3
+ correction, immutable pinned-v4/pinned-v5 behavior fixtures, pinned-v6 release,
+ and the historical v7 migration it compares every legacy fixture and encrypted credential row with
 its pre-bridge digest, then runs the complete
-proof -> exact-root replay (`unchanged`) -> principal creation -> API lifecycle
-on that same legacy database. The
-fresh reference database cannot substitute for this same-database terminal
-proof.
+ proof -> exact-root replay (`unchanged`) -> principal creation -> real API
+ lifecycle -> restricted-role `relay-download-edge` historical-v7 attestation and
+ real `/health/ready` process acceptance on that same legacy database. Neither
+ independent reference database can substitute for this same-database terminal
+ runtime proof.
+
+Every cross-version schema boundary starts from a zero-ACL role stub. The
+mandatory twelve-stage order is `pinned-v3 migration -> pre-v4 zero-ACL role-pre
+-> pinned-v4 migration -> pinned-v4 full verifier -> pre-v5 zero-ACL role-pre
+-> pinned-v5 migration -> pinned-v5 rollback verifier -> pre-v6 zero-ACL role-pre
+-> pinned-v6 migration -> pinned-v6 rollback verifier -> pre-v7 zero-ACL role-pre
+-> historical-v7 migration`. The role provisioner only removes the ACLs
+committed by the preceding release and recreates the protected zero-ACL stub;
+role-pre does not perform schema migration. This lets the immutable v4 binary
+own 3->4, immutable v5 own 4->5, pinned v6 own 5->6, and the v7 release own 6->7 without inheriting
+grants that the next release has not yet proved.
 
 The currently frozen input is
 `ai-video/new-api-relay@sha256:142185d134d0427cc073e7235a5bb10c248d5eabad1c1e737abdf83e56c611e6`.
 The script also pins and prints its OCI/source evidence: candidate ID,
 RepoDigest, source revision, upstream revision, source-snapshot SHA-256, and
-source file count. The script also pins the qualified PostgreSQL image, the v1
-and max-v2 source revisions, and the digest of a test-only TLS/side-effect assertion patch; that
+ source file count. The script also pins the qualified PostgreSQL image, the v1,
+ v2 and pinned-v3 source revisions, pinned-v4/pinned-v5 image provenance,
+ pinned-v6 tag, ID, RepoDigest, source/upstream revisions, source snapshot and
+ file count, and the historical-v7 source revision,
+ and the digest of a test-only TLS/side-effect assertion patch; that
 patch changes no v1 production declaration or behavior. Archive those lines
 together with explicit test PASS events and
-`fresh-v3-row3-only-gate=PASS`, `legacy-to-v1-gate=PASS`,
+ `fresh-v7-row7-only-gate=PASS`,
+ `fresh-v1-row1-only-reference-gate=PASS`, `legacy-to-v1-gate=PASS`,
 `v1-compatible-no-runtime-side-effects=PASS`,
-`historical-frozen-v1-to-v2-no-catalog-delta-gate=PASS`,
-`v2-to-v3-one-shot-gate=PASS`, `exact-v1-to-v3-ledger-gate=PASS`,
-`post-v3-proof-root-principal-api-current-gate=PASS`,
-`max-v2-ahead-no-direct-rollback-gate=PASS`, and
+ `historical-frozen-v1-to-v2-no-catalog-delta-gate=PASS`,
+ `v2-to-v3-frozen-one-shot-gate=PASS`, `exact-v1-to-v3-ledger-gate=PASS`,
+ `pre-v4-zero-acl-role-stub-gate=PASS`,
+ `v3-to-pinned-v4-one-shot-gate=PASS`, `exact-v1-to-v4-ledger-gate=PASS`,
+ `pinned-v4-state-ledger-catalog-acl-guards-gate=PASS`,
+ `v4-to-v5-diagnostic-taxonomy-rollback-gate=PASS`,
+ `pre-v5-zero-acl-role-stub-gate=PASS`,
+ `v4-to-pinned-v5-one-shot-gate=PASS`, `exact-v1-to-v5-ledger-gate=PASS`,
+ `pinned-v5-to-v6-lifecycle-rollback-gate=PASS`,
+ `pre-v6-zero-acl-role-stub-gate=PASS`, `v5-to-pinned-v6-one-shot-gate=PASS`,
+ `exact-v1-to-v6-ledger-gate=PASS`,
+ `pinned-v6-to-v7-artifact-content-rollback-gate=PASS`,
+ `pre-v7-zero-acl-role-stub-gate=PASS`, `v6-to-v7-one-shot-gate=PASS`,
+ `exact-v1-to-v7-ledger-gate=PASS`,
+ `post-v7-proof-root-principal-api-edge-current-gate=PASS`,
+ `post-v7-route-binding-mutation-fencing-gate=PASS`,
+ `max-v6-ahead-no-direct-rollback-gate=PASS`, and
 `legacy-schema-upgrade-gate=PASS`. The runner parses `go test -json` and treats
-an absent test event or `skip` as failure for the schema, post-v3 lifecycle,
+ an absent test event or `skip` as failure for the schema, post-v7 lifecycle,
 and both rotation tests; process exit zero alone is not PASS.
 A missing image, missing or changed label/revision/fixture digest, wrong
 PostgreSQL/pgaudit/TLS identity, partial old-image startup, catalog drift,
@@ -241,8 +314,8 @@ or print the document to diagnose it.
 The networkless same-image `relay-new-api-secret-isolation` one-shot is the
 cross-process boundary for that release. It receives A, B, C, the Provider KEK,
 the dedicated Redis CA, both pinned database CA files, all four Relay PostgreSQL DSN files, the three
-Relay role-password files, all seven typed Platform process bundles, the
-Platform role-admin DSN, and all seven Platform role-password files, but no
+Relay role-password files, all eight typed Platform process bundles, the
+Platform role-admin DSN, and all eight Platform role-password files, but no
 network.
 It compares canonical and bare service-token forms, raw and decoded Redis
 passwords, every API text secret, operations-token SHA-256 values, edge text
@@ -255,7 +328,7 @@ credential pair. Platform API and dispatcher OBS credentials are deliberately
 separate IAM identities and equality is rejected. Every unlisted
 representation must be globally distinct. The only database-password
 equalities are each Relay migration/runtime/edge password file and each of the
-seven Platform role-password files with the password decoded from its matching
+eight Platform role-password files with the password decoded from its matching
 DSN; both role-admin passwords are independent. The validator also binds each
 domain's normalized database endpoint and committed CA bytes, keeps the Relay
 and Platform database anchors distinct, and binds every credential-bearing
@@ -264,11 +337,11 @@ fixed path.
 
 Before checking the current files, the validator durably removes all old
 receipts and the shared commit marker. It commits one `0400` receipt into each
-of fourteen separate named volumes: Relay `pre`, `migrate`, `post`,
+of fifteen separate named volumes: Relay `pre`, `migrate`, `post`,
 `principal`, `api`, and `edge`, plus Platform `db-role-pre`, `migration`,
-`platform-api`, `dispatcher`, `relay-sync`, `timeout-worker`,
+`platform-api`, `dispatcher`, `relay-sync`, `relay-catalog-sync`, `timeout-worker`,
 `publishing-worker`, and `download-gateway-registration-worker`. Only after all
-fourteen receipt renames and directory syncs succeed does it atomically publish
+fifteen receipt renames and directory syncs succeed does it atomically publish
 the value-free schema-v2 commit marker that binds their hashes, one random run
 id, the exact release, and the root-proof generation. A kill after any strict
 source read or receipt write leaves no reusable marker. A receipt contains the
@@ -293,8 +366,8 @@ The customer Platform has a separate closed Draft 2020-12 contract:
 It is a role-discriminated document with
 `kind=platform_process_runtime_secrets`, `schema_version=1`, one exact
 `process_role`, and that role's exact `secrets` object. Secret Manager renders
-seven independent files: DB-only `migration`, plus `platform-api`,
-`dispatcher`, `relay-sync`, `timeout-worker`, `publishing-worker`, and
+eight independent files: DB-only `migration`, plus `platform-api`,
+`dispatcher`, `relay-sync`, `relay-catalog-sync`, `timeout-worker`, `publishing-worker`, and
 `download-gateway-registration-worker`. A file for one role cannot start any
 other role.
 
@@ -318,9 +391,9 @@ secret file, Settings, logging, or database initialization.
 Every Platform process receives only its own read-only isolation receipt and
 verifies the same closed nine-field Relay/Platform release identity before it
 parses the exact already-read source bytes. The role-pre one-shot receives only
-the role-admin DSN, seven role-password files, and Platform CA; migration and
-the six long-lived processes each receive one typed bundle and the CA. All
-eight consumers use the same `PLATFORM_IMAGE` value, which must be a complete
+the role-admin DSN, eight role-password files, and Platform CA; migration and
+the seven long-lived processes each receive one typed bundle and the CA. All
+nine consumers use the same `PLATFORM_IMAGE` value, which must be a complete
 digest-pinned image reference;
 the image also embeds the exact Platform source revision and source-snapshot
 digest. A receipt/file/release mismatch fails before database, logging, Redis,
@@ -336,6 +409,10 @@ The process boundaries are deliberate:
   signer in protected deployments; the raw signer environment name remains
   rejected to prevent a latent over-grant;
 - relay-sync and timeout-worker receive only DB and Relay caller credentials;
+- relay-catalog-sync receives DB plus Relay model-catalog read credentials. Its
+  database principal can only materialize model drafts/capability candidates
+  and append system audit evidence; it cannot read users or approve, publish,
+  price, or distribute a model;
 - the Download Gateway registration worker receives DB, its scoped bearer,
   registration HMAC, and attempt AES key;
 - publishing-worker receives DB and an exact adapter/media-resolver credential
@@ -397,7 +474,7 @@ connection strings or role passwords.
 
 Run every one-shot with `--force-recreate`; Compose may otherwise reuse a
 previously completed container and stale receipt. The initializer assigns the
-fourteen ordinary consumer receipt volumes, the install-only root-bootstrap
+fifteen ordinary consumer receipt volumes, the install-only root-bootstrap
 receipt volume, the shared commit-marker volume, and the permanent root-proof
 volume. It also prepares two non-secret database-release-proof volumes: only
 the corresponding Relay or Platform role predecessor writes its attestation;
@@ -424,7 +501,7 @@ docker compose @relayCompose up --force-recreate --no-deps --abort-on-container-
 docker compose @relayCompose up --force-recreate --no-deps --abort-on-container-exit --exit-code-from platform-db-role-pre platform-db-role-pre
 docker compose @relayCompose up --force-recreate --no-deps --abort-on-container-exit --exit-code-from platform-migrate platform-migrate
 docker compose @relayCompose up --force-recreate --no-deps --abort-on-container-exit --exit-code-from relay-new-api-service-principal-provision relay-new-api-service-principal-provision
-docker compose @relayCompose up -d relay-new-api relay-download-edge platform-api platform-dispatcher platform-relay-sync platform-timeout-worker platform-download-gateway-registration-worker
+docker compose @relayCompose up -d relay-new-api relay-download-edge platform-api platform-dispatcher platform-relay-catalog-sync platform-relay-sync platform-timeout-worker platform-download-gateway-registration-worker
 ```
 
 The root validator revokes every pre-root receipt and its shared marker before
@@ -451,7 +528,7 @@ docker compose @relayCompose up --force-recreate --no-deps --abort-on-container-
 docker compose @relayCompose up --force-recreate --no-deps --abort-on-container-exit --exit-code-from platform-db-role-pre platform-db-role-pre
 docker compose @relayCompose up --force-recreate --no-deps --abort-on-container-exit --exit-code-from platform-migrate platform-migrate
 docker compose @relayCompose up --force-recreate --no-deps --abort-on-container-exit --exit-code-from relay-new-api-service-principal-provision relay-new-api-service-principal-provision
-docker compose @relayCompose up -d relay-new-api relay-download-edge platform-api platform-dispatcher platform-relay-sync platform-timeout-worker platform-download-gateway-registration-worker
+docker compose @relayCompose up -d relay-new-api relay-download-edge platform-api platform-dispatcher platform-relay-catalog-sync platform-relay-sync platform-timeout-worker platform-download-gateway-registration-worker
 ```
 
 Here `@relayCompose` represents the two rendered env files and the base,
@@ -463,8 +540,8 @@ detached start intentionally reuses the successful predecessor containers so
 the normal Compose dependency conditions remain enforceable.
 The isolation validator stdout is exactly one secret-free JSON object with
 `kind=relay_secret_isolation`, `schema_version=1`, `state=validated`, and
-`consumers=14`; it deliberately contains no commitment digest, run id, proof id,
-or source path. Archive that receipt and the fourteen consumer
+`consumers=15`; it deliberately contains no commitment digest, run id, proof id,
+or source path. Archive that receipt and the fifteen consumer
 verification/startup results, not the receipt or marker volume contents. Never
 use `docker compose up` alone as proof that a prior completed validator
 corresponds to the current host files.
@@ -499,23 +576,30 @@ migrator: it reconciles clean ledger/catalog state without overwriting it as
 failed, then rerun post. Preserve the failed database and logs for diagnosis;
 do not run another image against a dirty attempt.
 
-The native new-api database contract for this release is
-`target=3,min=1,max=3`. Schema v1 contains the irreversible plaintext-vault
+The native new-api database source contract for this release is
+`target=8,min=1,max=8`. Schema v1 contains the irreversible plaintext-vault
 cleanup and write guards and remains compatible only for migration diagnosis;
 protected post, service-principal provisioning/rotation, root bootstrap, API,
 download edge, database-release proof consumers, and runtime readiness all
-require exact Current v3. Role-pre and the migrator proof path are the only
-release steps allowed to inspect compatible v1/v2 so they can perform the bridges.
+require exact Current v8. Role-pre and the migrator proof path are the only
+release steps allowed to inspect compatible v1/v2/v3/v4/v5/v6/v7 so they can perform the bridges.
 
-A fresh v3 bootstrap executes the independently frozen v3 source/model
-snapshot and records `from=0`, `baseline=current=target=3`, with exactly one
-ledger row `[3]`. It must not fabricate version-1 or version-2 events. An exact
+A fresh v8 bootstrap executes the independently frozen v8 source/model
+snapshot and records `from=0`, `baseline=current=target=8`, with exactly one
+ledger row `[8]`. It must not fabricate version-1 through version-7 events. An exact
 v1 database is accepted only when its state, single v1 ledger row, v1 catalog,
 runtime manifest, role topology, and pre-migration edge surface are exact. The
 frozen historical v1-to-v2 bridge executes no catalog DDL, preserves the v1
 ledger row byte-for-structure, and appends the real v2 event. The current
-v2-to-v3 correction then preserves both historical rows, appends the real v3
-event, and finishes with `baseline=1,current=target=3` and ledger `[1,2,3]`.
+v2-to-v3 correction then preserves both historical rows and appends the real v3
+event. The v3-to-v4 migration adds immutable adapter-profile/model-release route bindings,
+installs database guards, scrubs only strictly bound terminal Platform native-task URLs,
+then v4-to-v5 adds the protected channel-test diagnostic taxonomy. Pinned-v6 owns v5-to-v6 and
+adds the durable route-bound submission, sticky provider-task, secret-free
+artifact evidence, transport binding, and reconciliation guards. Historical v7 owns v6-to-v7 and only
+widens the protected artifact result type to `video/mp4` or `image/png`, finishing with
+an exact v7 state. Current-v8 then owns only exact v7-to-v8 provider-cost allocation evidence,
+finishing with `baseline=1,current=target=8` and ledger `[1,2,3,4,5,6,7,8]`.
 The frozen PostgreSQL catalog digest is deliberately unchanged across v1, v2,
 and v3. The independently frozen v2 source artifact is
 `sha256:03de3ed038c3a9f7b6e160ac720e4350b9d468c09417cdc9e280289ed390fef2`
@@ -525,32 +609,118 @@ the v3 source artifact is
 `sha256:4d784286e5480a10a83f4408b303eec075a347fa405d45650e12c19425e4659d`
 and its migration checksum is
 `sha256:0295d36ca5032088cc2e0b3b7f935aaeb24c3c5847a6b0a92a4dc3099d58e553`.
+The v4 source/model/catalog/checksum artifacts are respectively
+`sha256:6c1ff01ee6567115190f12dcd947a96b01d88bbee5668705d811f51a526e4c34`,
+`sha256:75c900e5d3edb4785f774d44b23e60b7d0fdd23ba541c28ccf6cb0ec727bb01c`,
+`sha256:b8260ee751d0b9bb6dcd0c2d2d4105bef475296f25a4babb13fca3e117888126`, and
+`sha256:4a91686133814c07401a11eea3fe373154219923c4d63666ca99e3049d96079d`.
+The v5 source/model/catalog/checksum artifacts are respectively
+`sha256:1d63451fdcdc0edfd869df3995d4ea14b3d0a3fa0871dadde9a842197b92c9d8`,
+`sha256:75c900e5d3edb4785f774d44b23e60b7d0fdd23ba541c28ccf6cb0ec727bb01c`,
+`sha256:2bc1bf2f68e513d12de36cd4f8c2ca6a569d102b93a6fbaea444facad3189fc1`, and
+`sha256:d8066d7081eb4a73239333bab10b78e825457dcf78bc3d3aaa195c52edc8b7f6`.
+The v6 checksum/catalog are
+`sha256:8cffc546bb13c3f36f734dbb2e45a750da5b3e614de3beda82c6dd87dd84af00` and
+`sha256:180546808883afca58bb9fd246340339d87ac023aff91fe23186d9274dc15135`.
+The v7 checksum/catalog are
+`sha256:da3ddb86260818f894b13fc6b3ad34031b6089dddb83954172984d07e451c4c3` and
+`sha256:af1377416cb2788093391a03491d2bb380fc4b81db5f08d0d628f3f8a2abef01`.
+The v8 checksum/catalog are
+`sha256:1def22667e226cf8dfbd467e18445874dcce6959a8b9e74b43623e14bbc31de7` and
+`sha256:6374866475d3b9c404592c39ef5ad8be1b63066308b502e5362dbc47e469823c`.
 The source closure includes the top-level migration and Current/Compatible
-gates, while sentinel tests prove that fresh v3 and exact-v1-through-v3
-orchestration execute neither the live v1 definition nor the frozen v2
-implementation.
+gates. The historical v5 sentinel pins definitions and checksums 1..5, the v6
+sentinel preserves the independent 5-to-6 boundary, the v7 sentinel preserves
+the 6-to-7 boundary, and the v8 sentinel proves fresh-v8 and exact-v1-through-v8
+orchestration do not reinterpret historical implementations. This is code-freeze
+evidence only. The focused `PG16-constructed-v7→v8-gate=PASS (9.021s)` does not
+replace the `PG16+TLS+pgAudit-full-qualification-gate=NOT_RUN` production gate.
+
+The pinned-v4 digest is only an immutable binary behavior fixture. The release
+gate runs its v3-to-v4 command only against the gate-owned exact-v3 synthetic
+database, then verifies the exact v4 state, ledger, catalog, ACL, and guards
+read-only (with rollback for mutation probes) before pinned v5 proceeds. The
+pinned-v5 digest is likewise an immutable binary behavior fixture used only to
+produce and verify exact v5 on the gate-owned synthetic database. The pinned-v6
+image is the fixed 5-to-6 release owner; it is verified by tag, image ID,
+RepoDigest, source/upstream revisions, source snapshot, and file count before use.
+No pinned image may connect to a business/live database or act as an operational migration source.
+Business upgrades execute only the reviewed
+current-v8 migrator, which carries the frozen version steps.
 Dirty, unversioned, partial, ahead, unknown, catalog-drifted, ACL-drifted, or
 ledger-gap state remains fail-closed.
 
 The safe rollback window for backup restore ends before production traffic and
-before accepting new v3 work. After migration, never boot an older max-v2
-image: it must classify Current v3 as `ahead` and fail closed. A failed feature
-rollout may return only to a v3-compatible image; max=1 and max=2 images are not
+before accepting new v8 work. After migration, never boot an older max-v7
+image: it must classify Current v8 as `ahead` and fail closed. A failed feature
+rollout may return only to a v8-compatible image; max=1 through max=7 images are not
 direct rollback targets. Existing new-api jobs remain on the
 new-api worker/affinity path until drained; historical Python-bound rows must
 have reached a reconciled business terminal state before the one-time cutover
 and cannot be called from protected runtime. The `schema_version=1` fields in generation,
 secret-bundle, receipt, and CLI JSON envelopes are protocol versions and must
-not be changed to 3 merely because the database contract is v3.
+not be changed to 8 merely because the database contract is v8.
 
-Before starting application processes, upgrade the customer Platform database
-to `0040_showcase_management`. Its direct predecessor is
-`0039_new_api_relay_defaults`; the frozen `0038_download_evidence_checks` and
-`0037_production_auth_lifecycle` revisions remain in the migration chain. Revision
-0040 adds the owner-only homepage showcase draft, immutable releases, and unpublish
-journal. Revision 0039 still changes only the server defaults for new task/outbox
-affinity and never rewrites historical rows. The protected v5 catalog fingerprint
-must be `ecd5b3faae20595e66396c59d37327d1e6e5b742c3d70697aaf6f109866591e6`.
+The current Platform source head is `0050_model_commercial_release`.
+Its direct predecessor is `0049_payment_finance_closure`; the current Platform database
+privilege policy is v15 and its catalog is `UNQUALIFIED`. The v12/0047 and
+v13/0048 catalogs are also unqualified, and v14/0049 remains unqualified. Protected release remains `BLOCKED / NO-GO`:
+development PostgreSQL 16 migration/concurrency results do not qualify the current
+catalog, process roles, or signed release proof. Complete that independent qualification
+before the protected role-pre -> migration -> proof sequence and application startup;
+never substitute a zero placeholder or a historical fingerprint to make it pass.
+Revision 0050 adds evidence-bound immutable model-commercial-release plans and
+fail-closed execution state. Revision 0048 implements commercial billing and finance state machines; 0049 hardens
+durable payment delivery, verified webhook replay, original statement bindings,
+dispute-debt attribution, and enterprise dunning. It refuses legacy settlement rows
+without bound originals or automatic orders without a Mandate before DDL. Preserve
+the historical facts and obtain an operator-reviewed migration plan; do not delete
+facts or invent source documents or customer consent.
+
+Historical `0045_system_audit_actor` makes user and system audit identities explicit and mutually exclusive,
+and provisions the dedicated least-privilege `relay-catalog-sync` principal.
+Revision `0044_account_product_partition` persists one mutually exclusive product boundary (`PERSONAL`, `COMPANY`, or
+`PLATFORM_ADMIN`) per user. It preserves historical wallets, ledger entries, tasks,
+artifacts, and membership evidence, disables only entry surfaces inconsistent with
+that boundary, and installs database constraints and triggers against silent
+cross-type association. Revision 0043 is data-only and persists the controlled
+task-content permission domain without changing the 0042 table or ACL projection.
+Revision 0042 atomically binds each global company-entitlement idempotency key to the
+original request intent and commits the claim, grants, audit, and stored result
+together; legacy audit-only keys are frozen against automatic replay. Revision
+`0041_model_capability_releases` separates the Relay capability candidate from the last approved Platform
+ceiling. Revision 0040 adds the owner-only homepage showcase draft, immutable
+releases, and unpublish journal. Revision 0039 still changes only the server
+defaults for new task/outbox affinity and never rewrites historical rows. The frozen
+`0038_download_evidence_checks` and `0037_production_auth_lifecycle` revisions remain
+in the chain. The historical v10 catalog-sync privilege boundary is preserved: the principal
+may SELECT/INSERT/UPDATE `model_definitions`, SELECT/INSERT
+`model_capabilities`, and INSERT `audit_logs`; it cannot read users or perform
+approval, publication, pricing, or distribution. The v10/0045 fingerprint
+`7ce8849ecc4be298fe9889bdeaeb7ea17932a51c9ff9eeb024cc55bbcad44142`
+and the v9/0044 fingerprint
+`64640e8ccf7069fc6ca0773af64def56babfdb80101ea9cd22e6b8e7fc00c167`
+are historical qualification evidence only: neither qualifies the current chain nor
+authorizes production. Current v15 and its unqualified predecessors still fail closed.
+
+Payment orders, refunds/disputes, points, durable delivery, reconciliation, automatic
+recharge, and enterprise monthly billing are implemented software, not a live payment
+integration. No real PSP, trusted statement source, production-resident billing worker,
+or customer notification channel is connected. `python -m platform_api.billing_worker`
+is an HTTP-only scheduler entrypoint; it is not proof of supervised production operation
+or delivered customer notifications. Uploaded bytes alone do not establish PSP/bank/supplier
+authenticity; reconciliation retains `SOURCE_AUTHENTICITY_UNVERIFIED` until a trusted source
+is integrated. See [payment and finance implementation boundaries](payment-finance-closure.md).
+
+Run `relay-catalog-sync` as a periodic single-leader process. It uses the last
+ETag for conditional `GET /v1/models`; a Relay `304`, or a complete catalog with
+no semantic change, must not write model or audit rows. Opening the Platform
+model-catalog page reads only the persisted Platform database and never invokes
+Relay or reconciliation as a page-load side effect. A real change records a
+system actor (`actor_kind=system`, `actor_key=relay-catalog-sync`) and may only
+materialize an unpublished model draft or capability candidate. Capability
+approval, publication, pricing, and personal/company distribution remain
+explicit Platform Owner actions.
 Use the dedicated `platform_migration` login;
 the download edge keeps its dedicated DML-only role and never runs migrations.
 
@@ -595,7 +765,7 @@ creation across the read-only and read/write aliases of the same named volume.
 The root validator proves those aliases are the same opened directory before
 revoking anything. Lock acquisition has a ten-second deadline and fails before
 writing a marker, receipt, proof, or database row. Before proof creation the
-root validator durably removes the pre-root marker and all fourteen receipts;
+root validator durably removes the pre-root marker and all fifteen receipts;
 it then creates `proof.json` with no-replace semantics, so two different
 concurrent roots cannot overwrite one another. A killed exact attempt can be
 resumed with the same root password and cannot be resumed with a different one.
@@ -738,8 +908,8 @@ that same public HTTPS Platform host and one of the exact paths above.
 
 The committed secure example is the canonical inventory. Its groups cover:
 
-- immutable new-api image digest plus compiled extension-fork revision,
-  source-snapshot digest, and file count;
+- immutable new-api, Platform, and Platform API gateway image digests plus the
+  compiled extension-fork revision, source-snapshot digest, and file count;
 - managed Platform/new-api PostgreSQL, AOF Redis, and a separate DML-only
   download-edge DSN;
 - Platform, internal TikTok, operations-token digest, and independent approval
@@ -769,6 +939,8 @@ manifest bound to the exact environment, capability, source snapshot, and
 image digest are not eligible for staging/production. Configuration booleans
 such as `staging_ready` or `production_ready` are not acceptance evidence.
 Generate the evidence with the offline-only workflow in
+[`backend/new-api-relay/docs/platform-model-release-signing.md`](../backend/new-api-relay/docs/platform-model-release-signing.md),
+then sign the final route declaration as documented in
 [`backend/new-api-relay/docs/platform-route-acceptance-signing.md`](../backend/new-api-relay/docs/platform-route-acceptance-signing.md);
 the signer binary is not part of the Relay runtime image.
 
@@ -961,7 +1133,7 @@ artifact. Never translate a successful Compose render, local unit test, or
 
 Rollback never changes Relay implementation or task affinity. Stop new
 admission, keep accepted `new-api-v1` jobs on their exact job/route/token chain,
-   and deploy only a previously verified, Current-v3-compatible new-api immutable
+   and deploy only a previously verified, Current-v8-compatible new-api immutable
 digest through the same secret/role/proof lifecycle. If the previous image is
 not compatible, use a forward fix. Python Relay is not a production rollback
 target, and no runtime client may be added for it. Unknown submissions never

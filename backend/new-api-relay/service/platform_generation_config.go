@@ -18,10 +18,13 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/generationprofile"
 	"github.com/google/uuid"
 )
 
 const PlatformRelayUpstreamGitRevision = "0ab02020603d22e5613bc4cf46bfab06f8567769"
+
+const platformRelayConfigErrorRetryInterval = time.Second
 
 var (
 	platformRelaySourceRevisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -187,7 +190,14 @@ type platformRelayConfigSnapshot struct {
 	acceptancePublicKeysRaw      string
 	acceptancePrivateMaterialRaw string
 	acceptanceProvenanceRaw      string
-	acceptanceExpiresAt          time.Time
+	routeEvidenceValidFrom       time.Time
+	routeEvidenceExpiresAt       time.Time
+	verifiedAt                   time.Time
+	lastObserved                 time.Time
+	retryAt                      time.Time
+	clockFailed                  bool
+	configGeneration             uint64
+	catalogConfigFingerprint     [sha256.Size]byte
 	acceptanceAudit              PlatformRouteAcceptanceAudit
 	credentials                  map[string]PlatformRelayCredential
 	catalog                      dto.PlatformModelCatalog
@@ -198,7 +208,10 @@ type platformRelayConfigSnapshot struct {
 
 var platformRelayConfigCache struct {
 	sync.Mutex
-	snapshot platformRelayConfigSnapshot
+	snapshot     platformRelayConfigSnapshot
+	lastObserved time.Time
+	clockFailed  bool
+	generation   uint64
 }
 
 func PlatformRelayCompatEnabled() bool {
@@ -280,11 +293,45 @@ func loadPlatformRelayConfig() platformRelayConfigSnapshot {
 		os.Getenv("RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT"),
 		os.Getenv("RELAY_COMPAT_IMAGE_DIGEST"),
 	}, "\x00")
+	catalogConfigFingerprint := platformRelayModelCatalogConfigurationFingerprint()
 	now := platformRouteAcceptanceNow()
+	newSnapshot := func() platformRelayConfigSnapshot {
+		return platformRelayConfigSnapshot{
+			loaded:                       true,
+			credentialsRaw:               credentialsRaw,
+			capabilitiesRaw:              capabilitiesRaw,
+			routesRaw:                    routesRaw,
+			environmentRaw:               environmentRaw,
+			deploymentRaw:                deploymentRaw,
+			acceptancePublicKeysRaw:      acceptancePublicKeysRaw,
+			acceptancePrivateMaterialRaw: acceptancePrivateMaterialRaw,
+			acceptanceProvenanceRaw:      acceptanceProvenanceRaw,
+			verifiedAt:                   now,
+			lastObserved:                 now,
+			catalogConfigFingerprint:     catalogConfigFingerprint,
+			credentials:                  make(map[string]PlatformRelayCredential),
+			models:                       make(map[string]dto.PlatformModelResource),
+			routes:                       make(map[string][]PlatformRelayRouteDeclaration),
+		}
+	}
 
 	platformRelayConfigCache.Lock()
 	defer platformRelayConfigCache.Unlock()
-	if platformRelayConfigCache.snapshot.loaded &&
+	if platformRelayConfigCache.clockFailed || now.IsZero() ||
+		(!platformRelayConfigCache.lastObserved.IsZero() && now.Before(platformRelayConfigCache.lastObserved)) {
+		platformRelayConfigCache.clockFailed = true
+		snapshot := newSnapshot()
+		snapshot.clockFailed = true
+		snapshot.lastObserved = platformRelayConfigCache.lastObserved
+		snapshot.err = fmt.Errorf("Relay route evidence clock moved backwards")
+		if now.IsZero() {
+			snapshot.err = fmt.Errorf("Relay route evidence clock is unavailable")
+		}
+		platformRelayConfigCache.snapshot = snapshot
+		return snapshot
+	}
+	platformRelayConfigCache.lastObserved = now
+	sameInputs := platformRelayConfigCache.snapshot.loaded &&
 		platformRelayConfigCache.snapshot.credentialsRaw == credentialsRaw &&
 		platformRelayConfigCache.snapshot.capabilitiesRaw == capabilitiesRaw &&
 		platformRelayConfigCache.snapshot.routesRaw == routesRaw &&
@@ -292,34 +339,46 @@ func loadPlatformRelayConfig() platformRelayConfigSnapshot {
 		platformRelayConfigCache.snapshot.deploymentRaw == deploymentRaw &&
 		platformRelayConfigCache.snapshot.acceptancePublicKeysRaw == acceptancePublicKeysRaw &&
 		platformRelayConfigCache.snapshot.acceptancePrivateMaterialRaw == acceptancePrivateMaterialRaw &&
-		platformRelayConfigCache.snapshot.acceptanceProvenanceRaw == acceptanceProvenanceRaw &&
-		(platformRelayConfigCache.snapshot.acceptanceExpiresAt.IsZero() || now.Before(platformRelayConfigCache.snapshot.acceptanceExpiresAt)) {
-		return platformRelayConfigCache.snapshot
+		platformRelayConfigCache.snapshot.acceptanceProvenanceRaw == acceptanceProvenanceRaw
+	if sameInputs {
+		cached := &platformRelayConfigCache.snapshot
+		if cached.clockFailed {
+			platformRelayConfigCache.clockFailed = true
+			return *cached
+		}
+		if cached.err == nil && !cached.routeEvidenceValidFrom.IsZero() && now.Before(cached.routeEvidenceValidFrom) {
+			platformRelayConfigCache.clockFailed = true
+			cached.clockFailed = true
+			cached.err = fmt.Errorf("Relay route evidence clock moved backwards")
+			cached.retryAt = time.Time{}
+			return *cached
+		}
+		cached.lastObserved = now
+		if cached.err != nil {
+			if !cached.retryAt.IsZero() && now.Before(cached.retryAt) {
+				return *cached
+			}
+		} else if cached.routeEvidenceExpiresAt.IsZero() || now.Before(cached.routeEvidenceExpiresAt) {
+			publishPlatformRelayModelCatalogReadiness(*cached)
+			return *cached
+		}
 	}
 
-	snapshot := platformRelayConfigSnapshot{
-		loaded:                       true,
-		credentialsRaw:               credentialsRaw,
-		capabilitiesRaw:              capabilitiesRaw,
-		routesRaw:                    routesRaw,
-		environmentRaw:               environmentRaw,
-		deploymentRaw:                deploymentRaw,
-		acceptancePublicKeysRaw:      acceptancePublicKeysRaw,
-		acceptancePrivateMaterialRaw: acceptancePrivateMaterialRaw,
-		acceptanceProvenanceRaw:      acceptanceProvenanceRaw,
-		credentials:                  make(map[string]PlatformRelayCredential),
-		models:                       make(map[string]dto.PlatformModelResource),
-		routes:                       make(map[string][]PlatformRelayRouteDeclaration),
+	snapshot := newSnapshot()
+	storeSnapshot := func() platformRelayConfigSnapshot {
+		if snapshot.err != nil && !snapshot.clockFailed {
+			snapshot.retryAt = now.Add(platformRelayConfigErrorRetryInterval)
+		}
+		platformRelayConfigCache.snapshot = snapshot
+		return snapshot
 	}
 	if err := validatePlatformRelayEnvironment(environmentRaw); err != nil {
 		snapshot.err = err
-		platformRelayConfigCache.snapshot = snapshot
-		return snapshot
+		return storeSnapshot()
 	}
 	if credentialsRaw == "" {
 		snapshot.err = fmt.Errorf("RELAY_COMPAT_CLIENT_CREDENTIALS_JSON is required")
-		platformRelayConfigCache.snapshot = snapshot
-		return snapshot
+		return storeSnapshot()
 	}
 	if installedRuntimeSecrets {
 		for clientID, credential := range installedCredentials {
@@ -328,8 +387,7 @@ func loadPlatformRelayConfig() platformRelayConfigSnapshot {
 	} else {
 		if err := common.DecodeJsonDisallowUnknownFields(strings.NewReader(credentialsRaw), &snapshot.credentials); err != nil {
 			snapshot.err = fmt.Errorf("invalid Relay compatibility credentials: %w", err)
-			platformRelayConfigCache.snapshot = snapshot
-			return snapshot
+			return storeSnapshot()
 		}
 	}
 	for clientID, credential := range snapshot.credentials {
@@ -379,25 +437,27 @@ func loadPlatformRelayConfig() platformRelayConfigSnapshot {
 		}
 	}
 	if snapshot.err != nil {
-		platformRelayConfigCache.snapshot = snapshot
-		return snapshot
+		return storeSnapshot()
 	}
 
 	capabilities, routes, err := parsePlatformRelayCapabilities(capabilitiesRaw, routesRaw, environmentRaw)
 	if err != nil {
 		snapshot.err = err
-		platformRelayConfigCache.snapshot = snapshot
-		return snapshot
+		return storeSnapshot()
+	}
+	if err := mergeReviewedAcceptanceCandidates(capabilities); err != nil {
+		snapshot.err = err
+		return storeSnapshot()
 	}
 	snapshot.routes = routes
-	acceptanceAudit, acceptanceExpiresAt, err := buildPlatformRouteAcceptanceAudit(environmentRaw, routes)
+	acceptanceAudit, routeEvidenceExpiresAt, err := buildPlatformRouteAcceptanceAudit(environmentRaw, routes)
 	if err != nil {
 		snapshot.err = fmt.Errorf("build Relay route acceptance audit: %w", err)
-		platformRelayConfigCache.snapshot = snapshot
-		return snapshot
+		return storeSnapshot()
 	}
 	snapshot.acceptanceAudit = acceptanceAudit
-	snapshot.acceptanceExpiresAt = acceptanceExpiresAt
+	snapshot.routeEvidenceValidFrom = acceptanceAudit.evidenceValidFrom
+	snapshot.routeEvidenceExpiresAt = routeEvidenceExpiresAt
 	modelIDs := make([]string, 0, len(capabilities))
 	for modelID := range capabilities {
 		modelIDs = append(modelIDs, modelID)
@@ -408,14 +468,12 @@ func loadPlatformRelayConfig() platformRelayConfigSnapshot {
 		capability := capabilities[modelID]
 		if err := validatePlatformCapability(modelID, capability); err != nil {
 			snapshot.err = err
-			platformRelayConfigCache.snapshot = snapshot
-			return snapshot
+			return storeSnapshot()
 		}
 		serialized, err := platformRelayCanonicalJSON(capability)
 		if err != nil {
 			snapshot.err = err
-			platformRelayConfigCache.snapshot = snapshot
-			return snapshot
+			return storeSnapshot()
 		}
 		digest := sha256.Sum256(serialized)
 		resource := dto.PlatformModelResource{
@@ -439,8 +497,7 @@ func loadPlatformRelayConfig() platformRelayConfigSnapshot {
 	serialized, err := platformRelayCanonicalJSON(revisionInput)
 	if err != nil {
 		snapshot.err = err
-		platformRelayConfigCache.snapshot = snapshot
-		return snapshot
+		return storeSnapshot()
 	}
 	digest := sha256.Sum256(serialized)
 	snapshot.catalog = dto.PlatformModelCatalog{
@@ -450,8 +507,33 @@ func loadPlatformRelayConfig() platformRelayConfigSnapshot {
 		Data:            resources,
 		CatalogRevision: fmt.Sprintf("sha256:%x", digest),
 	}
-	platformRelayConfigCache.snapshot = snapshot
-	return snapshot
+	if platformRelayConfigCache.generation == 0 ||
+		platformRelayConfigCache.snapshot.catalogConfigFingerprint != snapshot.catalogConfigFingerprint ||
+		platformRelayConfigCache.snapshot.err != nil {
+		platformRelayConfigCache.generation++
+	}
+	snapshot.configGeneration = platformRelayConfigCache.generation
+	stored := storeSnapshot()
+	publishPlatformRelayModelCatalogReadiness(stored)
+	return stored
+}
+
+// mergeReviewedAcceptanceCandidates makes code-reviewed onboarding candidates
+// discoverable without manufacturing an executable route. An exact configured
+// route/capability always wins, while a candidate-only model deliberately has
+// no entry in snapshot.routes and therefore no route/release evidence.
+func mergeReviewedAcceptanceCandidates(capabilities map[string]dto.PlatformGenerationCapabilities) error {
+	candidates, err := generationprofile.ReviewedAcceptanceCandidates()
+	if err != nil {
+		return fmt.Errorf("load reviewed Relay acceptance candidates: %w", err)
+	}
+	for _, candidate := range candidates {
+		if _, configured := capabilities[candidate.PublicModelID]; configured {
+			continue
+		}
+		capabilities[candidate.PublicModelID] = normalizePlatformCapability(candidate.Capability)
+	}
+	return nil
 }
 
 // platformRelayCanonicalJSON matches the frozen Python Relay revision
@@ -570,7 +652,7 @@ func ValidatePlatformGenerationCapability(request dto.PlatformGenerationRequest)
 		return fmt.Errorf("MODE_NOT_SUPPORTED_BY_MODEL")
 	}
 	if utf8.RuneCountInString(request.Inputs.Prompt) > mode.Limits.MaxPromptLength ||
-		!containsInt(mode.Limits.DurationSeconds, request.Output.DurationSeconds) ||
+		(platformCapabilityDurationApplies(request.Mode) && !containsInt(mode.Limits.DurationSeconds, request.Output.DurationSeconds)) ||
 		!containsString(mode.Limits.AspectRatios, request.Output.AspectRatio) ||
 		!containsString(mode.Limits.Resolutions, request.Output.Resolution) ||
 		!containsInt(mode.Limits.OutputCounts, request.Output.Count) ||
@@ -591,7 +673,7 @@ func ValidatePlatformGenerationCapability(request dto.PlatformGenerationRequest)
 }
 
 func validatePlatformCapability(modelID string, capability dto.PlatformGenerationCapabilities) error {
-	if strings.TrimSpace(modelID) == "" || len(modelID) > 128 || capability.SchemaVersion != 1 || len(capability.Modes) == 0 {
+	if strings.TrimSpace(modelID) == "" || len(modelID) > 128 || (capability.SchemaVersion != 1 && capability.SchemaVersion != 2) || len(capability.Modes) == 0 {
 		return fmt.Errorf("Relay capability for model %q is invalid", modelID)
 	}
 	for modeName, mode := range capability.Modes {
@@ -604,7 +686,7 @@ func validatePlatformCapability(modelID string, capability dto.PlatformGeneratio
 		if limits.MaxPromptLength < 1 || limits.MaxPromptLength > 10_000 ||
 			limits.MaxImages < 0 || limits.MaxImages > 15 || limits.MaxVideos < 0 || limits.MaxVideos > 15 || limits.MaxAudio < 0 || limits.MaxAudio > 15 ||
 			limits.MaxImages+limits.MaxVideos+limits.MaxAudio > 15 ||
-			len(limits.DurationSeconds) == 0 || len(limits.AspectRatios) == 0 ||
+			(platformCapabilityDurationApplies(modeName) && len(limits.DurationSeconds) == 0) || len(limits.AspectRatios) == 0 ||
 			len(limits.Resolutions) == 0 || len(limits.OutputCounts) == 0 {
 			return fmt.Errorf("Relay capability limits for model %q are invalid", modelID)
 		}
@@ -654,13 +736,47 @@ func validatePlatformCapability(modelID string, capability dto.PlatformGeneratio
 			}
 		}
 		resourceKeyPattern := regexp.MustCompile(`^[a-z][a-z0-9._-]{0,127}$`)
+		unconditionalKeys := make(map[string]struct{}, len(mode.RequiredResourceKeys))
 		for _, resourceKey := range mode.RequiredResourceKeys {
 			if !resourceKeyPattern.MatchString(resourceKey) {
 				return fmt.Errorf("Relay capability resource keys for model %q are invalid", modelID)
 			}
+			if _, duplicate := unconditionalKeys[resourceKey]; duplicate {
+				return fmt.Errorf("Relay capability resource keys for model %q contain duplicates", modelID)
+			}
+			unconditionalKeys[resourceKey] = struct{}{}
+		}
+		if capability.SchemaVersion == 1 && mode.ConditionalRequiredResourceKeys != nil {
+			return fmt.Errorf("Relay capability schema v1 for model %q cannot declare conditional resource keys", modelID)
+		}
+		for condition, resourceKeys := range mode.ConditionalRequiredResourceKeys {
+			if condition != "face_enabled" || !mode.SupportsFace || len(resourceKeys) == 0 {
+				return fmt.Errorf("Relay conditional capability resource keys for model %q are invalid", modelID)
+			}
+			seen := make(map[string]struct{}, len(resourceKeys))
+			for _, resourceKey := range resourceKeys {
+				if !resourceKeyPattern.MatchString(resourceKey) {
+					return fmt.Errorf("Relay conditional capability resource keys for model %q are invalid", modelID)
+				}
+				if _, duplicate := seen[resourceKey]; duplicate {
+					return fmt.Errorf("Relay conditional capability resource keys for model %q contain duplicates", modelID)
+				}
+				if _, unconditional := unconditionalKeys[resourceKey]; unconditional {
+					return fmt.Errorf("Relay capability resource keys for model %q cannot be both unconditional and conditional", modelID)
+				}
+				seen[resourceKey] = struct{}{}
+			}
 		}
 	}
 	return nil
+}
+
+// Capability schema v1 historically represented image output count by also
+// publishing duration_seconds=[1]. Keep reading that value for compatibility,
+// but never require or enforce it for image modes. Duration remains a physical
+// capability for video modes.
+func platformCapabilityDurationApplies(mode string) bool {
+	return mode != "text_to_image"
 }
 
 func containsString(values []string, expected string) bool {

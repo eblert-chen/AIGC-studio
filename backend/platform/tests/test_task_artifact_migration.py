@@ -5,6 +5,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import MetaData, Table, create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
@@ -237,7 +238,7 @@ def test_0016_backfills_only_complete_artifacts_and_guards_audit_rows(
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0040_showcase_management"
+            == ScriptDirectory.from_config(config).get_current_head()
         )
         artifacts = list(
             connection.execute(

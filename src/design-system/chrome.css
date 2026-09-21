@@ -1,103 +1,176 @@
-/*
- * Product chrome
- *
- * The three surfaces keep their own navigation model, but share the same
- * command-bar material, sizing rhythm and selected-state language. Route
- * content belongs in the dedicated route sheets, not here.
- */
+/* Shared global command bars and navigation. */
 
 :where(.app-shell, .control-shell, .ops-console) {
-  --chrome-height: var(--shell-topbar-size, 56px);
-  --chrome-border: var(--line, var(--ops-line, #e3e7e4));
-  --chrome-surface: var(--topbar-surface, var(--surface-elevated, #fff));
-  --chrome-quiet-surface: var(--surface-soft, var(--ops-surface-soft, #f7f9f8));
-  --chrome-accent-soft: var(--accent-soft, var(--ops-accent-soft, #eaf4ee));
-  --chrome-ink: var(--ink, var(--ops-ink, #171a18));
-  --chrome-muted: var(--quiet, var(--ops-muted, #68716b));
+  --chrome-border: var(--line);
+  --chrome-surface: var(--surface);
+  --chrome-ink: var(--text);
+  --chrome-muted: var(--text-muted);
 }
-
-/* Studio command bar ------------------------------------------------------ */
 
 .app-shell > .topbar {
   position: relative;
   z-index: 60;
   display: flex;
-  align-items: center;
   min-width: 0;
-  gap: 10px;
-  padding-inline: 18px;
-  border-bottom: 1px solid var(--chrome-border);
+  align-items: stretch;
+  gap: 14px;
+  padding: 0 18px;
+  border-bottom: 0;
   background: var(--chrome-surface);
-  box-shadow: none;
 }
 
-.app-shell .topbar-spacer {
-  display: block;
-  flex: 1 1 auto;
-  min-width: 16px;
+.topbar-identity,
+.topbar-command-cluster,
+.topbar-account-cluster {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.studio-mobile-commandbar { display: none; }
+
+.topbar-identity {
+  flex: 0 1 520px;
+  gap: 20px;
 }
 
 .app-shell .brand {
-  min-width: 0;
-  flex: 0 0 auto;
-  padding-inline-end: 18px;
-  margin-inline-end: 4px;
-}
-
-.app-shell .brand-mark {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-md, 8px);
-  background: var(--chrome-accent-soft);
-}
-
-.app-shell .brand-context {
-  margin-inline: 0 2px;
-  color: var(--chrome-muted);
-}
-
-.app-shell .mode-badge {
-  display: inline-flex;
-  min-height: var(--control-size-compact, 32px);
+  display: flex;
+  width: 148px;
+  height: 100%;
+  flex: 0 0 148px;
   align-items: center;
-  padding-inline: 10px;
-  margin: 0;
-  border-radius: var(--radius-control, 6px);
-  font-size: var(--text-caption, 12px);
-  font-weight: var(--weight-semibold, 600);
+  padding-right: 18px;
+  border-right: 0;
+}
+
+.app-shell .topbar-project {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  align-content: center;
+  column-gap: 10px;
+  line-height: 1.2;
+}
+
+.app-shell .topbar-project > span {
+  grid-column: 1 / -1;
+  color: var(--chrome-muted);
+  font-size: 12px;
+}
+
+.app-shell .topbar-project > strong {
+  overflow: hidden;
+  color: var(--strong-ink);
+  font-size: clamp(15px, 1.3vw, 19px);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.app-shell .surface-switch {
-  display: inline-flex;
-  height: var(--control-size-default, 40px);
-  align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--chrome-border);
-  border-radius: var(--radius-md, 8px);
-  background: var(--chrome-quiet-surface);
+.app-shell .topbar-project > small {
+  align-self: end;
+  color: var(--chrome-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
-.app-shell .surface-switch button {
-  min-height: var(--control-size-compact, 32px);
-  padding-inline: 11px;
-  border-radius: var(--radius-control, 6px);
+.topbar-command-cluster {
+  flex: 0 0 auto;
+  justify-content: center;
+  gap: 10px;
+}
+
+.topbar-command-cluster > .surface-switch { flex: 0 0 auto; }
+
+.topbar-account-cluster {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.app-shell .topbar-spacer {
+  min-width: 8px;
+  flex: 1 1 auto;
+}
+
+.app-shell .brand-context {
+  color: var(--chrome-muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+:where(.app-shell, .control-shell) .mode-badge {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--signal) 40%, var(--line));
+  border-radius: 8px;
+  color: var(--signal-strong);
+  background: var(--signal-soft);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+:where(.app-shell, .control-shell) .mode-badge.is-live {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+:where(.app-shell, .control-shell) .surface-switch {
+  display: inline-flex;
+  height: 40px;
+  min-width: 0;
+  align-items: stretch;
+  border: 1px solid var(--chrome-border);
+  border-radius: var(--radius-control, 10px);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+:where(.app-shell, .control-shell) .surface-switch button {
+  min-height: 38px;
+  padding: 0 15px;
+  border: 0;
+  border-right: 1px solid var(--chrome-border);
+  border-radius: 8px;
+  color: var(--chrome-ink);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+:where(.app-shell, .control-shell) .surface-switch button:last-child { border-right: 0; }
+:where(.app-shell, .control-shell) .surface-switch button:hover { background: var(--surface-soft); }
+:where(.app-shell, .control-shell) .surface-switch button.is-active {
+  color: #fff;
+  background: var(--accent);
 }
 
 .app-shell .project-select {
   position: relative;
   display: inline-flex;
+  min-width: 150px;
+  flex: 0 1 190px;
   align-items: center;
-  min-width: 164px;
 }
 
 .app-shell .project-select select {
   width: 100%;
+  min-height: 40px;
   appearance: none;
-  min-height: var(--control-size-default, 40px);
-  padding-inline: 12px 34px;
-  border-radius: var(--radius-control, 6px);
+  padding: 0 34px 0 12px;
+  border-radius: var(--radius-control, 10px);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .app-shell .project-select > svg {
@@ -107,254 +180,370 @@
   pointer-events: none;
 }
 
-.app-shell .skin-switcher,
+.app-shell .project-select > .project-select-mobile-icon { display: none; }
+
+.app-shell .personal-balance {
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.app-shell .personal-balance.is-error { color: var(--danger); }
+
 .app-shell .icon-button,
 .app-shell .user-button {
-  min-height: var(--control-size-default, 40px);
+  min-height: 40px;
+  border-color: transparent;
+  border-radius: var(--radius-control, 10px);
+  background: transparent;
+}
+
+.app-shell .icon-button:hover,
+.app-shell .user-button:hover {
+  border-color: var(--chrome-border);
+  background: var(--surface-soft);
+}
+
+.app-shell .user-button {
+  display: flex;
+  max-width: 180px;
+  align-items: center;
+  gap: 7px;
+  padding-inline: 8px;
+}
+
+.app-shell .user-button span {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app-shell > .side-nav {
   display: flex;
   min-height: 0;
   flex-direction: column;
-  justify-content: space-between;
-  padding: 12px 8px 10px;
-  border-right: 1px solid var(--chrome-border);
-  background: var(--surface-elevated, #fff);
+  border-right: 0;
+  background: var(--surface);
 }
 
-.app-shell > .side-nav > div {
+.app-shell .side-nav-track {
   display: flex;
   min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
   flex-direction: column;
-  gap: 4px;
 }
 
-.app-shell > .side-nav button,
-.app-shell > .side-nav > button {
+.app-shell .side-nav-primary {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0;
+  padding: 16px 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.app-shell .side-nav-footer {
+  flex: 0 0 auto;
+  padding: 8px;
+  border-top: 0;
+}
+
+.app-shell > .side-nav > .side-nav-scroll-forward { display: none; }
+
+.app-shell > .side-nav button {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: 60px;
-  flex-direction: column;
+  min-height: 48px;
+  flex: 0 0 auto;
   align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 7px 4px;
+  gap: 11px;
+  margin-bottom: 2px;
+  padding: 10px 14px;
   border: 0;
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-md);
   color: var(--chrome-muted);
   background: transparent;
-  font: inherit;
-  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
 }
 
-.app-shell > .side-nav button span,
-.app-shell > .side-nav > button span {
-  font-size: var(--text-caption, 12px);
-  line-height: 1.25;
+.app-shell > .side-nav button span {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-.app-shell > .side-nav button::before,
-.app-shell > .side-nav > button::before {
-  position: absolute;
-  content: "";
-  background: transparent;
+.app-shell > .side-nav button svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
 }
 
-.app-shell > .side-nav button svg,
-.app-shell > .side-nav > button svg {
-  width: 22px;
-  height: 22px;
-}
-
-.app-shell > .side-nav button:hover,
-.app-shell > .side-nav > button:hover {
+.app-shell > .side-nav button:hover {
   color: var(--chrome-ink);
-  background: var(--chrome-quiet-surface);
+  background: var(--surface-soft);
 }
 
-.app-shell > .side-nav button.is-active,
-.app-shell > .side-nav > button.is-active {
-  color: var(--accent, #26784a);
-  background: var(--chrome-accent-soft);
+/* Single selection affordance: soft fill + strong ink only.
+ * Never stack border + fill + indicator bar. */
+.app-shell > .side-nav button.is-active {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-weight: 600;
 }
 
-.app-shell > .side-nav button.is-active::before,
-.app-shell > .side-nav > button.is-active::before {
-  inset: 12px auto 12px -8px;
-  width: 2px;
-  border-radius: 0 2px 2px 0;
-  background: var(--accent, #26784a);
+.app-shell > .side-nav button.is-active svg {
+  color: var(--accent);
 }
 
-/* Company command bar ----------------------------------------------------- */
-
+/* Company command bar and rail. */
 .control-shell > .control-topbar {
   position: relative;
   z-index: 60;
   display: flex;
-  align-items: center;
   min-width: 0;
-  gap: 10px;
-  padding-inline: 16px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 18px;
   border-bottom: 1px solid var(--chrome-border);
   background: var(--chrome-surface);
 }
 
+.control-mobile-commandbar { display: none; }
+
 .control-shell .control-brand {
-  width: calc(var(--shell-company-sidebar-size, 240px) - 32px);
-}
-
-.control-shell .control-brand > span {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-md, 8px);
-}
-
-.control-shell .surface-switch {
-  display: inline-flex;
-  height: var(--control-size-default, 40px);
+  display: flex;
+  width: 196px;
+  height: 100%;
+  flex: 0 0 196px;
   align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--chrome-border);
-  border-radius: var(--radius-md, 8px);
+  gap: 12px;
+  padding: 0 16px 0 0;
+  border: 0;
+  border-right: 1px solid var(--chrome-border);
+  border-radius: 0;
+  background: transparent;
 }
 
-.control-shell .surface-switch button {
-  min-height: var(--control-size-compact, 32px);
-  padding-inline: 11px;
-  border-radius: var(--radius-control, 6px);
+.control-shell .control-brand strong { font-size: 13px; white-space: nowrap; }
+
+.control-shell .control-command-context {
+  display: grid;
+  min-width: 150px;
+  line-height: 1.2;
 }
+
+.control-shell .control-command-context span,
+.control-shell .control-command-context small { color: var(--chrome-muted); font-size: 12px; }
+.control-shell .control-command-context strong { font-size: 15px; }
+.control-shell .control-topbar-spacer { flex: 1 1 auto; }
 
 .control-shell > .control-sidebar {
   display: flex;
   min-width: 0;
-  min-height: 0;
   flex-direction: column;
   border-right: 1px solid var(--chrome-border);
-  background: var(--surface-elevated, #fff);
+  background: var(--surface);
 }
+
+.control-shell .control-context {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--chrome-border);
+}
+
+.control-shell .control-context > div { display: grid; gap: 3px; }
+.control-shell .control-context span,
+.control-shell .control-context small { color: var(--chrome-muted); font-size: 12px; }
+.control-shell .control-context strong { font-size: 15px; }
 
 .control-shell .control-sidebar nav {
   display: flex;
   min-height: 0;
+  flex: 1 1 auto;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
+  padding: 8px;
+  overflow-y: auto;
 }
 
 .control-shell .control-sidebar nav button {
-  min-height: 44px;
-  border-radius: var(--radius-md, 8px);
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 11px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 0;
+  color: var(--chrome-muted);
+  background: transparent;
+  font-weight: 600;
+  text-align: left;
 }
 
-.control-shell .control-sidebar nav button.is-active {
-  background: var(--chrome-accent-soft);
+.control-shell .control-sidebar nav button:hover { color: var(--chrome-ink); background: var(--surface-soft); }
+.control-shell .control-sidebar nav button.is-active { color: #fff; background: var(--accent); }
+.control-shell .control-sidebar-foot {
+  display: flex;
+  gap: 10px;
+  padding: 16px;
+  border-top: 1px solid var(--chrome-border);
+  color: var(--chrome-muted);
 }
+.control-shell .control-sidebar-foot span { display: grid; }
+.control-shell .control-sidebar-foot strong { color: var(--chrome-ink); font-size: 12px; }
+.control-shell .control-sidebar-foot small { font-size: 12px; }
 
-/* Operations command bar -------------------------------------------------- */
-
+/* Operations remains horizontally navigated. */
 .ops-console > .ops-topbar {
   position: sticky;
-  z-index: 40;
+  z-index: 50;
   top: 0;
   display: grid;
+  min-height: 72px;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  border-bottom: 1px solid var(--ops-line, var(--chrome-border));
-  background: var(--ops-surface, var(--chrome-surface));
-  box-shadow: none;
+  align-items: stretch;
+  border-bottom: 1px solid var(--ops-line);
+  background: var(--ops-surface);
 }
 
 .ops-console .ops-brand {
-  min-height: var(--chrome-height);
+  display: flex;
+  min-width: 192px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  border: 0;
+  border-right: 1px solid var(--ops-line);
+  border-radius: 0;
+  background: transparent;
 }
 
-.ops-console .ops-brand > span {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-md, 8px);
-  background: var(--ops-accent-soft, var(--chrome-accent-soft));
+.ops-console .ops-surface-name { font-size: 13px; font-weight: 700; white-space: nowrap; }
+.ops-console .ops-module-navigation { display: grid; min-width: 0; grid-template-columns: auto minmax(0, 1fr) auto; }
+.ops-console .ops-module-navigation nav { display: flex; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.ops-console .ops-module-navigation nav::-webkit-scrollbar { display: none; }
+.ops-console .ops-module-navigation nav button {
+  min-width: max-content;
+  padding: 0 18px;
+  border: 0;
+  border-right: 1px solid var(--ops-line);
+  border-radius: 0;
+  color: var(--ops-muted);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 650;
 }
+.ops-console .ops-module-navigation nav button:hover { color: var(--ops-ink); background: var(--ops-surface-soft); }
+.ops-console .ops-module-navigation nav button.is-active { color: #fff; background: var(--ops-accent); }
+.ops-console .ops-nav-scroll-button { width: 32px; border: 0; border-radius: 0; background: var(--ops-surface); }
+.ops-console .ops-admin-tools { display: flex; align-items: center; gap: 7px; padding: 0 14px; }
+.ops-console .ops-top-divider { width: 1px; height: 26px; background: var(--ops-line); }
+.ops-console :is(.ops-basic-config-button, .ops-help-button, .ops-account-button) { border-radius: 0; }
 
-.ops-console .ops-admin-tools {
-  background: var(--ops-surface, var(--chrome-surface));
-}
-
-.ops-console .ops-basic-config-button,
-.ops-console .ops-help-button,
-.ops-console .ops-account-button {
-  border-radius: var(--radius-control, 6px);
-}
-
-@media (min-width: 901px) and (max-width: 1240px) {
+@media (max-width: 1240px) {
+  .app-shell .topbar-project > small,
   .app-shell .brand-context,
-  .app-shell .project-select {
-    display: none;
-  }
-
-  .app-shell .brand {
-    padding-inline-end: 14px;
-  }
+  .app-shell .mode-badge { display: none; }
+  .topbar-identity { flex-basis: 350px; }
+  .app-shell .brand { width: 110px; flex-basis: 110px; }
+  .app-shell .project-select { min-width: 132px; flex-basis: 132px; }
+  .control-shell .control-command-context { display: none; }
 }
 
 @media (max-width: 900px) {
-  .app-shell .topbar-spacer {
-    min-width: 0;
-  }
+  .app-shell > .topbar { gap: 8px; padding: 0 10px; }
+  .topbar-identity { flex: 0 0 auto; }
+  .app-shell .brand { width: 42px; flex-basis: 42px; padding: 0; border: 0; }
+  .app-shell .topbar-project { display: none; }
+  .topbar-command-cluster { min-width: 0; flex: 1 1 auto; justify-content: flex-start; }
+  .app-shell .surface-switch { height: 36px; }
+  .app-shell .surface-switch button { min-height: 34px; padding-inline: 11px; }
+  .app-shell .project-select { min-width: 112px; flex: 1 1 150px; }
+  .app-shell .project-select select { min-height: 36px; }
+  .topbar-account-cluster > :is(.skin-switcher, .user-anchor, .personal-balance) { display: none; }
+  .app-shell .topbar-spacer { display: none; }
 
   .app-shell > .side-nav {
-    padding: 3px 6px 4px;
-    border-top: 1px solid var(--chrome-border);
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    overflow: hidden;
     border-right: 0;
+    border-bottom: 0;
   }
-
-  .app-shell > .side-nav > div {
+  .app-shell .side-nav-track {
+    display: flex;
     min-width: 0;
-    flex: 1 1 auto;
+    height: 53px;
     flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
   }
+  .app-shell .side-nav-track::-webkit-scrollbar { display: none; }
+  .app-shell .side-nav-primary,
+  .app-shell .side-nav-footer { display: contents; }
+  .app-shell > .side-nav button { width: auto; min-width: 82px; min-height: 53px; justify-content: center; gap: 7px; padding: 0 12px; }
+  .app-shell > .side-nav > .side-nav-scroll-forward {
+    z-index: 2;
+    display: grid;
+    width: 44px;
+    min-width: 44px;
+    min-height: 53px;
+    place-items: center;
+    padding: 0;
+    border-left: 0;
+    color: var(--accent-strong);
+    background: var(--surface);
+    box-shadow: -12px 0 18px color-mix(in srgb, var(--surface) 84%, transparent);
+  }
+  .app-shell > .side-nav button span { font-size: 13px; }
+  .app-shell > .side-nav button svg { width: 18px; height: 18px; flex-basis: 18px; }
+  .app-shell > .side-nav button.is-active::before { content: none; }
 
-  .app-shell > .side-nav > div {
-    height: 56px;
-  }
+  .control-shell > .control-topbar { padding: 0 10px; }
+  .control-mobile-commandbar { display: flex; width: 100%; align-items: center; gap: 10px; }
+  .control-mobile-home { display: grid; width: 40px; height: 40px; place-items: center; border: 0; background: transparent; }
+  .control-mobile-heading { display: grid; min-width: 0; flex: 1; }
+  .control-mobile-heading small { color: var(--chrome-muted); font-size: 12px; }
+  .control-mobile-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .control-mobile-command-menu { position: relative; }
+  .control-mobile-command-menu > summary { display: flex; min-height: 40px; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--line); list-style: none; }
+  .control-mobile-command-panel { position: absolute; z-index: 80; top: 46px; right: 0; display: grid; width: min(320px, calc(100vw - 20px)); gap: 14px; padding: 16px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow-menu); }
+  .control-mobile-command-panel section { display: grid; gap: 7px; }
+  .control-mobile-command-panel section > span { color: var(--text-muted); font-size: 12px; }
+  .control-shell > .control-topbar > :not(.control-mobile-commandbar) { display: none; }
 
-  .app-shell > .side-nav button,
-  .app-shell > .side-nav > button {
-    height: 56px;
-    min-height: 56px;
-    gap: 2px;
-    padding: 4px 2px;
-    border-radius: var(--radius-control, 6px);
-  }
+  .control-shell > .control-sidebar { display: block; overflow: hidden; border-right: 0; border-bottom: 1px solid var(--line); }
+  .control-shell .control-context,
+  .control-shell .control-sidebar-foot { display: none; }
+  .control-shell .control-sidebar nav { flex-direction: row; padding: 0 6px; overflow-x: auto; overflow-y: hidden; }
+  .control-shell .control-sidebar nav button { min-width: max-content; min-height: 55px; justify-content: center; padding: 0 14px; }
 
-  .app-shell > .side-nav button.is-active::before,
-  .app-shell > .side-nav > button.is-active::before {
-    inset: -3px 24% auto;
-    width: auto;
-    height: 2px;
-    border-radius: 0 0 2px 2px;
-  }
+  .ops-console > .ops-topbar { min-height: 64px; grid-template-columns: auto minmax(0, 1fr) auto; }
+  .ops-console .ops-brand { min-width: 58px; padding: 0 10px; }
+  .ops-console .ops-surface-name,
+  .ops-console .ops-basic-config-label,
+  .ops-console .ops-help-label { display: none; }
+  .ops-console .ops-module-navigation nav button { padding-inline: 13px; }
+  .ops-console .ops-admin-tools { padding-inline: 8px; }
 }
 
-@media (max-width: 720px) {
-  .control-shell .control-brand {
-    width: auto;
-  }
-
-  .control-shell > .control-sidebar {
-    border-right: 0;
-    border-bottom: 1px solid var(--chrome-border);
-  }
-
-  .control-shell .control-sidebar nav {
-    flex-direction: row;
-  }
-}
-
-@media (max-width: 390px) {
-  .app-shell > .side-nav > div {
-    gap: 2px;
-  }
+@media (max-width: 560px) {
+  .app-shell .surface-label-long { display: none; }
+  .app-shell .surface-label-short { display: inline; }
+  .app-shell .surface-switch button { padding-inline: 9px; }
+  .app-shell .project-select { min-width: 96px; }
+  .topbar-account-cluster > .notification-anchor { display: none; }
+  .app-shell > .side-nav button { min-width: 76px; padding-inline: 10px; }
+  .ops-console .ops-nav-scroll-button,
+  .ops-console .ops-help-button { display: none; }
 }

@@ -5,6 +5,7 @@ import {
   Plus,
   SpeakerHigh,
 } from "@phosphor-icons/react";
+import { downloadStatusPresentation } from "./studioPresentation.js";
 
 function formatTime(seconds) {
   const value = Math.max(0, Math.round(seconds));
@@ -14,7 +15,7 @@ function formatTime(seconds) {
 export function IconButton({ label, children, className = "", ...props }) {
   return (
     <button
-      className={`icon-button ${className}`}
+      className={`icon-button ${className}`.trim()}
       type="button"
       aria-label={label}
       title={label}
@@ -22,6 +23,19 @@ export function IconButton({ label, children, className = "", ...props }) {
     >
       {children}
     </button>
+  );
+}
+
+export function DownloadStatus({ source, issuedLocally = false }) {
+  const state = downloadStatusPresentation(source, { issuedLocally });
+  return (
+    <span
+      className={`download-state is-${state.tone}`}
+      title={state.detail}
+      aria-label={`下载状态：${state.label}。${state.detail}`}
+    >
+      {state.label}
+    </span>
   );
 }
 
@@ -35,9 +49,10 @@ export function SceneTimeline({ scenes, activeId, onSelect, onAdd }) {
           key={scene.id}
           onClick={() => onSelect(scene.id)}
           aria-pressed={activeId === scene.id}
+          aria-label={`选择镜头：${scene.title}，${scene.range}`}
         >
           <span className="scene-image">
-            <img src={scene.image} alt={`${scene.title}预览`} />
+            <img src={scene.image} alt={`${scene.title}预览`} loading="lazy" decoding="async" draggable="false" />
             <span className="scene-number">{scene.number}</span>
           </span>
           <span className="scene-meta">
@@ -64,7 +79,7 @@ export function Preview({
 }) {
   return (
     <section className="preview-shell" aria-label="视频预览">
-      <img src={scene.image} alt={`${scene.title}视频画面`} />
+      <img src={scene.image} alt={`${scene.title}视频画面`} decoding="async" draggable="false" />
       <div className="preview-controls">
         <IconButton label={playing ? "暂停预览" : "播放预览"} onClick={onTogglePlay}>
           {playing ? (

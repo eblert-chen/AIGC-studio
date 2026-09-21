@@ -96,14 +96,16 @@ test("mobile operations copy uses the shared 12px floor without removing interna
 test("narrow layouts retain readable controls, discoverable actions, and collision-free operational data", () => {
   assert.match(operationsSource, /className="ops-basic-config-button" data-icon-only="true"/);
   assert.match(operationsSource, /className="ops-basic-config-label">基础配置<\/span>/);
-  assert.match(finalOperationsCss, /@media \(max-width: 560px\)[\s\S]*?\.ops-basic-config-label\s*\{[^}]*display:\s*none/s);
-  assert.match(finalOperationsCss, /\.ops-console \.ops-basic-config-button\s*\{[^}]*width:\s*44px[^}]*min-height:\s*44px/s);
+  assert.match(mobileOperations, /\.ops-console :is\(\.ops-help-label, \.ops-basic-config-label\)\s*\{[^}]*display:\s*none/s);
+  assert.match(mobileOperations, /\.ops-console \.ops-basic-config-button\s*\{[^}]*width:\s*44px;[^}]*min-width:\s*44px/s);
+  assert.match(mobileOperations, /\.ops-console \.ops-basic-config-button,[\s\S]*?\.ops-console \.ops-help-button\s*\{[^}]*min-height:\s*44px/s);
   assert.match(finalOperationsCss, /@media \(max-width: 1180px\)[\s\S]*?\.ops-task-grid,[\s\S]*?\.ops-analysis-grid\s*\{[^}]*grid-template-columns:\s*1fr/s);
   assert.match(finalOperationsCss, /\.ops-audit-diff\.is-compact > div\s*\{[^}]*grid-template-areas:[\s\S]*?"key key key"/s);
   assert.match(finalOperationsCss, /\.ops-table-wrap\.has-sticky-actions \.ops-table td:not\(\[colspan\]\):last-child\s*\{[^}]*position:\s*sticky[^}]*right:\s*0/s);
   assert.match(operationsSource, /左右滑动查看字段/);
   assert.match(finalOperationsCss, /\.ops-check,[\s\S]*?\.ops-product-head\s*\{[^}]*min-height:\s*44px/s);
   assert.match(operationsRoutes, /\.ops-range-controls\.has-time-range\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\) 44px/s);
+  assert.match(operationsRoutes, /\.ops-console \.ops-table-actions button,[\s\S]*?\.ops-console \.ops-table-link\s*\{[^}]*min-width:\s*40px;[^}]*min-height:\s*36px/s);
   assert.match(operationsRoutes, /\.ops-console \.ops-icon-button,[\s\S]*?\.ops-console \.ops-drawer-close\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/s);
   assert.match(operationsRoutes, /@media \(max-width: 1100px\) and \(min-width: 821px\)[\s\S]*?\.ops-page-title\s*\{[^}]*flex-direction:\s*column/s);
   assert.match(operationsRoutes, /\.ops-console :is\(\.ops-select-control, \.ops-environment-label\)\s*\{[^}]*white-space:\s*nowrap/s);
@@ -112,6 +114,24 @@ test("narrow layouts retain readable controls, discoverable actions, and collisi
   assert.match(operationsSource, /tickFormatter=\{formatModelAxisTick\}[\s\S]*?minTickGap=\{10\}/);
   assert.doesNotMatch(operationsSource, /<XAxis[^>]*interval=\{0\}/);
   assert.doesNotMatch(finalOperationsCss, /!important/);
+  assert.doesNotMatch(finalOperationsCss, /var\([^;]+\)[0-9a-f]{3,8}\b/i);
+});
+
+test("mobile help and the account menu remain named and keyboard reachable", () => {
+  assert.match(operationsSource, /className="ops-workspace-actions" role="group" aria-label="创作工作区"/);
+  assert.match(operationsSource, /className="ops-creation-entry"/);
+  assert.match(operationsRoutes, /\.ops-console \.ops-creation-entry\s*\{[^}]*min-height:\s*var\(--control-md, 40px\)/s);
+  assert.match(mobileOperations, /@media \(max-width: 820px\)[\s\S]*?\.ops-console \.ops-creation-entry\s*\{[^}]*height:\s*44px;[^}]*min-height:\s*44px/s);
+  assert.match(mobileOperations, /@media \(max-width: 420px\)[\s\S]*?\.ops-console \.ops-workspace-actions\s*\{[^}]*order:\s*-2/s);
+  assert.match(operationsSource, /className="ops-help-button" aria-label="打开运营控制台帮助"/);
+  assert.match(mobileOperations, /\.ops-console \.ops-help-button\s*\{[^}]*width:\s*44px;[^}]*min-width:\s*44px/s);
+  assert.doesNotMatch(mobileOperations, /\.ops-help-button[^\{]*\{[^}]*display:\s*none/s);
+  assert.match(operationsSource, /aria-haspopup="menu"/);
+  assert.match(operationsSource, /aria-controls="ops-account-menu"/);
+  assert.match(operationsSource, /event\.key === "Escape"/);
+  assert.match(operationsSource, /document\.addEventListener\("pointerdown", closeFromOutside\)/);
+  assert.match(operationsSource, /document\.addEventListener\("focusin", closeFromOutside\)/);
+  assert.match(operationsSource, /menuItem\?\.focus\(\)/);
 });
 
 test("phone navigation, identity and filter controls retain 44px touch targets", () => {
@@ -125,10 +145,15 @@ test("phone navigation, identity and filter controls retain 44px touch targets",
 
   assert.match(tabletRules, /\.ops-console \.ops-topbar nav button\s*\{[^}]*min-height:\s*51px/s);
   assert.match(tabletRules, /\.ops-console \.ops-nav-scroll-button\s*\{[^}]*min-height:\s*51px/s);
-  assert.match(tabletRules, /\.ops-admin-tools \.skin-switcher select\s*\{[^}]*min-height:\s*44px/s);
+  assert.match(tabletRules, /\.ops-admin-tools \.skin-switcher-trigger\s*\{[^}]*min-height:\s*44px/s);
   assert.match(tabletRules, /\.ops-admin-tools \.demo-account-switcher select\s*\{[^}]*min-height:\s*44px/s);
   assert.match(finalOperationsCss, /\.ops-filterbar input,[\s\S]*?\.ops-filterbar select[\s\S]*?min-height:\s*44px/);
   assert.match(finalOperationsCss, /\.ops-range-controls select,[\s\S]*?min-height:\s*44px/);
   assert.match(finalOperationsCss, /\.ops-model-row-link,[\s\S]*?\.ops-table-actions button,[\s\S]*?\.ops-table-link[\s\S]*?min-width:\s*44px/);
+  assert.match(tabletRules, /\.ops-page-controls\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*justify-content:\s*stretch/s);
   assert.match(phoneRules, /@media \(max-width: 360px\)[\s\S]*?--ops-mobile-gutter:\s*12px/);
+  assert.match(phoneRules, /@media \(max-width: 360px\)[\s\S]*?\.ops-range-controls\.has-time-range\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 44px/s);
+  assert.match(mobileOperations, /@media \(max-width: 420px\)[\s\S]*?\.ops-admin-tools\s*\{[^}]*overflow-x:\s*auto/s);
+  assert.match(mobileOperations, /@media \(max-width: 420px\)[\s\S]*?\.demo-account-switcher\s*\{[^}]*order:\s*-1;[^}]*min-width:\s*168px/s);
+  assert.match(mobileOperations, /\.demo-account-switcher \.demo-account-origin\s*\{[^}]*display:\s*none/s);
 });

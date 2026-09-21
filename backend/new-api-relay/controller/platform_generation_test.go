@@ -34,6 +34,11 @@ func platformGenerationTestApprovalSignature(
 ) string {
 	var payload bytes.Buffer
 	payload.WriteString("platform-generation-reconciliation-approval-v1\x00")
+	appendField := func(value string) {
+		payload.WriteString(strconv.Itoa(len([]byte(value))))
+		payload.WriteByte(':')
+		payload.WriteString(value)
+	}
 	for _, value := range []string{
 		tenantID,
 		jobID,
@@ -48,13 +53,215 @@ func platformGenerationTestApprovalSignature(
 		request.ApprovalReason,
 		request.ApprovalKeyID,
 	} {
-		payload.WriteString(strconv.Itoa(len([]byte(value))))
-		payload.WriteByte(':')
-		payload.WriteString(value)
+		appendField(value)
+	}
+	if evidence := request.SynchronousResult; evidence != nil {
+		appendField("synchronous-result-v1")
+		for _, value := range []string{
+			evidence.ProviderModelID,
+			evidence.ProviderResponseSHA256,
+			evidence.ArtifactURL,
+			evidence.ProviderCreatedAt,
+			strconv.Itoa(evidence.GeneratedImages),
+			strconv.Itoa(evidence.OutputTokens),
+			strconv.Itoa(evidence.TotalTokens),
+		} {
+			appendField(value)
+		}
 	}
 	mac := hmac.New(sha256.New, []byte(platformGenerationTestApprovalSecret))
 	_, _ = mac.Write(payload.Bytes())
 	return fmt.Sprintf("hmac-sha256:%x", mac.Sum(nil))
+}
+
+func TestPlatformGenerationCreatedReconciliationAPIReplaysSecretFreeReceipt(t *testing.T) {
+	originalDB := model.DB
+	originalDatabaseType := common.MainDatabaseType()
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	model.DB = database
+	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+	t.Cleanup(func() {
+		model.DB = originalDB
+		common.SetMainDatabaseType(originalDatabaseType)
+	})
+	require.NoError(t, database.AutoMigrate(&model.PlatformGenerationJob{}))
+	require.NoError(t, model.MigratePlatformGenerationReconciliationStorage())
+
+	tenantID := uuid.NewString()
+	jobID := uuid.NewString()
+	operationsToken := "created-replay-operations-token-32-bytes"
+	operationsDigest := sha256.Sum256([]byte(operationsToken))
+	t.Setenv("RELAY_COMPAT_OPERATIONS_CREDENTIALS_JSON", fmt.Sprintf(
+		`[{"tenant_id":%q,"token_sha256":"%x"}]`,
+		tenantID,
+		operationsDigest,
+	))
+	t.Setenv("RELAY_COMPAT_RECONCILIATION_APPROVAL_KEYS_JSON", fmt.Sprintf(
+		`[{"tenant_id":%q,"key_id":"platform-approval-v1","secret":%q}]`,
+		tenantID,
+		platformGenerationTestApprovalSecret,
+	))
+
+	accepted := dto.NewPlatformGenerationRequest()
+	accepted.Model = "seedream-replay-model"
+	accepted.Mode = "text_to_image"
+	accepted.Inputs.Prompt = "receipt replay"
+	accepted.Output.DurationSeconds = 1
+	accepted.Output.AspectRatio = "1:1"
+	accepted.Output.Resolution = "2048x2048"
+	accepted.Output.Count = 1
+	requestJSON, err := common.Marshal(accepted)
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Second)
+	job := model.PlatformGenerationJob{
+		ID: jobID, TenantID: tenantID, SourceClientID: "platform",
+		RequestID: "created-replay-original-request", IdempotencyKey: "created-replay-idempotency",
+		RequestHash: strings.Repeat("1", 64), RequestJSON: string(requestJSON),
+		Model: accepted.Model, Mode: accepted.Mode,
+		ExpectedCapabilityRevision: "sha256:" + strings.Repeat("2", 64),
+		CapabilityRevision:         "sha256:" + strings.Repeat("2", 64),
+		Status:                     model.PlatformGenerationStatusSucceeded, Progress: 100,
+		OutputsJSON: `[]`, ErrorDetailsJSON: `{}`, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(t, database.Create(&job).Error)
+
+	providerResponseSHA256 := strings.Repeat("3", 64)
+	providerArtifactURL := "https://provider.example/image.png?X-Signature=temporary-secret"
+	artifactURLDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(providerArtifactURL)))
+	reconciliationRequest := dto.PlatformGenerationReconciliationRequest{
+		OperationID:                 "created-replay-operation-0001",
+		TenantID:                    tenantID,
+		Outcome:                     "created",
+		UpstreamTaskID:              "seedream:" + providerResponseSHA256,
+		ExpectedRouteID:             9201,
+		ExpectedSubmissionAttempt:   1,
+		ExpectedReconciliationToken: "sha256:" + strings.Repeat("4", 64),
+		VerificationReference:       "provider-receipt-created-replay",
+		ApprovedBy:                  "platform-owner-created-replay",
+		ApprovalReason:              "Replay the exact immutable provider result",
+		ApprovalKeyID:               "platform-approval-v1",
+		SynchronousResult: &dto.PlatformGenerationSynchronousResultEvidence{
+			ProviderModelID:        "seedream-provider-model",
+			ProviderResponseSHA256: providerResponseSHA256,
+			ArtifactURL:            providerArtifactURL,
+			ProviderCreatedAt:      now.Format(time.RFC3339),
+			GeneratedImages:        1,
+			OutputTokens:           1,
+			TotalTokens:            1,
+		},
+	}
+	reconciliationRequest.ApprovalSignature = platformGenerationTestApprovalSignature(
+		tenantID,
+		jobID,
+		reconciliationRequest,
+	)
+	type synchronousPayload struct {
+		ProviderModelID        string `json:"provider_model_id"`
+		ProviderResponseSHA256 string `json:"provider_response_sha256"`
+		ArtifactURLSHA256      string `json:"artifact_url_sha256"`
+		ProviderCreatedAt      string `json:"provider_created_at"`
+		GeneratedImages        int    `json:"generated_images"`
+		OutputTokens           int    `json:"output_tokens"`
+		TotalTokens            int    `json:"total_tokens"`
+	}
+	canonicalPayload := struct {
+		TenantID                    string              `json:"tenant_id"`
+		JobID                       string              `json:"job_id"`
+		OperationID                 string              `json:"operation_id"`
+		Outcome                     string              `json:"outcome"`
+		UpstreamTaskID              string              `json:"upstream_task_id"`
+		ExpectedRouteID             int64               `json:"expected_route_id"`
+		ExpectedSubmissionAttempt   int                 `json:"expected_submission_attempt"`
+		ExpectedReconciliationToken string              `json:"expected_reconciliation_token"`
+		VerificationReference       string              `json:"verification_reference"`
+		ApprovedBy                  string              `json:"approved_by"`
+		ApprovalReason              string              `json:"approval_reason"`
+		ApprovalKeyID               string              `json:"approval_key_id"`
+		ApprovalSignature           string              `json:"approval_signature"`
+		SynchronousResult           *synchronousPayload `json:"synchronous_result,omitempty"`
+		ResolvedStatus              string              `json:"resolved_status"`
+	}{
+		TenantID: tenantID, JobID: jobID, OperationID: reconciliationRequest.OperationID,
+		Outcome: reconciliationRequest.Outcome, UpstreamTaskID: reconciliationRequest.UpstreamTaskID,
+		ExpectedRouteID:             reconciliationRequest.ExpectedRouteID,
+		ExpectedSubmissionAttempt:   reconciliationRequest.ExpectedSubmissionAttempt,
+		ExpectedReconciliationToken: reconciliationRequest.ExpectedReconciliationToken,
+		VerificationReference:       reconciliationRequest.VerificationReference,
+		ApprovedBy:                  reconciliationRequest.ApprovedBy, ApprovalReason: reconciliationRequest.ApprovalReason,
+		ApprovalKeyID: reconciliationRequest.ApprovalKeyID, ApprovalSignature: reconciliationRequest.ApprovalSignature,
+		SynchronousResult: &synchronousPayload{
+			ProviderModelID:        reconciliationRequest.SynchronousResult.ProviderModelID,
+			ProviderResponseSHA256: providerResponseSHA256, ArtifactURLSHA256: artifactURLDigest,
+			ProviderCreatedAt: now.Format(time.RFC3339), GeneratedImages: 1, OutputTokens: 1, TotalTokens: 1,
+		},
+		ResolvedStatus: model.PlatformGenerationStatusProcessing,
+	}
+	payloadJSON, err := common.Marshal(canonicalPayload)
+	require.NoError(t, err)
+	eventID := uuid.NewSHA1(
+		uuid.NameSpaceURL,
+		[]byte("platform-generation-reconciliation-v1\x00"+tenantID+"\x00"+reconciliationRequest.OperationID),
+	).String()
+	event := model.PlatformGenerationReconciliationEvent{
+		ID: eventID, TenantID: tenantID, JobID: jobID, OperationID: reconciliationRequest.OperationID,
+		RequestID: "created-replay-original-request", Outcome: reconciliationRequest.Outcome,
+		UpstreamTaskID:              reconciliationRequest.UpstreamTaskID,
+		ExpectedRouteID:             reconciliationRequest.ExpectedRouteID,
+		ExpectedSubmissionAttempt:   reconciliationRequest.ExpectedSubmissionAttempt,
+		ExpectedReconciliationToken: reconciliationRequest.ExpectedReconciliationToken,
+		VerificationReference:       reconciliationRequest.VerificationReference,
+		ApprovedBy:                  reconciliationRequest.ApprovedBy, ApprovalReason: reconciliationRequest.ApprovalReason,
+		ApprovalKeyID: reconciliationRequest.ApprovalKeyID, ApprovalSignature: reconciliationRequest.ApprovalSignature,
+		ResolvedStatus: model.PlatformGenerationStatusProcessing, PayloadJSON: string(payloadJSON),
+		PayloadSHA256: fmt.Sprintf("%x", sha256.Sum256(payloadJSON)), ResolvedAt: now, CreatedAt: now,
+	}
+	require.NoError(t, database.Create(&event).Error)
+	assert.NotContains(t, event.PayloadJSON, providerArtifactURL)
+	assert.NotContains(t, event.PayloadJSON, "temporary-secret")
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(middleware.PlatformRelayRequestID())
+	router.POST("/internal/platform-generation-operations/:job_id/reconciliation", ResolvePlatformGenerationSubmissionUnknown)
+	body, err := common.Marshal(reconciliationRequest)
+	require.NoError(t, err)
+	replayRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/internal/platform-generation-operations/"+jobID+"/reconciliation",
+		bytes.NewReader(body),
+	)
+	replayRequest.Header.Set("X-Relay-Operations-Token", operationsToken)
+	replayRequest.Header.Set("X-Request-ID", "created-replay-api-request")
+	replayResponse := httptest.NewRecorder()
+	router.ServeHTTP(replayResponse, replayRequest)
+	require.Equal(t, http.StatusOK, replayResponse.Code, replayResponse.Body.String())
+	assert.Equal(t, "true", replayResponse.Header().Get("X-Idempotent-Replay"))
+	assert.Equal(t, eventID, replayResponse.Header().Get("X-Reconciliation-Event-ID"))
+	assert.NotContains(t, replayResponse.Body.String(), providerArtifactURL)
+	assert.NotContains(t, replayResponse.Body.String(), "temporary-secret")
+
+	conflicting := reconciliationRequest
+	conflictingSynchronous := *reconciliationRequest.SynchronousResult
+	conflictingSynchronous.ArtifactURL += "&nonce=changed"
+	conflicting.SynchronousResult = &conflictingSynchronous
+	conflicting.ApprovalSignature = platformGenerationTestApprovalSignature(tenantID, jobID, conflicting)
+	conflictingBody, err := common.Marshal(conflicting)
+	require.NoError(t, err)
+	conflictRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/internal/platform-generation-operations/"+jobID+"/reconciliation",
+		bytes.NewReader(conflictingBody),
+	)
+	conflictRequest.Header.Set("X-Relay-Operations-Token", operationsToken)
+	conflictRequest.Header.Set("X-Request-ID", "created-replay-api-conflict")
+	conflictResponse := httptest.NewRecorder()
+	router.ServeHTTP(conflictResponse, conflictRequest)
+	assert.Equal(t, http.StatusConflict, conflictResponse.Code, conflictResponse.Body.String())
+	var eventCount int64
+	require.NoError(t, database.Model(&model.PlatformGenerationReconciliationEvent{}).
+		Where("job_id = ?", jobID).Count(&eventCount).Error)
+	assert.EqualValues(t, 1, eventCount)
 }
 
 func TestPlatformGenerationOperationsCredentialIsTenantScoped(t *testing.T) {
@@ -92,6 +299,7 @@ func TestPlatformGenerationOperationsDiscoversOnlyFencedUnknownSubmissions(t *te
 		&model.PlatformGenerationProviderAccountState{},
 		&model.PlatformGenerationProviderRoute{},
 		&model.PlatformGenerationRouteAdmission{},
+		&model.Task{},
 	))
 	require.NoError(t, model.MigratePlatformGenerationReconciliationStorage())
 
@@ -151,6 +359,7 @@ func TestPlatformGenerationOperationsDiscoversOnlyFencedUnknownSubmissions(t *te
 		Attempt: 2, UnknownAt: &unknownAt,
 	}
 	require.NoError(t, database.Create(&admission).Error)
+	pollNativeTaskID := "platform-proof-" + uuid.NewString()
 	pollReconciliationJob := model.PlatformGenerationJob{
 		ID: uuid.NewString(), TenantID: tenantID, SourceClientID: "platform",
 		RequestID: "provider-poll-reconciliation", IdempotencyKey: "provider-poll-reconciliation-key",
@@ -159,12 +368,16 @@ func TestPlatformGenerationOperationsDiscoversOnlyFencedUnknownSubmissions(t *te
 		ExpectedCapabilityRevision: "sha256:" + strings.Repeat("6", 64),
 		CapabilityRevision:         "sha256:" + strings.Repeat("6", 64),
 		Status:                     model.PlatformGenerationStatusReconciliationRequired,
+		NativeTaskID:               pollNativeTaskID,
 		ProviderRouteID:            route.ID,
 		ProviderChannelID:          route.ChannelID,
 		ProviderKeyIndex:           route.KeyIndex,
 		ProviderSubmissionAttempt:  3,
 		ErrorCode:                  model.PlatformGenerationErrorProviderPollReconciliationRequired,
 		ErrorMessage:               "Native provider task requires poll reconciliation",
+		ErrorDetailsJSON: model.PlatformGenerationProviderReconciliationDetailsJSON(
+			model.PlatformGenerationProviderReconciliationKindProviderResultProof,
+		),
 	}
 	require.NoError(t, database.Create(&pollReconciliationJob).Error)
 	pollAdmission := model.PlatformGenerationRouteAdmission{
@@ -172,11 +385,53 @@ func TestPlatformGenerationOperationsDiscoversOnlyFencedUnknownSubmissions(t *te
 		State: model.PlatformGenerationRouteAdmissionPosting, SlotHeld: true, Attempt: 3,
 	}
 	require.NoError(t, database.Create(&pollAdmission).Error)
+	proofConflictReceipt, err := common.Marshal(model.NewPlatformGenerationProviderProofConflictReceipt(
+		[]byte(`{"id":"provider-task","status":"succeeded"}`),
+	))
+	require.NoError(t, err)
+	require.NoError(t, database.Create(&model.Task{
+		TaskID: pollNativeTaskID,
+		Status: model.TaskStatusUnknown,
+		Data:   proofConflictReceipt,
+		PrivateData: model.TaskPrivateData{
+			BillingSource: model.TaskBillingSourcePlatformExternal,
+		},
+	}).Error)
+
+	missingNativeJob := pollReconciliationJob
+	missingNativeJob.ID = uuid.NewString()
+	missingNativeJob.RequestID = "missing-native-task"
+	missingNativeJob.IdempotencyKey = "missing-native-task-key"
+	missingNativeJob.NativeTaskID = "platform-missing-" + uuid.NewString()
+	missingNativeJob.ErrorMessage = ""
+	missingNativeJob.ErrorDetailsJSON = model.PlatformGenerationProviderReconciliationDetailsJSON(
+		model.PlatformGenerationProviderReconciliationKindMissingNativeTask,
+	)
+	require.NoError(t, database.Create(&missingNativeJob).Error)
+
+	providerMaterialURL := "https://provider.example/temporary.mp4?signature=must-never-be-returned"
+	providerMaterialJob := pollReconciliationJob
+	providerMaterialJob.ID = uuid.NewString()
+	providerMaterialJob.RequestID = "published-provider-material"
+	providerMaterialJob.IdempotencyKey = "published-provider-material-key"
+	providerMaterialJob.NativeTaskID = ""
+	providerMaterialJob.Status = model.PlatformGenerationStatusSucceeded
+	providerMaterialJob.Progress = 100
+	providerMaterialJob.OutputsJSON = `[{"asset_id":"canonical"}]`
+	providerMaterialJob.UpstreamResultURL = providerMaterialURL
+	providerMaterialJob.ErrorCode = ""
+	providerMaterialJob.ErrorMessage = ""
+	providerMaterialJob.ErrorDetailsJSON = model.PlatformGenerationProviderReconciliationDetailsJSON(
+		model.PlatformGenerationProviderReconciliationKindProviderMaterial,
+	)
+	require.NoError(t, database.Create(&providerMaterialJob).Error)
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(middleware.PlatformRelayRequestID())
 	router.GET("/internal/platform-generation-operations/submission-unknown", ListPlatformGenerationSubmissionUnknown)
+	router.GET("/internal/platform-generation-operations/provider-result-reconciliation", ListPlatformGenerationProviderResultReconciliations)
+	router.GET("/internal/platform-generation-operations/:job_id/provider-result-reconciliation", GetPlatformGenerationProviderResultReconciliation)
 	router.GET("/internal/platform-generation-operations/:job_id/reconciliation", GetPlatformGenerationSubmissionUnknown)
 	router.GET("/internal/platform-generation-operations/:job_id/reconciliation-result", GetPlatformGenerationSubmissionUnknownResult)
 	router.POST("/internal/platform-generation-operations/:job_id/reconciliation", ResolvePlatformGenerationSubmissionUnknown)
@@ -208,6 +463,75 @@ func TestPlatformGenerationOperationsDiscoversOnlyFencedUnknownSubmissions(t *te
 	pollDetailResponse := httptest.NewRecorder()
 	router.ServeHTTP(pollDetailResponse, pollDetailRequest)
 	assert.Equal(t, http.StatusNotFound, pollDetailResponse.Code)
+
+	providerResultListRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/internal/platform-generation-operations/provider-result-reconciliation?tenant_id="+tenantID,
+		nil,
+	)
+	providerResultListRequest.Header.Set("X-Relay-Operations-Token", operationsToken)
+	providerResultListResponse := httptest.NewRecorder()
+	router.ServeHTTP(providerResultListResponse, providerResultListRequest)
+	require.Equal(t, http.StatusOK, providerResultListResponse.Code, providerResultListResponse.Body.String())
+	var providerResultPage dto.PlatformGenerationProviderResultReconciliationPage
+	require.NoError(t, common.Unmarshal(providerResultListResponse.Body.Bytes(), &providerResultPage))
+	require.Len(t, providerResultPage.Data, 3)
+	assert.EqualValues(t, 3, providerResultPage.Total)
+	itemsByJobID := make(map[string]dto.PlatformGenerationProviderResultReconciliationItem, len(providerResultPage.Data))
+	for _, item := range providerResultPage.Data {
+		itemsByJobID[item.JobID] = item
+		assert.False(t, item.ResolutionSupported)
+	}
+	proofItem := itemsByJobID[pollReconciliationJob.ID]
+	assert.Equal(t, pollReconciliationJob.Mode, proofItem.Mode)
+	assert.Equal(t, model.PlatformGenerationProviderReconciliationKindProviderResultProof, proofItem.ReconciliationKind)
+	assert.True(t, proofItem.EvidenceRetained)
+	assert.Equal(t, model.PlatformGenerationErrorProviderPollReconciliationRequired, proofItem.ErrorCode)
+	assert.Equal(t, "Provider terminal proof requires manual reconciliation", proofItem.ErrorMessage)
+	missingItem := itemsByJobID[missingNativeJob.ID]
+	assert.Equal(t, model.PlatformGenerationProviderReconciliationKindMissingNativeTask, missingItem.ReconciliationKind)
+	assert.False(t, missingItem.EvidenceRetained)
+	assert.Equal(t, "Native task evidence is unavailable and requires manual reconciliation", missingItem.ErrorMessage)
+	materialItem := itemsByJobID[providerMaterialJob.ID]
+	assert.Equal(t, model.PlatformGenerationProviderReconciliationKindProviderMaterial, materialItem.ReconciliationKind)
+	assert.True(t, materialItem.EvidenceRetained)
+	assert.Empty(t, materialItem.ErrorCode, "a successful published job must not be misreported as a poll error")
+	assert.Equal(t, "Retained provider material requires manual reconciliation", materialItem.ErrorMessage)
+	assert.NotContains(t, providerResultListResponse.Body.String(), providerMaterialURL)
+	assert.NotContains(t, providerResultListResponse.Body.String(), "must-never-be-returned")
+
+	providerResultDetailRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/internal/platform-generation-operations/"+pollReconciliationJob.ID+"/provider-result-reconciliation?tenant_id="+tenantID,
+		nil,
+	)
+	providerResultDetailRequest.Header.Set("X-Relay-Operations-Token", operationsToken)
+	providerResultDetailResponse := httptest.NewRecorder()
+	router.ServeHTTP(providerResultDetailResponse, providerResultDetailRequest)
+	require.Equal(t, http.StatusOK, providerResultDetailResponse.Code, providerResultDetailResponse.Body.String())
+	var providerResultDetail dto.PlatformGenerationProviderResultReconciliationItem
+	require.NoError(t, common.Unmarshal(providerResultDetailResponse.Body.Bytes(), &providerResultDetail))
+	assert.Equal(t, pollReconciliationJob.ID, providerResultDetail.JobID)
+	assert.False(t, providerResultDetail.ResolutionSupported)
+	assert.Equal(t, model.PlatformGenerationProviderReconciliationKindProviderResultProof, providerResultDetail.ReconciliationKind)
+	assert.True(t, providerResultDetail.EvidenceRetained)
+
+	providerMaterialDetailRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/internal/platform-generation-operations/"+providerMaterialJob.ID+"/provider-result-reconciliation?tenant_id="+tenantID,
+		nil,
+	)
+	providerMaterialDetailRequest.Header.Set("X-Relay-Operations-Token", operationsToken)
+	providerMaterialDetailResponse := httptest.NewRecorder()
+	router.ServeHTTP(providerMaterialDetailResponse, providerMaterialDetailRequest)
+	require.Equal(t, http.StatusOK, providerMaterialDetailResponse.Code, providerMaterialDetailResponse.Body.String())
+	var providerMaterialDetail dto.PlatformGenerationProviderResultReconciliationItem
+	require.NoError(t, common.Unmarshal(providerMaterialDetailResponse.Body.Bytes(), &providerMaterialDetail))
+	assert.Equal(t, model.PlatformGenerationProviderReconciliationKindProviderMaterial, providerMaterialDetail.ReconciliationKind)
+	assert.True(t, providerMaterialDetail.EvidenceRetained)
+	assert.Empty(t, providerMaterialDetail.ErrorCode)
+	assert.NotContains(t, providerMaterialDetailResponse.Body.String(), providerMaterialURL)
+	assert.NotContains(t, providerMaterialDetailResponse.Body.String(), "must-never-be-returned")
 
 	wrongTenantRequest := httptest.NewRequest(
 		http.MethodGet,
@@ -794,6 +1118,92 @@ func TestPlatformRelayReadyReportsStartingWorkerRuntimeAsUnavailable(t *testing.
 	assert.Equal(t, "unavailable", compat.State)
 	assert.Equal(t, string(service.PlatformGenerationWorkerStateStarting), compat.Details["worker_runtime_state"])
 	assert.Equal(t, false, compat.Details["worker_runtime_running"])
+}
+
+func completePlatformRelayProviderRuntimeSummary() service.PlatformProviderReadinessSummary {
+	return service.PlatformProviderReadinessSummary{
+		Enabled:                    true,
+		MonitorFresh:               true,
+		CostSuccessfulRelayJobs:    1,
+		CostExplicitRelayJobs:      1,
+		CostReconciliationComplete: true,
+	}
+}
+
+func TestPlatformRelayProviderRuntimeCutoverRequiresEveryOperationalAndCostSignal(t *testing.T) {
+	healthy := completePlatformRelayProviderRuntimeSummary()
+	state, cutoverReady := platformRelayProviderRuntimeClassification(healthy)
+	require.Equal(t, "healthy", state)
+	require.True(t, cutoverReady)
+
+	tests := []struct {
+		name   string
+		mutate func(*service.PlatformProviderReadinessSummary)
+	}{
+		{"runtime disabled", func(summary *service.PlatformProviderReadinessSummary) { summary.Enabled = false }},
+		{"monitor stale", func(summary *service.PlatformProviderReadinessSummary) { summary.MonitorFresh = false }},
+		{"monitor worker error", func(summary *service.PlatformProviderReadinessSummary) {
+			summary.MonitorLastWorkerErrorCode = "monitor_failed"
+		}},
+		{"active alert", func(summary *service.PlatformProviderReadinessSummary) { summary.ActiveAlerts = 1 }},
+		{"unavailable route", func(summary *service.PlatformProviderReadinessSummary) { summary.UnavailableRoutes = 1 }},
+		{"alert backlog", func(summary *service.PlatformProviderReadinessSummary) { summary.AlertBacklog = 1 }},
+		{"alert dead letter", func(summary *service.PlatformProviderReadinessSummary) { summary.AlertDeadLetter = 1 }},
+		{"cost incomplete", func(summary *service.PlatformProviderReadinessSummary) { summary.CostIncomplete = 1 }},
+		{"cost backlog", func(summary *service.PlatformProviderReadinessSummary) { summary.CostBacklog = 1 }},
+		{"cost dead letter", func(summary *service.PlatformProviderReadinessSummary) { summary.CostDeadLetter = 1 }},
+		{"successful cost evidence missing", func(summary *service.PlatformProviderReadinessSummary) { summary.CostSuccessfulRelayJobs = 0 }},
+		{"native billing reconciliation pending", func(summary *service.PlatformProviderReadinessSummary) { summary.NativeBillingReconciliationJobs = 1 }},
+		{"cost reconciliation incomplete", func(summary *service.PlatformProviderReadinessSummary) { summary.CostReconciliationComplete = false }},
+		{"task stage backlog", func(summary *service.PlatformProviderReadinessSummary) { summary.TaskStageBacklog = 1 }},
+		{"task stage dead letter", func(summary *service.PlatformProviderReadinessSummary) { summary.TaskStageDeadLetter = 1 }},
+		{"operations snapshot backlog", func(summary *service.PlatformProviderReadinessSummary) { summary.OperationsSnapshotBacklog = 1 }},
+		{"operations snapshot dead letter", func(summary *service.PlatformProviderReadinessSummary) { summary.OperationsSnapshotDeadLetter = 1 }},
+		{"provider result reconciliation backlog", func(summary *service.PlatformProviderReadinessSummary) {
+			summary.ProviderResultReconciliationBacklog = 1
+		}},
+		{"summary degraded", func(summary *service.PlatformProviderReadinessSummary) { summary.Degraded = true }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			summary := healthy
+			test.mutate(&summary)
+			state, cutoverReady := platformRelayProviderRuntimeClassification(summary)
+			assert.Equal(t, "degraded", state)
+			assert.False(t, cutoverReady)
+		})
+	}
+}
+
+func TestPlatformRelayProviderRuntimeDetailsMatchAcceptanceContract(t *testing.T) {
+	summary := completePlatformRelayProviderRuntimeSummary()
+	details := platformRelayProviderRuntimeDetails(summary, true)
+	requiredFields := []string{
+		"enabled",
+		"monitor_fresh",
+		"monitor_last_error_code",
+		"active_alerts",
+		"unavailable_routes",
+		"alert_backlog",
+		"alert_dead_letter",
+		"cost_incomplete",
+		"cost_backlog",
+		"cost_dead_letter",
+		"cost_successful_relay_jobs",
+		"native_billing_reconciliation_jobs",
+		"cost_reconciliation_complete",
+		"task_stage_backlog",
+		"task_stage_dead_letter",
+		"operations_snapshot_backlog",
+		"operations_snapshot_dead_letter",
+		"provider_result_reconciliation_backlog",
+		"production_cutover_ready",
+	}
+	for _, field := range requiredFields {
+		assert.Contains(t, details, field)
+	}
+	assert.Equal(t, "", details["monitor_last_error_code"])
+	assert.Equal(t, true, details["production_cutover_ready"])
 }
 
 func performPlatformGenerationRequest(

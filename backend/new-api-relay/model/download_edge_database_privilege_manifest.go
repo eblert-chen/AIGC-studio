@@ -1,16 +1,20 @@
 package model
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/pbkdf2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -19,6 +23,11 @@ import (
 const relayDownloadEdgeDatabasePrivilegeManifestV1SHA256 = "sha256:00dc794c68c74a51b351b579841214fbc7cbdb23be3ae00eae4ba09962518ad5"
 const relayDownloadEdgeDatabasePrivilegeManifestV2SHA256 = "sha256:00dc794c68c74a51b351b579841214fbc7cbdb23be3ae00eae4ba09962518ad5"
 const relayDownloadEdgeDatabasePrivilegeManifestV3SHA256 = "sha256:00dc794c68c74a51b351b579841214fbc7cbdb23be3ae00eae4ba09962518ad5"
+const relayDownloadEdgeDatabasePrivilegeManifestV4SHA256 = "sha256:00dc794c68c74a51b351b579841214fbc7cbdb23be3ae00eae4ba09962518ad5"
+const relayDownloadEdgeDatabasePrivilegeManifestV5SHA256 = "sha256:00dc794c68c74a51b351b579841214fbc7cbdb23be3ae00eae4ba09962518ad5"
+const relayDownloadEdgeDatabasePrivilegeManifestV6SHA256 = "sha256:00dc794c68c74a51b351b579841214fbc7cbdb23be3ae00eae4ba09962518ad5"
+const relayDownloadEdgeDatabasePrivilegeManifestV7SHA256 = "sha256:00dc794c68c74a51b351b579841214fbc7cbdb23be3ae00eae4ba09962518ad5"
+const relayDownloadEdgeDatabasePrivilegeManifestV8SHA256 = "sha256:5498b7b4d18787c5d0973fd6902c56e04a5af9247b2bb448e47ab48c3eea7841"
 
 type relayDownloadEdgePrivilegeManifest struct {
 	Tables        map[string]relayTablePrivilegeSet
@@ -58,6 +67,66 @@ var relayDownloadEdgeV3UpdateColumns = map[string][]string{
 	},
 }
 
+var relayDownloadEdgeV4UpdateColumns = map[string][]string{
+	"platform_download_edge_tickets": {
+		"state", "claim_token", "claimed_at", "claim_expires_at", "gateway_request_id",
+		"failure_code", "completed_at", "updated_at",
+	},
+	"platform_relay_external_deliveries": {
+		"state", "attempts", "available_at", "claim_token", "claimed_at", "claim_expires_at",
+		"response_status", "last_error", "delivered_at", "dead_lettered_at", "updated_at",
+	},
+}
+
+var relayDownloadEdgeV5UpdateColumns = map[string][]string{
+	"platform_download_edge_tickets": {
+		"state", "claim_token", "claimed_at", "claim_expires_at", "gateway_request_id",
+		"failure_code", "completed_at", "updated_at",
+	},
+	"platform_relay_external_deliveries": {
+		"state", "attempts", "available_at", "claim_token", "claimed_at", "claim_expires_at",
+		"response_status", "last_error", "delivered_at", "dead_lettered_at", "updated_at",
+	},
+}
+
+var relayDownloadEdgeV6UpdateColumns = map[string][]string{
+	"platform_download_edge_tickets": {
+		"state", "claim_token", "claimed_at", "claim_expires_at", "gateway_request_id",
+		"failure_code", "completed_at", "updated_at",
+	},
+	"platform_relay_external_deliveries": {
+		"state", "attempts", "available_at", "claim_token", "claimed_at", "claim_expires_at",
+		"response_status", "last_error", "delivered_at", "dead_lettered_at", "updated_at",
+	},
+}
+
+// V7 is an explicit independent release projection. Keep an owned map rather
+// than aliasing the mutable v6 map: a future v7-only edit must never mutate
+// the historical v6 privilege surface in memory.
+var relayDownloadEdgeV7UpdateColumns = map[string][]string{
+	"platform_download_edge_tickets": {
+		"state", "claim_token", "claimed_at", "claim_expires_at", "gateway_request_id",
+		"failure_code", "completed_at", "updated_at",
+	},
+	"platform_relay_external_deliveries": {
+		"state", "attempts", "available_at", "claim_token", "claimed_at", "claim_expires_at",
+		"response_status", "last_error", "delivered_at", "dead_lettered_at", "updated_at",
+	},
+}
+
+// V8 adds no download-edge write surface. It owns an independent copy so a
+// future edge change cannot mutate the historical v7 projection in memory.
+var relayDownloadEdgeV8UpdateColumns = map[string][]string{
+	"platform_download_edge_tickets": {
+		"state", "claim_token", "claimed_at", "claim_expires_at", "gateway_request_id",
+		"failure_code", "completed_at", "updated_at",
+	},
+	"platform_relay_external_deliveries": {
+		"state", "attempts", "available_at", "claim_token", "claimed_at", "claim_expires_at",
+		"response_status", "last_error", "delivered_at", "dead_lettered_at", "updated_at",
+	},
+}
+
 func relayDownloadEdgeDatabasePrivilegeManifestForVersion(version int64) (relayDownloadEdgePrivilegeManifest, error) {
 	var updateColumns map[string][]string
 	switch version {
@@ -67,6 +136,16 @@ func relayDownloadEdgeDatabasePrivilegeManifestForVersion(version int64) (relayD
 		updateColumns = relayDownloadEdgeV2UpdateColumns
 	case 3:
 		updateColumns = relayDownloadEdgeV3UpdateColumns
+	case 4:
+		updateColumns = relayDownloadEdgeV4UpdateColumns
+	case 5:
+		updateColumns = relayDownloadEdgeV5UpdateColumns
+	case 6:
+		updateColumns = relayDownloadEdgeV6UpdateColumns
+	case 7:
+		updateColumns = relayDownloadEdgeV7UpdateColumns
+	case 8:
+		updateColumns = relayDownloadEdgeV8UpdateColumns
 	default:
 		return relayDownloadEdgePrivilegeManifest{}, errors.New("Relay download edge privilege manifest version is unavailable")
 	}
@@ -402,21 +481,182 @@ FROM pg_roles role WHERE role.rolname = ?`, relayDownloadEdgeDatabaseRoleName).S
 // It verifies role attributes/topology before checking the versioned ACL
 // manifest; a post-start GRANT therefore fails the next readiness probe.
 func VerifyRelayDownloadEdgeDatabaseRole(db *gorm.DB, version int64) error {
-	if db == nil || db.Dialector.Name() != "postgres" {
-		return errors.New("Relay download edge requires PostgreSQL")
-	}
-	if err := VerifyRelayDatabaseTLS(db); err != nil {
+	proof, err := AttestRelayDownloadEdgeDatabaseRole(db)
+	if err != nil {
 		return err
 	}
-	// Readiness trusts no role-local query until the shared protected-role
-	// catalog surface has passed the same exact gate as API readiness.
-	if err := verifyRelayProtectedDatabaseExactSurfaceFromEnvironment(db); err != nil {
-		return err
-	}
-	schemaStatus, err := RequireRelaySchemaCurrent(db)
-	if err != nil || schemaStatus.CurrentVersion != version {
+	if proof.schemaStatus.CurrentVersion != version {
 		return errors.New("Relay download edge requires the exact current schema catalog")
 	}
+	return nil
+}
+
+// RelayDownloadEdgeDatabaseRoleProof binds the expensive startup catalog
+// attestation to one live database pool and one immutable Relay release. The
+// unexported fields make the proof process-local and non-serializable; it cannot
+// be replayed against another database or manufactured by configuration.
+//
+// Readiness never treats this proof as a cached success boolean. Every probe
+// still revalidates TLS, lifecycle health, the complete schema state/ledger
+// release tuple, the login role/topology and the exact versioned ACL manifest.
+// Only the full catalog fingerprint is reused from startup, while the shared
+// lifecycle lock prevents an official schema transition beneath the process.
+type RelayDownloadEdgeDatabaseRoleProof struct {
+	pool         *sql.DB
+	schemaStatus RelaySchemaStatus
+	role         string
+	verifiedAt   time.Time
+}
+
+// SchemaStatus returns the immutable schema release proven at startup.
+func (proof RelayDownloadEdgeDatabaseRoleProof) SchemaStatus() RelaySchemaStatus {
+	return proof.schemaStatus
+}
+
+// VerifiedAt reports the attestation-owned completion instant. The monotonic
+// component is intentionally preserved for same-process freshness checks.
+func (proof RelayDownloadEdgeDatabaseRoleProof) VerifiedAt() time.Time {
+	return proof.verifiedAt
+}
+
+// SameRelease reports whether two proofs belong to the same process pool,
+// edge role and immutable Relay candidate/schema tuple. A refresh may replace
+// a proof only when this comparison succeeds.
+func (proof RelayDownloadEdgeDatabaseRoleProof) SameRelease(other RelayDownloadEdgeDatabaseRoleProof) bool {
+	return proof.pool != nil && proof.pool == other.pool && proof.role == relayDownloadEdgeDatabaseRoleName && proof.role == other.role &&
+		proof.schemaStatus == other.schemaStatus
+}
+
+// AttestRelayDownloadEdgeDatabaseRole is the protected edge startup gate. It
+// computes the full schema/catalog proof exactly once on a pinned connection,
+// then proves the serving role and versioned ACL against that same release.
+func AttestRelayDownloadEdgeDatabaseRole(db *gorm.DB) (RelayDownloadEdgeDatabaseRoleProof, error) {
+	return AttestRelayDownloadEdgeDatabaseRoleWithContext(context.Background(), db)
+}
+
+// AttestRelayDownloadEdgeDatabaseRoleWithContext is the refreshable form of
+// the startup gate. The supplied deadline bounds every catalog query.
+func AttestRelayDownloadEdgeDatabaseRoleWithContext(ctx context.Context, db *gorm.DB) (RelayDownloadEdgeDatabaseRoleProof, error) {
+	var proof RelayDownloadEdgeDatabaseRoleProof
+	if ctx == nil {
+		return proof, errors.New("Relay download edge database role proof context is unavailable")
+	}
+	if db == nil || db.Dialector.Name() != "postgres" {
+		return proof, errors.New("Relay download edge requires PostgreSQL")
+	}
+	pool, err := db.DB()
+	if err != nil || pool == nil {
+		return proof, errors.New("Relay download edge database pool is unavailable")
+	}
+	proof.pool = pool
+	proof.role = relayDownloadEdgeDatabaseRoleName
+	err = db.WithContext(ctx).Connection(func(connection *gorm.DB) error {
+		pinned := relayPinnedConnectionSession(connection)
+		if err := VerifyRelayDatabaseTLS(pinned); err != nil {
+			return err
+		}
+		if err := verifyRelayProtectedDatabaseExactSurfaceFromEnvironment(pinned); err != nil {
+			return err
+		}
+		schemaStatus, err := RequireRelaySchemaCurrent(pinned)
+		if err != nil {
+			return errors.New("Relay download edge requires the exact current schema catalog")
+		}
+		// The exact protected surface above is intentionally computed once. The
+		// follow-up retains live topology plus explicit cluster/parameter checks,
+		// without recursively repeating the system/catalog surface.
+		if err := verifyRelayDownloadEdgeDatabaseRoleForVersionAfterExactSurface(pinned, schemaStatus.CurrentVersion); err != nil {
+			return err
+		}
+		proof.schemaStatus = schemaStatus
+		proof.verifiedAt = time.Now()
+		return nil
+	})
+	if err != nil {
+		return RelayDownloadEdgeDatabaseRoleProof{}, err
+	}
+	if err := validateRelayDownloadEdgeDatabaseRoleProofBinding(db, proof); err != nil {
+		return RelayDownloadEdgeDatabaseRoleProof{}, err
+	}
+	return proof, nil
+}
+
+// ValidateRelayDownloadEdgeDatabaseRoleProofBinding is a query-free startup
+// check used before opening the protected HTTP listener.
+func ValidateRelayDownloadEdgeDatabaseRoleProofBinding(db *gorm.DB, proof RelayDownloadEdgeDatabaseRoleProof) error {
+	return validateRelayDownloadEdgeDatabaseRoleProofBinding(db, proof)
+}
+
+func validateRelayDownloadEdgeDatabaseRoleProofBinding(db *gorm.DB, proof RelayDownloadEdgeDatabaseRoleProof) error {
+	if db == nil || db.Dialector.Name() != "postgres" || proof.pool == nil || proof.role != relayDownloadEdgeDatabaseRoleName {
+		return errors.New("Relay download edge database role proof is unavailable")
+	}
+	pool, err := db.DB()
+	if err != nil || pool == nil || pool != proof.pool {
+		return errors.New("Relay download edge database role proof belongs to another database pool")
+	}
+	status := proof.schemaStatus
+	contract := relaySchemaContractForRuntime()
+	expectedCatalog := relaySchemaExpectedCatalogForRuntime("postgres", status.CurrentVersion)
+	attemptID, attemptErr := uuid.Parse(status.AttemptID)
+	if !status.Current || status.Classification != RelaySchemaStatusCurrent || status.State != RelaySchemaStateClean || status.Dirty ||
+		status.CurrentVersion != contract.TargetVersion || status.TargetVersion != contract.TargetVersion ||
+		status.CurrentChecksum == "" || status.CurrentChecksum != contract.Checksums[status.CurrentVersion] ||
+		status.ExpectedChecksum != status.CurrentChecksum || status.TargetChecksum != status.CurrentChecksum ||
+		status.CatalogSHA256 == "" || status.CatalogSHA256 != expectedCatalog || status.ExpectedCatalogSHA256 != expectedCatalog ||
+		status.PendingVersion != status.CurrentVersion || status.ErrorCode != "" ||
+		status.MinVersion != contract.MinVersion || status.MaxVersion != contract.MaxVersion ||
+		!status.Compatible || attemptErr != nil || attemptID.String() != strings.ToLower(status.AttemptID) ||
+		!relaySchemaProvenanceValid(status.SourceRevision, status.SnapshotSHA256) || proof.verifiedAt.IsZero() {
+		return errors.New("Relay download edge database role proof is not a current release")
+	}
+	if RelayRuntimeDatabaseLifecycleFencingEnabled() && !RelayRuntimeDatabaseLifecycleHealthy() {
+		return errors.New("Relay download edge database lifecycle is unavailable")
+	}
+	return nil
+}
+
+// VerifyRelayDownloadEdgeDatabaseRoleProof is the bounded live readiness gate.
+// It cannot outlive its database pool or release tuple, and any query, TLS,
+// lifecycle, role or ACL failure closes readiness immediately.
+func VerifyRelayDownloadEdgeDatabaseRoleProof(db *gorm.DB, proof RelayDownloadEdgeDatabaseRoleProof) error {
+	if err := validateRelayDownloadEdgeDatabaseRoleProofBinding(db, proof); err != nil {
+		return err
+	}
+	return db.Connection(func(connection *gorm.DB) error {
+		pinned := relayPinnedConnectionSession(connection)
+		if err := VerifyRelayDatabaseTLS(pinned); err != nil {
+			return err
+		}
+		// The cluster-wide protected surface and full catalog fingerprint are
+		// deliberately confined to startup and bounded background refresh. The
+		// probe path below still checks the live release tuple, role topology and
+		// complete versioned ACL surface without turning a short health request
+		// into an unbounded catalog scan.
+		if err := verifyRelayDownloadEdgeSchemaReleaseProof(pinned, proof.schemaStatus); err != nil {
+			return err
+		}
+		return verifyRelayDownloadEdgeDatabaseRoleForVersionLive(pinned, proof.schemaStatus.CurrentVersion)
+	})
+}
+
+func verifyRelayDownloadEdgeDatabaseRoleForVersion(db *gorm.DB, version int64) error {
+	return verifyRelayDownloadEdgeDatabaseRoleForVersionWithTopology(db, version, verifyRelayDatabaseRoleTopology)
+}
+
+func verifyRelayDownloadEdgeDatabaseRoleForVersionLive(db *gorm.DB, version int64) error {
+	return verifyRelayDownloadEdgeDatabaseRoleForVersionWithTopology(db, version, verifyRelayDatabaseRoleLiveTopology)
+}
+
+func verifyRelayDownloadEdgeDatabaseRoleForVersionAfterExactSurface(db *gorm.DB, version int64) error {
+	return verifyRelayDownloadEdgeDatabaseRoleForVersionWithTopology(db, version, verifyRelayDatabaseRoleTopologyAfterExactSurface)
+}
+
+func verifyRelayDownloadEdgeDatabaseRoleForVersionWithTopology(
+	db *gorm.DB,
+	version int64,
+	verifyTopology func(*gorm.DB, string, string, string) error,
+) error {
 	var role struct {
 		SessionUser        string `gorm:"column:session_user"`
 		CurrentUser        string `gorm:"column:current_user"`
@@ -476,10 +716,54 @@ FROM pg_roles role WHERE role.rolname = current_user`).Scan(&role)
 		!databaseRoleNamePattern.MatchString(runtimeRole) || runtimeRole != "relay_runtime" {
 		return errors.New("Relay download edge database role topology configuration is invalid")
 	}
-	if err := verifyRelayDatabaseRoleTopology(db, ownerRole, migrationRole, runtimeRole); err != nil {
+	if err := verifyTopology(db, ownerRole, migrationRole, runtimeRole); err != nil {
 		return err
 	}
-	return verifyRelayDownloadEdgeDatabasePrivilegeManifest(db, version)
+	return verifyRelayDownloadEdgeDatabasePrivilegeManifestOptimized(db, version)
+}
+
+func verifyRelayDownloadEdgeSchemaReleaseProof(db *gorm.DB, expected RelaySchemaStatus) error {
+	var state RelaySchemaState
+	if err := db.Where("id = ?", relaySchemaStateSingletonID).First(&state).Error; err != nil {
+		return errors.New("Relay download edge schema release state is unavailable")
+	}
+	if state.BaselineVersion != expected.BaselineVersion || state.FreshBootstrap != expected.FreshBootstrap ||
+		state.CurrentVersion != expected.CurrentVersion || state.TargetVersion != expected.CurrentVersion ||
+		state.State != RelaySchemaStateClean || state.Dirty || state.AttemptID != expected.AttemptID ||
+		state.CurrentChecksum != expected.CurrentChecksum || state.TargetChecksum != expected.CurrentChecksum ||
+		state.CurrentCatalogSHA256 != expected.CatalogSHA256 || state.TargetCatalogSHA256 != expected.CatalogSHA256 ||
+		state.SourceRevision != expected.SourceRevision || state.SnapshotSHA256 != expected.SnapshotSHA256 || state.ErrorCode != "" {
+		return errors.New("Relay download edge schema release proof changed after startup")
+	}
+	var ledger []RelaySchemaMigration
+	if err := db.Order("version ASC").Find(&ledger).Error; err != nil {
+		return errors.New("Relay download edge schema release ledger is unavailable")
+	}
+	expectedRows := expected.CurrentVersion - expected.BaselineVersion + 1
+	if expectedRows <= 0 || int64(len(ledger)) != expectedRows {
+		return errors.New("Relay download edge schema release ledger changed after startup")
+	}
+	definitions := relaySchemaDefinitionsForRuntime()
+	definitionsByVersion := make(map[int64]relaySchemaMigrationDefinition, len(definitions))
+	for _, definition := range definitions {
+		definitionsByVersion[definition.Version] = definition
+	}
+	for index, row := range ledger {
+		version := expected.BaselineVersion + int64(index)
+		definition, known := definitionsByVersion[version]
+		if !known || row.Version != version || row.Name != definition.Name || row.Phase != definition.Phase ||
+			row.Checksum != definition.Checksum || row.CatalogSHA256 != relaySchemaExpectedCatalogForRuntime("postgres", version) ||
+			!relaySchemaProvenanceValid(row.SourceRevision, row.SnapshotSHA256) {
+			return errors.New("Relay download edge schema release ledger changed after startup")
+		}
+	}
+	latest := ledger[len(ledger)-1]
+	if latest.Version != expected.CurrentVersion || latest.Checksum != expected.CurrentChecksum ||
+		latest.CatalogSHA256 != expected.CatalogSHA256 || latest.SourceRevision != expected.SourceRevision ||
+		latest.SnapshotSHA256 != expected.SnapshotSHA256 {
+		return errors.New("Relay download edge schema release tuple changed after startup")
+	}
+	return nil
 }
 
 // FinalizeRelayDownloadEdgeDatabaseRole is the post-migration half of the

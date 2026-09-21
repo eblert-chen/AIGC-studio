@@ -25,6 +25,7 @@ INCLUDED_FILES = (
     "Dockerfile",
     "alembic.ini",
     "requirements.txt",
+    "requirements-obs.txt",
     "scripts/platform_source_snapshot.py",
 )
 _EXCLUDED_DIRECTORY_NAMES = frozenset({"__pycache__"})

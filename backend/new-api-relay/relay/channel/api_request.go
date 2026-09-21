@@ -475,9 +475,28 @@ func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	return doRequest(c, req, info)
 }
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
+	return doRequestWithRedirectPolicy(c, req, info, false)
+}
+
+func doRequestNoRedirect(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
+	return doRequestWithRedirectPolicy(c, req, info, true)
+}
+
+func doRequestWithRedirectPolicy(c *gin.Context, req *http.Request, info *common.RelayInfo, noRedirect bool) (*http.Response, error) {
 	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
+	}
+	if noRedirect {
+		// Clone the client rather than mutating the shared provider transport.
+		// The protected paid probe must surface every 3xx response to its durable
+		// unknown-submission state machine; net/http may otherwise replay a POST
+		// with GetBody on 307/308.
+		isolated := *client
+		isolated.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		client = &isolated
 	}
 	if common2.DebugEnabled && req != nil && req.URL != nil {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)
@@ -540,6 +559,17 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 }
 
 func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	return doTaskApiRequest(a, c, info, requestBody, false)
+}
+
+// DoTaskApiRequestNoRedirect is for paid, non-idempotent provider calls whose
+// credentials and request body must never be replayed to a redirect target.
+// Adaptors opting into this path treat every 3xx response as a provider failure.
+func DoTaskApiRequestNoRedirect(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	return doTaskApiRequest(a, c, info, requestBody, true)
+}
+
+func doTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader, noRedirect bool) (*http.Response, error) {
 	fullRequestURL, err := a.BuildRequestURL(info)
 	if err != nil {
 		return nil, err
@@ -549,15 +579,27 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
 	applyUpstreamContentLength(req, info)
-	req.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(requestBody), nil
+	if noRedirect {
+		// NewRequest auto-populates GetBody for readers such as *bytes.Reader.
+		// Remove that replay seam as defense in depth in addition to the
+		// protected client's CheckRedirect policy.
+		req.GetBody = nil
+	} else {
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(requestBody), nil
+		}
 	}
 
 	err = a.BuildRequestHeader(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
-	resp, err := doRequest(c, req, info)
+	var resp *http.Response
+	if noRedirect {
+		resp, err = doRequestNoRedirect(c, req, info)
+	} else {
+		resp, err = doRequest(c, req, info)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}

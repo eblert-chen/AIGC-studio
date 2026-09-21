@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -111,7 +114,9 @@ class RotatingAssetResolver:
     def __init__(self):
         self.calls = 0
 
-    def resolve(self, *, company_id, references):
+    def resolve(self, *, company_id, personal_workspace_id, references, aspect_ratio):
+        assert (company_id is None) != (personal_workspace_id is None)
+        assert aspect_ratio == "16:9"
         self.calls += 1
         return [
             {
@@ -730,6 +735,55 @@ def test_unknown_submit_outcome_at_attempt_limit_requires_reconciliation(
         assert wallet.reserved_cents == 400
 
 
+@pytest.mark.parametrize("submission_attempted", [False, True])
+def test_invalid_historical_materialization_only_releases_if_never_submitted(
+    app, client, tenant, tenant_headers, internal_headers, submission_attempted
+):
+    task = recharge_and_create(
+        app, client, tenant, tenant_headers, id_suffix="old-materialization"
+    )
+    fixture = json.loads((
+        Path(__file__).resolve().parents[3]
+        / "contracts" / "director-shot-prompt-v1-fixtures.json"
+    ).read_text(encoding="utf-8"))["cases"][0]
+    with app.state.session_factory.begin() as session:
+        outbox = session.scalar(select(RelaySubmissionOutbox).where(
+            RelaySubmissionOutbox.task_id == task["id"]
+        ))
+        # Recreate the durable snapshot from a pre-upgrade process. In the
+        # crash case POST may have reached Relay before its reply was recorded.
+        materialized = deepcopy(outbox.relay_payload)
+        materialized["inputs"]["director_shot"] = {
+            key: fixture[key] for key in ("manifest", "manifest_sha256", "sealed_revision")
+        }
+        outbox.materialized_relay_payload = materialized
+        if submission_attempted:
+            outbox.relay_submit_attempted_at = utcnow()
+        outbox.submission_outcome_uncertain_at = None
+    relay = ScriptedRelayClient()
+    app.state.relay_client = relay
+    response = client.post("/internal/relay/dispatch-once", headers=internal_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == (
+        "reconciliation_required" if submission_attempted else "permanently_failed"
+    ), response.text
+    assert relay.calls == []
+    with app.state.session_factory() as session:
+        wallet = session.get(WalletAccount, tenant["company_id"])
+        stored = session.get(GenerationTask, task["id"])
+        outbox = session.scalar(select(RelaySubmissionOutbox).where(
+            RelaySubmissionOutbox.task_id == task["id"]
+        ))
+        assert outbox.materialized_relay_payload == materialized
+        assert wallet.available_cents == (600 if submission_attempted else 1000)
+        assert wallet.reserved_cents == (400 if submission_attempted else 0)
+        assert stored.status == (
+            TaskStatus.PROCESSING if submission_attempted else TaskStatus.FAILED
+        )
+        if submission_attempted:
+            assert outbox.submission_outcome_uncertain_at is not None
+
+
 def test_permanent_relay_rejection_releases_reserved_balance(
     app, client, tenant, tenant_headers, internal_headers
 ):
@@ -963,6 +1017,7 @@ def test_success_output_count_mismatch_keeps_balance_reserved(
     ("mode", "unexpected_media_type"),
     [
         ("text_to_image", "video"),
+        ("image_to_image", "video"),
         ("text_to_video", "image"),
     ],
 )

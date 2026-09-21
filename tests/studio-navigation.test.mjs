@@ -14,6 +14,10 @@ import {
 import { readFile } from "node:fs/promises";
 
 const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+const routeStateSource = await readFile(
+  new URL("../src/app/useStudioRouteState.js", import.meta.url),
+  "utf8",
+);
 
 test("studio navigation exposes stable deep links for every customer route", () => {
   assert.deepEqual(STUDIO_NAV_PATHS, {
@@ -78,10 +82,10 @@ test("unknown paths fail back to the community home without inventing a route", 
 });
 
 test("the app binds URL history to studio navigation state", () => {
-  assert.match(appSource, /appRouteFromPath\(globalThis\.location\?\.pathname\)/);
-  assert.match(appSource, /globalThis\.history\[replace \? "replaceState" : "pushState"\]/);
-  assert.match(appSource, /addEventListener\?\.\("popstate", handlePopState\)/);
+  assert.match(routeStateSource, /appRouteFromPath\(globalThis\.location\?\.pathname\)/);
+  assert.match(routeStateSource, /globalThis\.history\[replace \? "replaceState" : "pushState"\]/);
+  assert.match(routeStateSource, /addEventListener\?\.\("popstate", handlePopState\)/);
   assert.match(appSource, /onClick=\{\(\) => navigateStudio\(item\.id\)\}/);
-  assert.match(appSource, /globalThis\.history\?\.pushState\?\.\(\{\}, "", nextPath\)/);
-  assert.match(appSource, /globalThis\.history\?\.replaceState\?\.\(\{\}, "", canonicalPath\)/);
+  assert.match(routeStateSource, /globalThis\.history\.pushState\(/);
+  assert.match(routeStateSource, /globalThis\.history\?\.replaceState\?\.\(\{\}, "", route\.canonicalPath\)/);
 });

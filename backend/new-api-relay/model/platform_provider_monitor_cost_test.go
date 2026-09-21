@@ -23,6 +23,7 @@ func preparePlatformProviderMonitorCostTest(t *testing.T, appendOnlyGuards bool)
 		require.NoError(t, DB.Migrator().DropTable(models[index]))
 	}
 	require.NoError(t, DB.AutoMigrate(models...))
+	require.NoError(t, MigratePlatformChannelCostPersonalScopeV7WithDB(DB))
 	if appendOnlyGuards {
 		require.NoError(t, InstallPlatformProviderAppendOnlyGuards())
 	}

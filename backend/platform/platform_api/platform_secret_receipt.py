@@ -99,6 +99,7 @@ _ALL_CONSUMERS = (
     "platform-download-gateway-registration-worker",
     "platform-migration",
     "platform-publishing-worker",
+    "platform-relay-catalog-sync",
     "platform-relay-sync",
     "platform-timeout-worker",
     "post",

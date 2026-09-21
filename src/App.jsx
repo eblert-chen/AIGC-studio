@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeft,
   ArrowCounterClockwise,
   Bell,
   CaretDown,
+  CaretRight,
   Check,
   CheckCircle,
   CircleNotch,
@@ -33,15 +35,6 @@ import {
   PlatformApiError,
   readRuntimePlatformConfig,
 } from "./api/platformClient.js";
-import { ManagementConsole } from "./ManagementConsole.jsx";
-import { CommunityHome } from "./CommunityHome.jsx";
-import { CreationHub } from "./CreationHub.jsx";
-import { PublishingCenter } from "./PublishingCenter.jsx";
-import { AccountCenter } from "./AccountCenter.jsx";
-import { ArtworksView } from "./pages/studio/ArtworksView.jsx";
-import { HistoryView } from "./pages/studio/HistoryView.jsx";
-import { WorkspaceCapabilityUnavailableView } from "./pages/studio/StudioStatusViews.jsx";
-import { ResultDetailView } from "./pages/studio/ResultDetailView.jsx";
 import { formatBytes, shortId } from "./components/studio/studioPresentation.js";
 import {
   IconButton,
@@ -49,6 +42,8 @@ import {
   SceneTimeline,
 } from "./components/studio/StudioWorkspaceViews.jsx";
 import { DemoAccountSwitcher } from "./DemoAccountSwitcher.jsx";
+import GenerationEditor from "./components/GenerationEditor.jsx";
+import { usePersonalModelCatalog } from "./app/usePersonalModelCatalog.js";
 import { SkinSwitcher, useSkinPreference } from "./SkinSwitcher.jsx";
 import { BrandLogo, BRAND_NAME } from "./BrandLogo.jsx";
 import {
@@ -62,29 +57,45 @@ import {
   identityRoleLabel,
   resolveSurfaceForIdentity,
 } from "./identitySurfaces.js";
-import { demoPersona as resolveDemoPersona } from "./demoIdentitySurfaces.js";
 import {
-  normalizeSessionSurfaces,
+  demoIdentityForProductContext,
+  demoPersona as resolveDemoPersona,
+} from "./demoIdentitySurfaces.js";
+import {
+  availableProductContexts,
+  isActiveCompanyContext,
   personalCapability,
-  personalIdentityFromSession,
-  preferredCompanyId,
 } from "./personalWorkspace.js";
 import {
   buildCapabilityRequestPayload,
   capabilityControlVisibility,
   capabilityForMode,
+  capabilityMediaLimits,
+  capabilitySpecificationFields,
   firstSupportedMode,
+  generationPromptLength,
   modeLabel,
+  modeUsesDuration,
+  normalizeModeReadiness,
   reconcileGenerationDraft,
+  resolveGenerationReadiness,
   resolveEffectiveCapabilities,
+  truncateGenerationPrompt,
 } from "./modelCapabilities.js";
 import {
-  deriveArtworksFromTasks,
-  normalizePage,
+  billingAmountLabel,
+  billingPresentationState,
+  formatPointAmount,
+  generationCostPreview,
+  normalizePositivePrice,
+} from "./billingPresentation.js";
+import {
+  taskArtifactEvidence,
 } from "./taskArtifacts.js";
 import {
-  isTaskAttentionRequired,
   resolveTaskStatus,
+  taskTimingLabel,
+  taskUserMessage,
 } from "./taskStatus.js";
 import {
   readStudioPreferences,
@@ -96,146 +107,72 @@ import {
   removeExpiredPreviewLeases,
   removePreviewLease,
 } from "./previewLeases.js";
+import { surfacePath } from "./studioNavigation.js";
 import {
-  appRouteFromPath,
-  surfacePath,
-} from "./studioNavigation.js";
+  resolveCompanyStudioAccess,
+  studioRouteAvailable,
+} from "./studioAccess.js";
+import { RouteLoadingFallback } from "./RouteLoadingFallback.jsx";
+import {
+  DEVELOPMENT_DEMO_ARTWORKS,
+  DEVELOPMENT_DEMO_HISTORY_TASKS,
+  DEVELOPMENT_DEMO_MODEL_RESPONSES,
+} from "./demo/studioDemoFixtures.js";
+import {
+  filesFromPendingRequest,
+  makeIdempotencyKey,
+  readPendingCreate,
+  rememberPendingCreate,
+  taskRequestFingerprint,
+} from "./app/pendingGeneration.js";
+import { appendGenerationInputAssets, useGenerationDraft, useGenerationInputs } from "./app/useGenerationDraft.js";
+import { ADVANCED_WORKBENCHES, useCreationWorkspaceSession, useWorkbenchTaskRecords } from "./app/useCreationWorkspaceSession.js";
+import { useStudioRouteState } from "./app/useStudioRouteState.js";
+import { useStudioIdentity } from "./app/useStudioIdentity.js";
+import {
+  useStudioArtworkCollection,
+  useStudioTaskCollections,
+} from "./app/useStudioCollections.js";
+import {
+  useGenerationTaskLifecycle,
+  useGenerationTaskRuntime,
+} from "./app/useGenerationTaskRuntime.js";
+
+function lazyNamed(loader, exportName) {
+  return lazy(async () => {
+    const module = await loader();
+    return { default: module[exportName] };
+  });
+}
+
+const ManagementConsole = lazyNamed(
+  () => import("./ManagementConsole.jsx"),
+  "ManagementConsole",
+);
+const CommunityHome = lazyNamed(() => import("./CommunityHome.jsx"), "CommunityHome");
+const CreationHub = lazyNamed(() => import("./CreationHub.jsx"), "CreationHub");
+const PublishingCenter = lazyNamed(() => import("./PublishingCenter.jsx"), "PublishingCenter");
+const AccountCenter = lazyNamed(() => import("./AccountCenter.jsx"), "AccountCenter");
+const ArtworksView = lazyNamed(
+  () => import("./pages/studio/ArtworksView.jsx"),
+  "ArtworksView",
+);
+const HistoryView = lazyNamed(
+  () => import("./pages/studio/HistoryView.jsx"),
+  "HistoryView",
+);
+const WorkspaceCapabilityUnavailableView = lazyNamed(
+  () => import("./pages/studio/StudioStatusViews.jsx"),
+  "WorkspaceCapabilityUnavailableView",
+);
+const ResultDetailView = lazyNamed(
+  () => import("./pages/studio/ResultDetailView.jsx"),
+  "ResultDetailView",
+);
 
 const DEVELOPMENT_DEMO_ENABLED = import.meta.env.PROD
   ? false
   : isExplicitDevelopmentDemo(import.meta.env);
-
-const DEMO_MODEL_RESPONSES = DEVELOPMENT_DEMO_ENABLED ? [
-  {
-    id: "cinemox",
-    slug: "cinemox-v2",
-    display_name: "CinemoX Pro 2.1",
-    pricing_mode: "per_second",
-    unit_price_cents: 300,
-    rate: 3,
-    effective_capabilities: {
-      schema_version: 1,
-      modes: {
-        text_to_video: {
-          input_media_types: ["image", "video", "audio"],
-          supports_face: true,
-          required_resource_keys: ["face.library"],
-          limits: {
-            max_prompt_length: 1000,
-            max_images: 9,
-            max_videos: 3,
-            max_audio: 3,
-            duration_seconds: [10, 15, 20],
-            aspect_ratios: ["16:9", "9:16", "1:1"],
-            resolutions: ["720p", "1080p"],
-            output_counts: [1, 2, 3, 4],
-          },
-        },
-        image_to_video: {
-          input_media_types: ["image", "video", "audio"],
-          supports_face: true,
-          required_resource_keys: ["face.library"],
-          limits: {
-            max_prompt_length: 1000,
-            max_images: 9,
-            max_videos: 3,
-            max_audio: 3,
-            duration_seconds: [10, 15, 20],
-            aspect_ratios: ["16:9", "9:16", "1:1"],
-            resolutions: ["720p", "1080p"],
-            output_counts: [1, 2, 3, 4],
-          },
-        },
-        video_to_video: {
-          input_media_types: ["image", "video", "audio"],
-          supports_face: true,
-          required_resource_keys: ["face.library"],
-          limits: {
-            max_prompt_length: 1000,
-            max_images: 9,
-            max_videos: 3,
-            max_audio: 3,
-            duration_seconds: [10, 15, 20],
-            aspect_ratios: ["16:9", "9:16", "1:1"],
-            resolutions: ["720p", "1080p"],
-            output_counts: [1, 2, 3, 4],
-          },
-        },
-      },
-    },
-  },
-  {
-    id: "rush",
-    slug: "rush-video-1.6",
-    display_name: "Rush Video 1.6",
-    pricing_mode: "per_item",
-    unit_price_cents: 200,
-    rate: 2,
-    effective_capabilities: {
-      schema_version: 1,
-      modes: {
-        text_to_video: {
-          input_media_types: ["image", "video", "audio"],
-          supports_face: false,
-          required_resource_keys: [],
-          limits: {
-            max_prompt_length: 500,
-            max_images: 4,
-            max_videos: 3,
-            max_audio: 3,
-            duration_seconds: [5, 10],
-            aspect_ratios: ["16:9", "9:16"],
-            resolutions: ["720p"],
-            output_counts: [1, 2],
-          },
-        },
-        image_to_video: {
-          input_media_types: ["image", "video", "audio"],
-          supports_face: false,
-          required_resource_keys: [],
-          limits: {
-            max_prompt_length: 500,
-            max_images: 4,
-            max_videos: 3,
-            max_audio: 3,
-            duration_seconds: [5, 10],
-            aspect_ratios: ["16:9", "9:16"],
-            resolutions: ["720p"],
-            output_counts: [1, 2],
-          },
-        },
-      },
-    },
-  },
-  {
-    id: "frameflow",
-    slug: "frameflow-lite",
-    display_name: "FrameFlow Lite",
-    pricing_mode: "per_item",
-    unit_price_cents: 100,
-    rate: 1,
-    effective_capabilities: {
-      schema_version: 1,
-      modes: {
-        text_to_image: {
-          input_media_types: ["image"],
-          supports_face: false,
-          required_resource_keys: [],
-          limits: {
-            max_prompt_length: 500,
-            max_images: 1,
-            max_videos: 0,
-            max_audio: 0,
-            duration_seconds: [5],
-            aspect_ratios: ["16:9", "1:1"],
-            resolutions: ["720p", "1080p"],
-            output_counts: [1, 2, 3, 4],
-          },
-        },
-      },
-    },
-  },
-] : [];
 
 const buildPlatformConfig = readBuildPlatformConfig(import.meta.env);
 const runtimePlatformConfig = readRuntimePlatformConfig(
@@ -265,8 +202,9 @@ const EMPTY_MODEL = {
   capabilityVersion: null,
   quoteRevision: null,
   pricingMode: "per_item",
-  unitPriceCents: 0,
-  rate: 0,
+  unitPriceCents: null,
+  unitPricePoints: null,
+  rate: null,
 };
 
 function normalizeLiveModel(source, { requireEffective = false } = {}) {
@@ -290,25 +228,31 @@ function normalizeLiveModel(source, { requireEffective = false } = {}) {
       : null,
     quoteRevision:
       typeof source.quote_revision === "string" ? source.quote_revision : null,
+    readinessCheckedAt:
+      typeof source.readiness_checked_at === "string" ? source.readiness_checked_at : null,
+    modeReadiness: normalizeModeReadiness(source.mode_readiness),
     pricingMode,
-    unitPriceCents: Number(source.unit_price_cents) || 0,
-    unitPricePoints: Number(source.unit_price_points) || 0,
-    rate: Number(source.rate ?? source.unit_price_cents) || 0,
+    billingUnit: source.billing_unit,
+    billingVersion: source.billing_version,
+    billingScope: source.billing_scope,
+    unitPriceCents: normalizePositivePrice(source.unit_price_cents),
+    unitPricePoints: normalizePositivePrice(source.unit_price_points),
+    rate: normalizePositivePrice(source.rate ?? source.unit_price_points),
   };
 }
 
-const DEMO_MODELS = DEMO_MODEL_RESPONSES.map((source) => normalizeLiveModel(source));
+const DEMO_MODELS = DEVELOPMENT_DEMO_MODEL_RESPONSES.map((source) => normalizeLiveModel(source));
 const DEMO_INITIAL_MODE = DEMO_MODE ? DEMO_MODELS[0].defaultMode : "";
 const DEMO_INITIAL_CAPABILITY = DEMO_MODE
   ? capabilityForMode(DEMO_MODELS[0].effectiveCapabilities, DEMO_INITIAL_MODE)
   : null;
 
-function mapTaskStage(status) {
-  return resolveTaskStatus(status).stage;
+function validCapabilityRevision(value) {
+  return Number.isInteger(value) && value >= 1;
 }
 
-function progressForTask(status) {
-  return resolveTaskStatus(status).progress;
+function validQuoteRevision(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
 function readableApiError(error) {
@@ -316,70 +260,26 @@ function readableApiError(error) {
     error instanceof PlatformApiError &&
     ["insufficient_points", "INSUFFICIENT_POINTS"].includes(error.code)
   ) {
-    return "个人可用积分不足，请充值后再试。";
+    return "个人可用积分不足；当前未开放自助充值，请联系平台管理员处理。";
   }
   if (
     error instanceof PlatformApiError &&
     ["insufficient_balance", "INSUFFICIENT_BALANCE"].includes(error.code)
   ) {
-    return "公司可用余额不足，请联系管理员充值后再试。";
+    return "公司可用余额不足；当前未开放在线充值，请联系企业负责人或平台管理员处理。";
   }
-  return error?.message || "客户平台请求失败，请稍后重试。";
-}
-
-function missingCollectionEndpoint(error) {
-  return error instanceof PlatformApiError && [404, 405].includes(error.status);
-}
-
-async function fetchTaskHistoryPage(client, filters, { signal } = {}) {
-  try {
-    const response = await client.listTaskHistory(filters, { signal });
-    return normalizePage(response, {
-      page: filters.page,
-      pageSize: filters.page_size,
-    });
-  } catch (error) {
-    if (!missingCollectionEndpoint(error)) throw error;
-    const tasks = await client.listTasks({ signal });
-    const filtered = (Array.isArray(tasks) ? tasks : []).filter(
-      (task) => !filters.status || task.status === filters.status,
-    );
-    return normalizePage(filtered, {
-      page: 1,
-      pageSize: filters.page_size,
-    });
+  if (error instanceof PlatformApiError) {
+    if (error.status === 401) return "登录状态已失效，请重新登录后再试。";
+    if (error.status === 403) return "当前账号不能执行此操作，请联系管理员检查权限。";
+    if (error.status === 404) return "没有找到相关内容，请刷新页面后再试。";
+    if (error.status === 409) return "内容已被其他操作更新，请刷新后再试。";
+    if (error.status === 429) return "操作过于频繁，请稍后再试。";
+    if (Number(error.status) >= 500) return "服务暂时不可用，请稍后再试。";
   }
-}
-
-async function fetchArtworkPage(client, filters, { signal } = {}) {
-  try {
-    const response = await client.listArtworks(filters, { signal });
-    return normalizePage(response, {
-      page: filters.page,
-      pageSize: filters.page_size,
-    });
-  } catch (error) {
-    if (!missingCollectionEndpoint(error)) throw error;
-    const tasks = await client.listTasks({ signal });
-    const derived = deriveArtworksFromTasks(Array.isArray(tasks) ? tasks : []);
-    const filtered = derived.filter((artwork) => {
-      if (filters.media_type && artwork.media_type !== filters.media_type) return false;
-      if (filters.downloaded !== undefined && filters.downloaded !== "") {
-        return false;
-      }
-      return true;
-    });
-    const page = Number(filters.page) || 1;
-    const pageSize = Number(filters.page_size) || 24;
-    const start = (page - 1) * pageSize;
-    return {
-      page,
-      page_size: pageSize,
-      total: filtered.length,
-      items: filtered.slice(start, start + pageSize),
-      legacy: true,
-    };
-  }
+  const message = String(error?.message || "").trim();
+  const exposesImplementation = /\b(?:Platform|Relay|canonical|idempotency|resource|capability|artifact|tasks|assets|publish)\b|\b[A-Z][A-Z0-9_]{2,}\b|https?:\/\//i.test(message);
+  if (/\p{Script=Han}/u.test(message) && !exposesImplementation) return message;
+  return "请求暂时无法完成，请稍后再试。";
 }
 
 function inputAssetId(asset) {
@@ -398,22 +298,6 @@ function inputAssetType(asset, fallback = "") {
   return String(asset?.media_type ?? fallback).trim();
 }
 
-function filesFromPendingRequest(requestPayload) {
-  const grouped = { image: [], video: [], audio: [] };
-  for (const reference of requestPayload?.assets ?? []) {
-    const kind = inputAssetType(reference);
-    if (!grouped[kind]) continue;
-    grouped[kind].push({
-      id: inputAssetId(reference),
-      asset_id: inputAssetId(reference),
-      media_type: kind,
-      original_filename: `已上传${kind === "image" ? "图片" : kind === "video" ? "视频" : "音频"}`,
-      status: "active",
-    });
-  }
-  return grouped;
-}
-
 function artworkAsTask(artwork) {
   if (!artwork) return null;
   return {
@@ -429,6 +313,9 @@ function artworkAsTask(artwork) {
     request_payload: artwork.request_payload,
     actual_cost_cents: artwork.actual_cost_cents,
     actual_cost_points: artwork.actual_cost_points,
+    billing_unit: artwork.billing_unit,
+    billing_version: artwork.billing_version,
+    billing_scope: artwork.billing_scope,
     output_artifacts: [],
     created_at: artwork.created_at,
   };
@@ -436,149 +323,6 @@ function artworkAsTask(artwork) {
 
 function generationModeLabel(mode) {
   return modeLabel(mode);
-}
-
-function makeIdempotencyKey() {
-  return (
-    globalThis.crypto?.randomUUID?.() ??
-    `task-${Date.now()}-${Math.random().toString(16).slice(2)}`
-  );
-}
-
-const PENDING_CREATE_STORAGE_PREFIX = "ai-video.pending-create";
-
-function pendingCreateStorageKey(workspaceKey) {
-  return `${PENDING_CREATE_STORAGE_PREFIX}:${encodeURIComponent(workspaceKey)}`;
-}
-
-function taskRequestFingerprint(value) {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `${value.length}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
-}
-
-function readPendingCreate(workspaceKey) {
-  if (!workspaceKey) return null;
-  try {
-    const value = globalThis.sessionStorage?.getItem(
-      pendingCreateStorageKey(workspaceKey),
-    );
-    if (!value) return null;
-    const parsed = JSON.parse(value);
-    if (
-      !parsed ||
-      ![1, 2, 3, 4, 5].includes(parsed.version) ||
-      String(parsed.workspaceKey || parsed.companyId || "") !== workspaceKey ||
-      typeof parsed.fingerprint !== "string" ||
-      typeof parsed.idempotencyKey !== "string" ||
-      parsed.idempotencyKey.length < 8 ||
-      parsed.idempotencyKey.length > 120 ||
-      typeof parsed.modelId !== "string" ||
-      !parsed.modelId ||
-      (parsed.version >= 4 &&
-        (!Number.isInteger(parsed.capabilityVersion) || parsed.capabilityVersion < 1)) ||
-      (parsed.version >= 5 &&
-        (typeof parsed.quoteRevision !== "string" ||
-          !/^sha256:[0-9a-f]{64}$/.test(parsed.quoteRevision))) ||
-      !parsed.requestPayload ||
-      typeof parsed.requestPayload !== "object" ||
-      Array.isArray(parsed.requestPayload)
-    ) {
-      return null;
-    }
-    const requestPayload = parsed.requestPayload;
-    const allowedPayloadKeys = new Set([
-      "mode",
-      "prompt",
-      "duration_seconds",
-      "aspect_ratio",
-      "resolution",
-      "output_count",
-      "face_enabled",
-      "assets",
-    ]);
-    if (Object.keys(requestPayload).some((key) => !allowedPayloadKeys.has(key))) {
-      return null;
-    }
-    const rawAssets = requestPayload.assets;
-    if (rawAssets !== undefined && !Array.isArray(rawAssets)) return null;
-    const assets = rawAssets ?? [];
-    const validAssets = assets.every((asset) => (
-      asset &&
-      typeof asset === "object" &&
-      !Array.isArray(asset) &&
-      typeof asset.asset_id === "string" &&
-      Boolean(asset.asset_id.trim()) &&
-      ["image", "video", "audio"].includes(asset.media_type)
-    ));
-    if (
-      !validAssets ||
-      assets.length > 15 ||
-      !["text_to_video", "image_to_video", "video_to_video", "text_to_image"].includes(
-        requestPayload.mode,
-      ) ||
-      typeof requestPayload.prompt !== "string" ||
-      !requestPayload.prompt.trim() ||
-      requestPayload.prompt.length > 10_000 ||
-      !Number.isInteger(requestPayload.duration_seconds) ||
-      requestPayload.duration_seconds <= 0 ||
-      requestPayload.duration_seconds > 3600 ||
-      typeof requestPayload.aspect_ratio !== "string" ||
-      !requestPayload.aspect_ratio ||
-      (requestPayload.resolution !== undefined &&
-        (typeof requestPayload.resolution !== "string" || !requestPayload.resolution)) ||
-      (requestPayload.face_enabled !== undefined &&
-        typeof requestPayload.face_enabled !== "boolean") ||
-      !Number.isInteger(requestPayload.output_count) ||
-      requestPayload.output_count < 1 ||
-      requestPayload.output_count > 16 ||
-      (requestPayload.mode === "image_to_video" &&
-        !assets.some((asset) => asset.media_type === "image")) ||
-      (requestPayload.mode === "video_to_video" &&
-        !assets.some((asset) => asset.media_type === "video"))
-    ) {
-      return null;
-    }
-    const fingerprint = taskRequestFingerprint(JSON.stringify(
-      parsed.version >= 5
-        ? {
-            modelId: parsed.modelId,
-            capabilityVersion: parsed.capabilityVersion,
-            quoteRevision: parsed.quoteRevision,
-            requestPayload,
-          }
-        : parsed.version >= 4
-          ? {
-              modelId: parsed.modelId,
-              capabilityVersion: parsed.capabilityVersion,
-              requestPayload,
-            }
-          : { modelId: parsed.modelId, requestPayload },
-    ));
-    if (fingerprint !== parsed.fingerprint) return null;
-    return { ...parsed, requestPayload };
-  } catch {
-    return null;
-  }
-}
-
-function rememberPendingCreate(workspaceKey, value) {
-  if (!workspaceKey) return;
-  try {
-    if (value) {
-      globalThis.sessionStorage?.setItem(
-        pendingCreateStorageKey(workspaceKey),
-        JSON.stringify(value),
-      );
-    } else {
-      globalThis.sessionStorage?.removeItem(pendingCreateStorageKey(workspaceKey));
-    }
-  } catch {
-    // The in-memory ref still prevents duplicate clicks in restricted browsers.
-  }
 }
 
 const SCENES = [
@@ -626,11 +370,22 @@ const COLLECTION_PAGE_SIZE = 24;
 function readInitialDemoPersona() {
   try {
     const value = globalThis.sessionStorage?.getItem("ai-video.demo-persona");
-    if (["operator", "owner", "platform_admin"].includes(value)) return value;
+    if (["personal_creator", "operator", "owner", "platform_admin"].includes(value)) return value;
   } catch {
     // Demo account selection remains in memory when storage is unavailable.
   }
   return "operator";
+}
+
+function readInitialDemoProductContext(personaId) {
+  if (personaId !== "platform_admin") return "";
+  try {
+    const value = globalThis.sessionStorage?.getItem("ai-video.demo-product-context");
+    if (["personal", "platform"].includes(value)) return value;
+  } catch {
+    // The linked owner context falls back to Platform when storage is unavailable.
+  }
+  return "platform";
 }
 
 const STATUS = {
@@ -643,6 +398,7 @@ const STATUS = {
   cancelled: { label: "已取消", icon: X },
   "timed-out": { label: "已超时", icon: WarningCircle },
   "reconciliation-required": { label: "待人工确认", icon: WarningCircle },
+  "artifact-evidence-missing": { label: "作品保存未确认", icon: WarningCircle },
   unknown: { label: "状态未知", icon: WarningCircle },
 };
 
@@ -658,15 +414,16 @@ function MediaInputGroup({
   uploadDisabled = false,
   locked = false,
   disabledReason = "",
+  disabledReasonId = "",
   icon: Icon,
 }) {
   const inputRef = useRef(null);
   const mediaInputId = `media-input-${kind}`;
   const displayedFiles = files;
-  const inputDisabled = uploading || uploadDisabled;
+  const inputDisabled = uploading || uploadDisabled || files.length >= limit;
 
   return (
-    <div className="media-input-group">
+    <div className="media-input-group" data-kind={kind}>
       <div className="field-heading">
         <label htmlFor={mediaInputId}>{label}</label>
         <span>
@@ -695,6 +452,7 @@ function MediaInputGroup({
             type="button"
             onClick={() => inputRef.current?.click()}
             aria-label={`继续添加${label}`}
+            aria-describedby={inputDisabled && disabledReasonId ? disabledReasonId : undefined}
             disabled={inputDisabled}
           >
             {uploading ? (
@@ -721,7 +479,9 @@ function MediaInputGroup({
           event.target.value = "";
         }}
       />
-      {disabledReason && <small className="media-input-permission">{disabledReason}</small>}
+      {disabledReason && !disabledReasonId && (
+        <small className="media-input-permission">{disabledReason}</small>
+      )}
     </div>
   );
 }
@@ -742,21 +502,32 @@ function MediaLibrary({
 }) {
   const inputRef = useRef(null);
   const [query, setQuery] = useState("");
-  const filteredAssets = assets.filter((asset) =>
-    inputAssetName(asset).toLowerCase().includes(query.trim().toLowerCase()),
-  );
+  const [mediaFilter, setMediaFilter] = useState("all");
+  const filteredAssets = assets.filter((asset) => (
+    inputAssetName(asset).toLowerCase().includes(query.trim().toLowerCase())
+    && (mediaFilter === "all" || inputAssetType(asset) === mediaFilter)
+  ));
+  const demoScenes = SCENES.filter((scene) => (
+    scene.title.toLowerCase().includes(query.trim().toLowerCase())
+    && (mediaFilter === "all" || mediaFilter === "image")
+  ));
+  const requestAssetRemoval = (asset) => {
+    const assetName = inputAssetName(asset);
+    const confirmed = globalThis.confirm?.(
+      liveMode
+        ? `停用“${assetName}”？它会同时移出当前草稿，但不会影响历史任务。`
+        : `从演示素材库移除“${assetName}”？它会同时移出当前草稿。`,
+    );
+    if (confirmed === false) return;
+    onDelete(asset);
+  };
 
   return (
     <section className="secondary-view media-view">
       <div className="secondary-heading">
         <div>
-          <span className="view-kicker">{liveMode ? "公司私有存储" : "当前项目"}</span>
-          <h1>{liveMode ? "输入素材库" : "素材库"}</h1>
-          <p>
-            {liveMode
-              ? "素材按公司隔离保存；生成任务只引用素材编号，不暴露长期公开地址。"
-              : "选择一段画面，将它设为当前镜头。"}
-          </p>
+          <h1>素材</h1>
+          <p>上传或选择图片、视频与音频，用于当前创作。</p>
           {liveMode && (!canManageAssets || !canCreateTasks) && (
             <p className="permission-note" role="note">
               {!canManageAssets && !canCreateTasks
@@ -767,17 +538,41 @@ function MediaLibrary({
             </p>
           )}
         </div>
-        <label className="search-field">
-          <MagnifyingGlass size={18} aria-hidden="true" />
-          <span className="visually-hidden">搜索素材</span>
-          <input
-            type="search"
-            placeholder="搜索素材"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </label>
+        <div className="media-library-heading-actions">
+          <button
+            className="media-library-upload-button"
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            disabled={uploading || !canManageAssets}
+          >
+            {uploading ? <SpinnerGap className="spin" size={18} aria-hidden="true" /> : <UploadSimple size={18} aria-hidden="true" />}
+            {uploading ? "正在上传" : "上传素材"}
+          </button>
+          <label className="search-field media-library-search">
+            <MagnifyingGlass size={18} aria-hidden="true" />
+            <span className="visually-hidden">搜索素材</span>
+            <input
+              type="search"
+              placeholder="搜索素材"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+        </div>
       </div>
+      <nav className="media-library-filters" aria-label="素材类型">
+        {[["all", "全部"], ["image", "参考图"], ["video", "视频"], ["audio", "音频"]].map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            className={mediaFilter === value ? "is-active" : ""}
+            aria-pressed={mediaFilter === value}
+            onClick={() => setMediaFilter(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
       {loading && (
         <div className="artifact-empty" role="status">
           <SpinnerGap className="spin" size={26} aria-hidden="true" />
@@ -791,10 +586,23 @@ function MediaLibrary({
           <span>{error}</span>
         </div>
       )}
+      {!loading && !error && (
+        (liveMode && filteredAssets.length === 0)
+        || (!liveMode && demoScenes.length === 0)
+      ) && (
+        <div className="artifact-empty" role="status">
+          <ImageSquare size={26} aria-hidden="true" />
+          <strong>{query.trim() ? "没有符合搜索的素材" : mediaFilter !== "all" ? "当前分类还没有素材" : "还没有素材"}</strong>
+          <span>{query.trim() ? "清除搜索后查看全部素材。" : mediaFilter !== "all" ? "切换到全部，查看当前可用素材。" : "上传第一份素材，或直接前往创作使用无素材模式。"}</span>
+          {query.trim() ? (
+            <button className="text-button" type="button" onClick={() => setQuery("")}>清除搜索</button>
+          ) : mediaFilter !== "all" ? (
+            <button className="text-button" type="button" onClick={() => setMediaFilter("all")}>查看全部</button>
+          ) : null}
+        </div>
+      )}
       <div className="asset-grid">
-        {!liveMode && SCENES.filter((scene) =>
-          scene.title.toLowerCase().includes(query.trim().toLowerCase()),
-        ).map((scene) => (
+        {!liveMode && demoScenes.map((scene) => (
           <button
             className="asset-item"
             type="button"
@@ -804,7 +612,7 @@ function MediaLibrary({
             <img src={scene.image} alt="" />
             <span>
               <strong>{scene.title}</strong>
-              <small>项目素材</small>
+              <small>用于当前创作</small>
             </span>
           </button>
         ))}
@@ -820,36 +628,20 @@ function MediaLibrary({
             <article className="asset-item asset-item-live" key={inputAssetId(asset)}>
               <div className="asset-live-preview" aria-hidden="true">
                 <AssetIcon size={34} weight="duotone" />
-                <span>{mediaType === "video" ? "VIDEO" : mediaType === "audio" ? "AUDIO" : "IMAGE"}</span>
+                <span>{mediaType === "video" ? "视频" : mediaType === "audio" ? "音频" : "图片"}</span>
               </div>
               <span>
                 <strong title={inputAssetName(asset)}>{inputAssetName(asset)}</strong>
-                <small>{formatBytes(asset.size_bytes)} · {liveMode ? "私有素材" : "本地演示素材"}</small>
+                <small>{liveMode ? formatBytes(asset.size_bytes) : `${formatBytes(asset.size_bytes)}，演示素材`}</small>
               </span>
               <div className="asset-actions">
-                <button type="button" onClick={() => onAdd(asset)} disabled={!canCreateTasks}>加入任务</button>
+                <button type="button" onClick={() => onAdd(asset)} disabled={!canCreateTasks}>用于当前创作</button>
                 <button type="button" onClick={() => onPreview(asset)}>预览</button>
-                <button className="is-danger" type="button" onClick={() => onDelete(asset)} disabled={!canManageAssets}>{liveMode ? "停用" : "移除"}</button>
+                <button className="is-danger" type="button" onClick={() => requestAssetRemoval(asset)} disabled={!canManageAssets}>{liveMode ? "停用素材" : "移除"}</button>
               </div>
             </article>
           );
         })}
-        {(!liveMode || !loading) && (
-          <button
-            className="asset-upload"
-            type="button"
-            onClick={() => inputRef.current?.click()}
-            disabled={uploading || !canManageAssets}
-          >
-            {uploading ? (
-              <SpinnerGap className="spin" size={28} aria-hidden="true" />
-            ) : (
-              <UploadSimple size={28} aria-hidden="true" />
-            )}
-            <strong>{uploading ? "正在私有上传" : canManageAssets ? "上传素材" : "无素材管理权限"}</strong>
-            <span>{canManageAssets ? "图片、视频或音频" : "请联系公司老板授权"}</span>
-          </button>
-        )}
       </div>
       <input
         id="asset-library-upload-input"
@@ -870,258 +662,162 @@ function MediaLibrary({
   );
 }
 
-const DEMO_HISTORY_TASKS = DEMO_MODE ? [
-  {
-    id: "demo-task-complete",
-    company_name: "远创电商",
-    user_display_name: "陈默",
-    user_email: "chenmo@example.cn",
-    model_id: "cinemox",
-    model_display_name: "CinemoX Pro 2.1",
-    status: "succeeded",
-    request_payload: {
-      mode: "image_to_video",
-      prompt: "产品防水演示",
-      aspect_ratio: "16:9",
-      resolution: "1080p",
-      duration_seconds: 15,
-      output_count: 1,
-      assets: [{ media_type: "image" }],
-    },
-    actual_cost_cents: 4500,
-    artifact_count: 1,
-    download_issue_count: 2,
-    download_completed_count: 1,
-    downloaded: true,
-    created_at: "2026-08-01T07:42:00Z",
-  },
-  {
-    id: "demo-task-failed",
-    company_name: "远创电商",
-    user_display_name: "林瑶",
-    model_id: "rush",
-    model_display_name: "Rush Video 1.6",
-    status: "failed",
-    request_payload: {
-      mode: "text_to_video",
-      prompt: "户外使用氛围",
-      aspect_ratio: "9:16",
-      resolution: "720p",
-      duration_seconds: 10,
-      output_count: 1,
-    },
-    quote_cents: 1800,
-    artifact_count: 0,
-    created_at: "2026-08-01T08:18:00Z",
-  },
-] : [];
+const DEMO_HISTORY_TASKS = DEMO_MODE ? DEVELOPMENT_DEMO_HISTORY_TASKS : [];
+const DEMO_ARTWORKS = DEMO_MODE ? DEVELOPMENT_DEMO_ARTWORKS : [];
+const PHONE_ADVANCED_WORKBENCH_QUERY = "(max-width: 720px)";
 
-const DEMO_ARTWORKS = DEMO_MODE ? [
-  {
-    artifact_id: "demo-artwork-1",
-    task_id: "demo-task-complete",
-    asset_id: "demo-video-1",
-    output_index: 0,
-    media_type: "video",
-    content_type: "video/mp4",
-    size_bytes: 4372373,
-    sha256: "demo-sha256-video",
-    model_id: "cinemox",
-    company_name: "远创电商",
-    created_by_display_name: "陈默",
-    model_display_name: "CinemoX Pro 2.1",
-    request_payload: DEMO_HISTORY_TASKS[0].request_payload,
-    actual_cost_cents: 4500,
-    download_issue_count: 2,
-    download_completed_count: 1,
-    downloaded: true,
-    created_at: "2026-08-01T07:56:00Z",
-    preview_url: "/media/speaker-water-hero.png",
-  },
-  {
-    artifact_id: "demo-artwork-2",
-    task_id: "demo-task-image",
-    asset_id: "demo-image-1",
-    output_index: 0,
-    media_type: "image",
-    content_type: "image/png",
-    size_bytes: 8991,
-    sha256: "demo-sha256-image",
-    model_id: "frameflow",
-    company_name: "远创电商",
-    created_by_display_name: "张帆",
-    model_display_name: "FrameFlow Lite",
-    request_payload: {
-      mode: "text_to_image",
-      prompt: "桌面场景展示",
-      aspect_ratio: "1:1",
-      resolution: "1080p",
-      output_count: 1,
-    },
-    actual_cost_cents: 500,
-    download_issue_count: 1,
-    download_completed_count: 0,
-    downloaded: false,
-    created_at: "2026-07-31T12:06:00Z",
-    preview_url: "/media/scene-indoor.png",
-  },
-] : [];
+function useMediaQuery(query) {
+  const read = () => globalThis.matchMedia?.(query)?.matches ?? false;
+  const [matches, setMatches] = useState(read);
+
+  useEffect(() => {
+    const media = globalThis.matchMedia?.(query);
+    if (!media) return undefined;
+    const sync = () => setMatches(media.matches);
+    sync();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", sync);
+      return () => media.removeEventListener("change", sync);
+    }
+    media.addListener?.(sync);
+    return () => media.removeListener?.(sync);
+  }, [query]);
+
+  return matches;
+}
 
 export function App() {
   const {
+    session: authSession,
     logout: logoutSession,
+    switchProductContext,
     handleAuthenticationError,
   } = useAuth();
   const [skin, setSkin] = useSkinPreference();
-  const initialAppRoute = appRouteFromPath(globalThis.location?.pathname);
   const pendingCreateRef = useRef(null);
+  const activeSubmissionRef = useRef(null);
   const initialPendingCreate = pendingCreateRef.current;
-  const [activeNav, setActiveNav] = useState(initialAppRoute.nav);
-  const [surface, setSurface] = useState(initialAppRoute.surface);
-  const navigateStudio = (nextNav, { replace = false } = {}) => {
-    const nextPath = surfacePath(surface === "personal" ? "personal" : "studio", nextNav);
-    setActiveNav(nextNav);
-    if (!globalThis.history || !globalThis.location) return;
-    if (globalThis.location.pathname === nextPath) return;
-    globalThis.history[replace ? "replaceState" : "pushState"]({}, "", nextPath);
-  };
-  useEffect(() => {
-    const handlePopState = () => {
-      const route = appRouteFromPath(globalThis.location?.pathname);
-      setActiveNav(route.nav);
-      setSurface(route.surface);
-      if (!route.recognized) {
-        globalThis.history?.replaceState?.({}, "", route.canonicalPath);
-      }
-    };
-    globalThis.addEventListener?.("popstate", handlePopState);
-    return () => globalThis.removeEventListener?.("popstate", handlePopState);
-  }, []);
-  useEffect(() => {
-    if (initialAppRoute.recognized) return;
-    globalThis.history?.replaceState?.({}, "", initialAppRoute.canonicalPath);
-  }, []);
+  const {
+    activeNav,
+    setActiveNav,
+    creationWorkbench,
+    setCreationWorkbench,
+    surface,
+    setSurface,
+    navigateStudio,
+    navigateCreationWorkbench,
+  } = useStudioRouteState();
+  const advancedWorkbenchesDesktopOnly = useMediaQuery(PHONE_ADVANCED_WORKBENCH_QUERY);
+  const phoneAdvancedWorkbenchGate = Boolean(
+    activeNav === "create"
+      && advancedWorkbenchesDesktopOnly
+      && ADVANCED_WORKBENCHES.includes(creationWorkbench),
+  );
   const [demoPersonaId, setDemoPersonaId] = useState(readInitialDemoPersona);
   const activeDemoPersona = DEMO_MODE ? resolveDemoPersona(demoPersonaId) : null;
+  const [demoProductContext, setDemoProductContext] = useState(() => (
+    readInitialDemoProductContext(readInitialDemoPersona())
+  ));
   const [activeSceneId, setActiveSceneId] = useState("water");
   const [models, setModels] = useState(DEMO_MODE ? DEMO_MODELS : []);
   const [modelsLoading, setModelsLoading] = useState(LIVE_MODE);
   const [modelsError, setModelsError] = useState("");
-  const [companyIdentity, setCompanyIdentity] = useState(null);
-  const [personalIdentity, setPersonalIdentity] = useState(null);
-  const [platformIdentity, setPlatformIdentity] = useState(null);
-  const [sessionSurfaceCatalog, setSessionSurfaceCatalog] = useState(null);
   const [activeCompanyId, setActiveCompanyId] = useState(
     runtimePlatformConfig.companyId || "",
   );
   const [personalWallet, setPersonalWallet] = useState(null);
   const [personalWalletError, setPersonalWalletError] = useState("");
-  const [modelId, setModelId] = useState(
-    DEMO_MODE ? DEMO_MODELS[0].id : initialPendingCreate?.modelId ?? "",
-  );
-  const [generationMode, setGenerationMode] = useState(
-    DEMO_MODE
-      ? DEMO_INITIAL_MODE
-      : initialPendingCreate?.requestPayload.mode ?? "",
-  );
-  const [ratio, setRatio] = useState(
-    DEMO_MODE
-      ? DEMO_INITIAL_CAPABILITY.limits.aspectRatios[0]
-      : initialPendingCreate?.requestPayload.aspect_ratio ?? "",
-  );
-  const [resolution, setResolution] = useState(
-    DEMO_MODE
-      ? DEMO_INITIAL_CAPABILITY.limits.resolutions[0]
-      : initialPendingCreate?.requestPayload.resolution ?? "",
-  );
-  const [duration, setDuration] = useState(
-    DEMO_MODE ? 15 : initialPendingCreate?.requestPayload.duration_seconds ?? null,
-  );
-  const [outputCount, setOutputCount] = useState(
-    DEMO_MODE ? 1 : initialPendingCreate?.requestPayload.output_count ?? null,
-  );
-  const [faceEnabled, setFaceEnabled] = useState(
-    DEMO_MODE ? false : Boolean(initialPendingCreate?.requestPayload.face_enabled),
-  );
-  const [prompt, setPrompt] = useState(
-    DEMO_MODE
-      ? "突出产品防水便携的特点，户外场景拍摄，光线自然干净，节奏明快，适合短视频投放。"
-      : initialPendingCreate?.requestPayload.prompt ?? "",
-  );
-  const [files, setFiles] = useState(() =>
-    !DEMO_MODE && initialPendingCreate
-      ? filesFromPendingRequest(initialPendingCreate.requestPayload)
-      : { image: [], video: [], audio: [] },
-  );
+  const {
+    draftIdentity,
+    replaceDraft,
+    modelId,
+    setModelId,
+    generationMode,
+    setGenerationMode,
+    ratio,
+    setRatio,
+    resolution,
+    setResolution,
+    duration,
+    setDuration,
+    outputCount,
+    setOutputCount,
+    faceEnabled,
+    setFaceEnabled,
+    prompt,
+    setPrompt,
+    files,
+    filesRef,
+    setFiles,
+  } = useGenerationDraft({
+    demoMode: DEMO_MODE,
+    demoModels: DEMO_MODELS,
+    demoInitialMode: DEMO_INITIAL_MODE,
+    demoInitialCapability: DEMO_INITIAL_CAPABILITY,
+    initialPendingCreate,
+  });
   const [assets, setAssets] = useState([]);
   const [assetsLoading, setAssetsLoading] = useState(LIVE_MODE);
   const [assetsError, setAssetsError] = useState("");
   const [uploadingKind, setUploadingKind] = useState("");
-  const [stage, setStage] = useState(DEMO_MODE ? "rendering" : "idle");
-  const [progress, setProgress] = useState(DEMO_MODE ? 65 : 0);
-  const [currentTaskId, setCurrentTaskId] = useState("");
-  const [currentTask, setCurrentTask] = useState(null);
-  const [currentTaskScope, setCurrentTaskScope] = useState("mine");
-  const [detailTask, setDetailTask] = useState(null);
-  const [detailTaskScope, setDetailTaskScope] = useState("mine");
-  const [submitting, setSubmitting] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
-  const [formError, setFormError] = useState(
-    initialPendingCreate ? "上次提交结果尚未确认，已恢复原参数；再次提交会复用原幂等键。" : "",
-  );
-  const [promptError, setPromptError] = useState("");
+  const generationTaskRuntime = useGenerationTaskRuntime({
+    demoMode: DEMO_MODE,
+    initialPendingCreate,
+  });
+  const {
+    stage,
+    progress,
+    currentTaskId,
+    currentTask,
+    currentTaskScope,
+    detailTask,
+    detailTaskScope,
+    submitting,
+    setSubmitting,
+    cancelling,
+    setCancelling,
+    formError,
+    setFormError,
+    promptError,
+    setPromptError,
+    playing,
+    setPlaying,
+    playhead,
+    setPlayhead,
+  } = generationTaskRuntime;
   const [authExpired, setAuthExpired] = useState(false);
-  const [identityResolved, setIdentityResolved] = useState(DEMO_MODE);
-  const [identityError, setIdentityError] = useState("");
-  const [playing, setPlaying] = useState(false);
-  const [playhead, setPlayhead] = useState(2);
-  const [historyTasks, setHistoryTasks] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(LIVE_MODE);
-  const [historyError, setHistoryError] = useState("");
-  const [historyScope, setHistoryScope] = useState("mine");
-  const [historyStatus, setHistoryStatus] = useState("");
-  const [historyPage, setHistoryPage] = useState(1);
-  const [historyTotal, setHistoryTotal] = useState(0);
-  const [creationPage, setCreationPage] = useState(1);
-  const [creationTotal, setCreationTotal] = useState(0);
-  const [creationStatus, setCreationStatus] = useState("");
-  const [creationDays, setCreationDays] = useState("30");
-  const [creationModelId, setCreationModelId] = useState("");
-  const [creationMediaType, setCreationMediaType] = useState("video");
-  const [creationQuery, setCreationQuery] = useState("");
-  const [artworks, setArtworks] = useState([]);
-  const [artworksLoading, setArtworksLoading] = useState(LIVE_MODE);
-  const [artworksError, setArtworksError] = useState("");
-  const [artworkScope, setArtworkScope] = useState("mine");
-  const [artworkMediaFilter, setArtworkMediaFilter] = useState("");
-  const [artworkDownloadFilter, setArtworkDownloadFilter] = useState("");
-  const [artworkPage, setArtworkPage] = useState(1);
-  const [artworkTotal, setArtworkTotal] = useState(0);
   const [artworkPreviewUrls, setArtworkPreviewUrls] = useState({});
-  const [availableResources, setAvailableResources] = useState([]);
-  const [resourcesResolved, setResourcesResolved] = useState(DEMO_MODE);
+  const [publishingReadiness, setPublishingReadiness] = useState(null);
+  const [publishingReadinessResolved, setPublishingReadinessResolved] = useState(DEMO_MODE);
+  const [publishingReadinessError, setPublishingReadinessError] = useState("");
   const [issuedArtifacts, setIssuedArtifacts] = useState({});
   const [artifactActionKey, setArtifactActionKey] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [resultOpen, setResultOpen] = useState(false);
-  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [composerPanel, setComposerPanel] = useState(null);
+  const [mobileComposerOpen, setMobileComposerOpen] = useState(false);
+  const composerExpanded = Boolean(composerPanel);
   const [downloadingAssetId, setDownloadingAssetId] = useState("");
   const [downloadError, setDownloadError] = useState("");
   const [publicationIntent, setPublicationIntent] = useState(null);
   const [toast, setToast] = useState("");
+  const [productContextSwitch, setProductContextSwitch] = useState({
+    target: "",
+    error: "",
+  });
   const [taskCompletionNotices, setTaskCompletionNotices] = useState(true);
   const composerRef = useRef(null);
+  const composerPanelTriggerRef = useRef(null);
+  const focusComposerPanelOnOpenRef = useRef(true);
+  const restoreComposerPanelFocusRef = useRef(false);
   const mainCanvasRef = useRef(null);
+  const studioNavTrackRef = useRef(null);
   const notificationAnchorRef = useRef(null);
   const userAnchorRef = useRef(null);
   const resultDialogRef = useRef(null);
   const resultReturnFocusRef = useRef(null);
-  const historyRequestGenerationRef = useRef(0);
-  const activeTaskRequestGenerationRef = useRef(0);
-  const artworkRequestGenerationRef = useRef(0);
-  const taskDetailRequestGenerationRef = useRef(0);
-  const taskDetailControllerRef = useRef(null);
+  const studioWorkspaceEvidenceKeyRef = useRef("");
 
   useEffect(() => {
     const delay = nextPreviewCleanupDelay(artworkPreviewUrls);
@@ -1141,11 +837,8 @@ export function App() {
   }, [artworkPreviewUrls]);
 
   const closeResultDialog = () => {
-    taskDetailRequestGenerationRef.current += 1;
-    taskDetailControllerRef.current?.abort();
-    taskDetailControllerRef.current = null;
+    generationTaskRuntime.closeTaskDetail();
     setResultOpen(false);
-    setDetailTask(null);
   };
 
   useLayoutEffect(() => {
@@ -1154,6 +847,47 @@ export function App() {
     canvas.scrollTop = 0;
     canvas.scrollLeft = 0;
   }, [activeNav]);
+
+  useLayoutEffect(() => {
+    const track = studioNavTrackRef.current;
+    if (!track || !window.matchMedia("(max-width: 900px)").matches) return;
+    const activeItem = track.querySelector(".is-active");
+    if (!activeItem) return;
+    const targetLeft = activeItem.offsetLeft - (track.clientWidth - activeItem.offsetWidth) / 2;
+    track.scrollTo({ left: Math.max(0, targetLeft), behavior: "auto" });
+  }, [activeNav]);
+
+  useLayoutEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    const scroller = composer.querySelector("#composer-parameters-panel");
+    if (composerPanel) {
+      const panel = composer.querySelector(`#composer-${composerPanel}-panel`);
+      if (scroller && panel) {
+        const panelTop =
+          panel.getBoundingClientRect().top -
+          scroller.getBoundingClientRect().top +
+          scroller.scrollTop;
+        const mobileSingleFocus = globalThis.matchMedia?.("(max-width: 620px)")?.matches;
+        scroller.scrollTo({ top: mobileSingleFocus ? 0 : Math.max(0, panelTop), behavior: "auto" });
+      }
+      if (focusComposerPanelOnOpenRef.current) {
+        composer
+          .querySelector(`#composer-${composerPanel}-panel [data-composer-panel-focus]`)
+          ?.focus({ preventScroll: true });
+      }
+      focusComposerPanelOnOpenRef.current = true;
+      return;
+    }
+    scroller?.scrollTo?.({ top: 0, behavior: "auto" });
+    if (restoreComposerPanelFocusRef.current) {
+      const trigger = composerPanelTriggerRef.current;
+      if (trigger?.isConnected && typeof trigger.focus === "function") {
+        trigger.focus({ preventScroll: true });
+      }
+    }
+    restoreComposerPanelFocusRef.current = false;
+  }, [composerPanel]);
 
   useEffect(() => {
     if (!resultOpen) {
@@ -1267,14 +1001,33 @@ export function App() {
     };
   }, [notificationsOpen, userMenuOpen]);
 
-  const expireSessionIfNeeded = (error) => {
+  function expireSessionIfNeeded(error) {
     if (!(error instanceof PlatformApiError)) return false;
     if (!handleAuthenticationError(error)) return false;
     if (error.code !== "STEP_UP_REQUIRED") setAuthExpired(true);
     setUserMenuOpen(false);
     setNotificationsOpen(false);
     return true;
-  };
+  }
+
+  const {
+    companyIdentity,
+    personalIdentity,
+    platformIdentity,
+    sessionSurfaceCatalog,
+    identityResolved,
+    identityError,
+    beginCompanySwitch,
+  } = useStudioIdentity({
+    liveMode: LIVE_MODE,
+    demoMode: DEMO_MODE,
+    liveClient,
+    runtimePlatformConfig,
+    activeCompanyId,
+    setActiveCompanyId,
+    authExpired,
+    onAuthenticationError: expireSessionIfNeeded,
+  });
 
   const model = useMemo(() => {
     const selected = models.find((item) => item.id === modelId);
@@ -1289,40 +1042,49 @@ export function App() {
   const taskStatus = STATUS[stage] ?? STATUS.unknown;
   const TaskIcon = taskStatus.icon;
   const resultTask = detailTask || currentTask;
-  const resultTaskStatus = resolveTaskStatus(resultTask?.status);
+  const resultArtifactEvidence = taskArtifactEvidence(resultTask);
+  const activeArtifactEvidence = taskArtifactEvidence(currentTask);
+  const resolvedResultTaskStatus = resolveTaskStatus(resultTask?.status);
+  const resultTaskStatus = LIVE_MODE
+    && resultTask?.status === "succeeded"
+    && !resultArtifactEvidence.complete
+      ? {
+        ...resolvedResultTaskStatus,
+        stage: "artifact-evidence-missing",
+        label: "作品保存未确认",
+        tone: "warning",
+        detail: resultArtifactEvidence.detail,
+      }
+    : resolvedResultTaskStatus;
   const ResultStatusIcon = STATUS[resultTaskStatus.stage]?.icon ?? WarningCircle;
   const taskStageIsActive = ["accepted", "queued", "rendering"].includes(stage);
   const taskStageNeedsAttention = [
     "timed-out",
     "reconciliation-required",
+    "artifact-evidence-missing",
     "unknown",
   ].includes(stage);
   const resultTaskScope = detailTask ? detailTaskScope : currentTaskScope;
-  const resultOutputArtifacts =
-    LIVE_MODE && Array.isArray(resultTask?.output_artifacts)
-      ? resultTask.output_artifacts
-      : [];
-  const activeOutputArtifacts =
-    LIVE_MODE && Array.isArray(currentTask?.output_artifacts)
-      ? currentTask.output_artifacts
-      : [];
+  const resultOutputArtifacts = LIVE_MODE && resultArtifactEvidence.complete
+    ? resultArtifactEvidence.artifacts
+    : [];
+  const activeOutputArtifacts = LIVE_MODE && activeArtifactEvidence.complete
+    ? activeArtifactEvidence.artifacts
+    : [];
   const supportedModes = Object.keys(model.effectiveCapabilities?.modes ?? {});
-  const activeCapability =
-    capabilityForMode(model.effectiveCapabilities, generationMode) ??
-    capabilityForMode(model.effectiveCapabilities, model.defaultMode);
+  const activeCapability = capabilityForMode(model.effectiveCapabilities, generationMode);
   const visibleControls = capabilityControlVisibility(activeCapability);
-  const mediaLimits = {
-    image: visibleControls.image ? activeCapability.limits.maxImages : 0,
-    video: visibleControls.video ? activeCapability.limits.maxVideos : 0,
-    audio: visibleControls.audio ? activeCapability.limits.maxAudio : 0,
-  };
+  const mediaLimits = capabilityMediaLimits(activeCapability);
+  const specificationFields = capabilitySpecificationFields(activeCapability, generationMode);
+  const fixedSpecificationFields = specificationFields.filter((field) => field.values.length === 1);
   const pendingPayload = pendingCreateRef.current?.requestPayload ?? null;
+  const pendingContext = pendingCreateRef.current?.creationContext;
+  const pendingBelongsToDraft = !pendingContext || draftIdentity === JSON.stringify([pendingContext.scopeKey, pendingContext.entryId || "quick"]);
   const promptLimit = activeCapability?.limits.maxPromptLength ?? 0;
   const faceControlAvailable = visibleControls.face;
   const historicalFaceVisible = Boolean(
     pendingPayload && Object.hasOwn(pendingPayload, "face_enabled"),
   );
-  const showFaceSummary = faceControlAvailable || historicalFaceVisible;
   const historicalRequestLocked = Boolean(pendingPayload);
   const visibleMediaLimits = historicalRequestLocked
     ? {
@@ -1331,6 +1093,23 @@ export function App() {
         audio: files.audio.length,
       }
     : mediaLimits;
+  const hasVisibleMediaInputs = Object.values(visibleMediaLimits).some(
+    (maximum) => maximum > 0,
+  );
+  const hasVisibleSpecifications = historicalRequestLocked || specificationFields.length > 0;
+  const hasVisibleRecipe = historicalRequestLocked || supportedModes.length > 0;
+
+  useLayoutEffect(() => {
+    const unavailablePanel = (composerPanel === "references" && !hasVisibleMediaInputs)
+      || (composerPanel === "specs" && !hasVisibleSpecifications)
+      || (composerPanel === "recipe" && !hasVisibleRecipe);
+    if (!unavailablePanel) return;
+    restoreComposerPanelFocusRef.current = false;
+    setComposerPanel(null);
+    globalThis.requestAnimationFrame?.(() => {
+      composerRef.current?.querySelector(activeCapability ? "#prompt" : "#model")?.focus({ preventScroll: true });
+    });
+  }, [composerPanel, hasVisibleMediaInputs, hasVisibleSpecifications, hasVisibleRecipe, activeCapability]);
   const companyClient = useMemo(() => {
     if (!liveClient || !activeCompanyId) return liveClient;
     if (activeCompanyId === runtimePlatformConfig.companyId) return liveClient;
@@ -1339,23 +1118,14 @@ export function App() {
       companyId: activeCompanyId,
     });
   }, [activeCompanyId]);
-  const liveAvailableSurfaces = [
-    personalIdentity ? "personal" : "",
-    ...(companyIdentity ? allowedSurfacesForIdentity(companyIdentity) : []),
-    platformIdentity ? "platform" : "",
-  ].filter((item, index, values) => item && values.indexOf(item) === index);
-  const selectedLiveIdentity = surface === "personal"
-    ? personalIdentity
-    : surface === "platform"
-      ? platformIdentity
-      : companyIdentity;
-  const fallbackLiveIdentity = companyIdentity || personalIdentity || platformIdentity;
-  const rawSessionIdentity = DEMO_MODE
-    ? activeDemoPersona.identity
-    : selectedLiveIdentity || fallbackLiveIdentity;
-  const sessionIdentity = !DEMO_MODE && rawSessionIdentity
-    ? { ...rawSessionIdentity, available_surfaces: liveAvailableSurfaces }
-    : rawSessionIdentity;
+  const sessionIdentity = DEMO_MODE
+    ? demoIdentityForProductContext(activeDemoPersona, demoProductContext)
+    : platformIdentity || companyIdentity || personalIdentity;
+  const authorizedProductContexts = availableProductContexts(
+    DEMO_MODE ? sessionIdentity : sessionSurfaceCatalog || authSession,
+  );
+  const canReturnToPlatform = sessionIdentity?.workspace_kind === "personal"
+    && authorizedProductContexts.includes("platform");
   const studioPreferenceSubject = sessionIdentity?.user_id || (
     DEMO_MODE ? `demo:${demoPersonaId}` : "unresolved"
   );
@@ -1372,7 +1142,7 @@ export function App() {
     const routeLabel = activeNav === "settings"
       ? "设置"
       : NAV_ITEMS.find((item) => item.id === activeNav)?.label || "工作台";
-    const workspaceLabel = effectiveSurface === "personal" ? "个人空间" : "企业创作";
+    const workspaceLabel = effectiveSurface === "personal" ? "个人空间" : "企业空间";
     if (globalThis.document) {
       globalThis.document.title = `${routeLabel} · ${workspaceLabel} · ${BRAND_NAME}`;
     }
@@ -1380,6 +1150,7 @@ export function App() {
   const permissionCodes = Array.isArray(sessionIdentity?.permission_codes)
     ? sessionIdentity.permission_codes
     : [];
+  const companyStudioAccess = resolveCompanyStudioAccess(permissionCodes);
   const identityReady = DEMO_MODE || (identityResolved && Boolean(sessionIdentity));
   const isPersonalWorkspace = effectiveSurface === "personal";
   const hasCompanySession = effectiveSurface !== "personal"
@@ -1388,13 +1159,13 @@ export function App() {
   const canCreateTasks = isPersonalWorkspace
     ? personalCapability(sessionIdentity, "generation")
       && personalCapability(sessionIdentity, "tasks")
-    : hasCompanySession && permissionCodes.includes("tasks.create");
+    : hasCompanySession && companyStudioAccess.canCreateTasks;
   const canManageAssets = isPersonalWorkspace
     ? personalCapability(sessionIdentity, "assets")
-    : hasCompanySession && permissionCodes.includes("assets.manage");
+    : hasCompanySession && companyStudioAccess.canManageAssets;
   const canAccessArtifacts = isPersonalWorkspace
     ? personalCapability(sessionIdentity, "artifact_access")
-    : hasCompanySession;
+    : hasCompanySession && companyStudioAccess.canAccessArtifacts;
   const canCancelTasks = isPersonalWorkspace
     ? personalCapability(sessionIdentity, "task_cancel")
     : hasCompanySession;
@@ -1403,32 +1174,77 @@ export function App() {
     : hasCompanySession;
   const canReadStudioModels = isPersonalWorkspace
     ? personalCapability(sessionIdentity, "models")
-    : hasCompanySession;
+    : hasCompanySession && companyStudioAccess.canReadModels;
+  const canReadStudioAssets = isPersonalWorkspace
+    ? personalCapability(sessionIdentity, "assets")
+    : hasCompanySession && companyStudioAccess.canReadAssets;
   const canReadStudioTasks = isPersonalWorkspace
     ? personalCapability(sessionIdentity, "tasks")
-    : hasCompanySession;
+    : hasCompanySession && companyStudioAccess.canReadTasks;
   const canReadStudioArtworks = isPersonalWorkspace
     ? personalCapability(sessionIdentity, "artworks")
-    : hasCompanySession;
+    : hasCompanySession && companyStudioAccess.canReadArtworks;
+  const taskTrackingUnavailable = Boolean(
+    LIVE_MODE
+    && currentTaskId
+    && !canReadStudioTasks
+    && taskStageIsActive,
+  );
   const canViewCompanyRecords = hasCompanySession && permissionCodes.includes("reports.read");
-  const canReadPublisherAccounts = hasCompanySession && permissionCodes.includes("publish.accounts.read");
-  const canManagePublisherAccounts = hasCompanySession && permissionCodes.includes("publish.accounts.manage");
-  const canReadPublicationJobs = hasCompanySession && permissionCodes.includes("publish.jobs.read");
-  const canManagePublicationJobs = hasCompanySession && permissionCodes.includes("publish.jobs.manage");
-  const hasPublishingPermission = canReadPublisherAccounts || canReadPublicationJobs;
-  const hasAutoPublishEntitlement = DEMO_MODE || availableResources.some((resource) => (
-    (resource.key || resource.resource_key) === "feature.auto_publish" &&
-    resource.active !== false &&
-    resource.enabled !== false &&
-    resource.status !== "disabled"
-  ));
+  const identityCanReadPublisherAccounts = hasCompanySession && permissionCodes.includes("publish.accounts.read");
+  const identityCanManagePublisherAccounts = hasCompanySession && permissionCodes.includes("publish.accounts.manage");
+  const identityCanReadPublicationJobs = hasCompanySession && permissionCodes.includes("publish.jobs.read");
+  const identityCanManagePublicationJobs = hasCompanySession && permissionCodes.includes("publish.jobs.manage");
+  const hasPublishingPermission = identityCanReadPublisherAccounts
+    || identityCanManagePublisherAccounts
+    || identityCanReadPublicationJobs
+    || identityCanManagePublicationJobs;
+  const canReadPublisherAccounts = hasCompanySession && (
+    publishingReadiness
+      ? publishingReadiness.can_read_accounts === true
+      : identityCanReadPublisherAccounts
+  );
+  const canManagePublisherAccounts = hasCompanySession && (
+    publishingReadiness
+      ? publishingReadiness.can_manage_accounts === true
+      : identityCanManagePublisherAccounts
+  );
+  const canReadPublicationJobs = hasCompanySession && (
+    publishingReadiness
+      ? publishingReadiness.can_read_jobs === true
+      : identityCanReadPublicationJobs
+  );
+  const canManagePublicationJobs = hasCompanySession && (
+    publishingReadiness
+      ? publishingReadiness.can_manage_jobs === true
+      : identityCanManagePublicationJobs
+  );
+  const hasAutoPublishEntitlement = DEMO_MODE
+    || publishingReadiness?.feature_auto_publish_enabled === true;
+  const accountPublishingSideEffectsEnabled = DEMO_MODE
+    || (publishingReadinessResolved
+      && publishingReadiness?.account_side_effects_enabled === true);
+  const jobPublishingSideEffectsEnabled = DEMO_MODE
+    || (publishingReadinessResolved
+      && publishingReadiness?.job_side_effects_enabled === true);
   const showPublishingNavigation = isPersonalWorkspace || (
     hasCompanySession && (DEMO_MODE || hasPublishingPermission)
   );
+  const studioNavigationAccess = {
+    canReadModels: canReadStudioModels,
+    canReadAssets: canReadStudioAssets,
+    canManageAssets,
+    canReadTasks: canReadStudioTasks,
+    canCreateTasks,
+  };
+  const visibleStudioNavItems = NAV_ITEMS.filter((item) => (
+    item.id === "publish"
+      ? showPublishingNavigation
+      : studioRouteAvailable(item.id, studioNavigationAccess)
+  ));
   const canStartPublication = DEMO_MODE || (
     hasCompanySession &&
-    resourcesResolved &&
-    hasAutoPublishEntitlement &&
+    jobPublishingSideEffectsEnabled &&
     canReadPublisherAccounts &&
     canReadPublicationJobs &&
     canManagePublicationJobs
@@ -1437,16 +1253,27 @@ export function App() {
     sessionIdentity?.company_name ||
     sessionIdentity?.company_display_name ||
     "";
+  const activeCompanyContexts = (sessionSurfaceCatalog?.companies || []).filter(
+    isActiveCompanyContext,
+  );
+  const canSwitchCompany = hasCompanySession && activeCompanyContexts.length > 1;
+  const studioManagementSurfaces = sessionSurfaces.filter(
+    (item) => item === "company" || item === "platform",
+  );
+  if (canReturnToPlatform && !studioManagementSurfaces.includes("platform")) {
+    studioManagementSurfaces.push("platform");
+  }
   const studioWorkspaceKey = isPersonalWorkspace
     ? sessionIdentity?.workspace_id
       ? `personal:${sessionIdentity.workspace_id}`
       : ""
-    : sessionIdentity?.company_id || activeCompanyId;
+    : activeCompanyId || sessionIdentity?.company_id;
   const studioClient = useMemo(() => {
     if (!LIVE_MODE || !liveClient) return liveClient;
     if (!isPersonalWorkspace) return companyClient;
     return {
       listModels: (...args) => liveClient.listPersonalModels(...args),
+      listModelCatalog: (...args) => liveClient.listPersonalModelCatalog(...args),
       listTaskHistory: (...args) => liveClient.listPersonalTasks(...args),
       listTasks: ({ signal } = {}) => liveClient.listPersonalTasks({}, { signal }),
       listArtworks: (...args) => liveClient.listPersonalArtworks(...args),
@@ -1456,6 +1283,78 @@ export function App() {
       getArtifactDownload: (...args) => liveClient.getPersonalArtifactDownload(...args),
     };
   }, [companyClient, isPersonalWorkspace]);
+  const {
+    historyTasks,
+    setHistoryTasks,
+    historyLoading,
+    historyError,
+    historyScope,
+    setHistoryScope,
+    historyStatus,
+    setHistoryStatus,
+    historyPage,
+    setHistoryPage,
+    historyTotal,
+    setHistoryTotal,
+    creationPage,
+    setCreationPage,
+    creationTotal,
+    setCreationTotal,
+    creationStatus,
+    setCreationStatus,
+    creationDays,
+    setCreationDays,
+    creationModelId,
+    setCreationModelId,
+    creationMediaType,
+    setCreationMediaType,
+    creationQuery,
+    setCreationQuery,
+    resetTaskCollections,
+  } = useStudioTaskCollections({
+    activeNav,
+    liveMode: LIVE_MODE,
+    authExpired,
+    hasStudioSession,
+    canReadStudioTasks,
+    effectiveSurface,
+    isPersonalWorkspace,
+    studioClient,
+    studioWorkspaceKey,
+    collectionPageSize: COLLECTION_PAGE_SIZE,
+    onAuthenticationError: expireSessionIfNeeded,
+    formatError: readableApiError,
+  });
+  const {
+    artworks,
+    setArtworks,
+    artworksLoading,
+    artworksError,
+    artworkScope,
+    setArtworkScope,
+    artworkMediaFilter,
+    setArtworkMediaFilter,
+    artworkDownloadFilter,
+    setArtworkDownloadFilter,
+    artworkPage,
+    setArtworkPage,
+    artworkTotal,
+    setArtworkTotal,
+    resetArtworkCollection,
+  } = useStudioArtworkCollection({
+    activeNav,
+    liveMode: LIVE_MODE,
+    authExpired,
+    hasStudioSession,
+    canReadStudioArtworks,
+    effectiveSurface,
+    isPersonalWorkspace,
+    studioClient,
+    studioWorkspaceKey,
+    collectionPageSize: COLLECTION_PAGE_SIZE,
+    onAuthenticationError: expireSessionIfNeeded,
+    formatError: readableApiError,
+  });
   const refreshPersonalWallet = useCallback(async ({ signal } = {}) => {
     if (!LIVE_MODE || !isPersonalWorkspace || !hasStudioSession) return null;
     try {
@@ -1472,31 +1371,262 @@ export function App() {
       return null;
     }
   }, [hasStudioSession, isPersonalWorkspace]);
-  const GenerationIcon = generationMode === "text_to_image" ? ImageSquare : VideoCamera;
-  const cost = LIVE_MODE
-    ? (isPersonalWorkspace ? model.unitPricePoints : model.unitPriceCents) *
-      (model.pricingMode === "per_second" ? duration : outputCount)
-    : duration * model.rate * outputCount;
-  const costLabel = historicalRequestLocked
-    ? "原提交待确认"
-    : LIVE_MODE
-      ? isPersonalWorkspace
-        ? `${Math.max(0, Math.round(cost))} 积分`
-        : `¥${(cost / 100).toFixed(2)}`
-      : `${cost} 积分`;
-  const hasStoredArtifacts =
-    LIVE_MODE &&
-    currentTask?.status === "succeeded" &&
-    activeOutputArtifacts.length > 0;
+  const hasServerReadinessEvidence = !LIVE_MODE || (
+    typeof model.readinessCheckedAt === "string" &&
+    Number.isFinite(Date.parse(model.readinessCheckedAt))
+  );
+  const serverGenerationReadiness = hasServerReadinessEvidence
+    ? resolveGenerationReadiness(
+        model.modeReadiness,
+        generationMode,
+        { faceEnabled },
+      )
+    : { status: "unverified", ready: false, supported: true, blockers: [] };
+  const localReadinessBlockers = historicalRequestLocked
+    ? []
+    : [
+        ...(!prompt.trim()
+          ? [{ code: "prompt_required", message: "请填写制作说明。" }]
+          : []),
+        ...(promptLimit > 0 && generationPromptLength(prompt.trim()) > promptLimit
+          ? [{
+              code: "prompt_too_long",
+              message: `制作说明超过当前模式的 ${promptLimit} 字上限。`,
+            }]
+          : []),
+        ...(generationMode === "image_to_video" && files.image.length === 0
+          ? [{ code: "image_required", message: "图生视频至少需要 1 张参考图。" }]
+          : []),
+        ...(generationMode === "video_to_video" && files.video.length === 0
+          ? [{ code: "video_required", message: "视频参考至少需要 1 个参考视频。" }]
+          : []),
+        ...(uploadingKind
+          ? [{ code: "upload_in_progress", message: "素材仍在上传，请等待上传完成。" }]
+          : []),
+      ];
+  const generationReadiness = localReadinessBlockers.length > 0
+    ? {
+        ...serverGenerationReadiness,
+        ready: false,
+        status: serverGenerationReadiness.ready
+          ? "blocked"
+          : serverGenerationReadiness.status,
+        blockers: [
+          ...serverGenerationReadiness.blockers,
+          ...localReadinessBlockers,
+        ],
+      }
+    : serverGenerationReadiness;
+  const readinessBlocking = !historicalRequestLocked && !generationReadiness.ready;
+  const readinessReasons = [...new Set(
+    generationReadiness.blockers
+      .map((blocker) => (
+        blocker.message ||
+        (blocker.resourceName ? `${blocker.resourceName}暂不可用` : "当前工作区缺少所需授权")
+      ))
+      .filter(Boolean),
+  )];
+  const readinessHeadline = generationReadiness.ready
+    ? faceEnabled
+      ? "可以生成人脸内容"
+      : "可以开始生成"
+    : serverGenerationReadiness.ready
+      ? "补全创作内容后即可生成"
+      : generationReadiness.status === "unsupported"
+        ? "当前模型不支持人脸处理"
+        : generationReadiness.status === "blocked"
+          ? "当前设置不能生成"
+          : "生成条件尚未确认";
+  const readinessCheckedAtLabel = LIVE_MODE && hasServerReadinessEvidence
+    ? new Intl.DateTimeFormat("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }).format(new Date(model.readinessCheckedAt))
+    : "";
+  const costPreview = generationCostPreview({
+    historicalRequestLocked,
+    liveMode: LIVE_MODE,
+    model,
+    duration,
+    outputCount,
+  });
+  const costLabel = costPreview.label;
+  const currentCapabilityRevisionValid = !LIVE_MODE
+    || validCapabilityRevision(model.capabilityVersion);
+  const currentQuoteRevisionValid = !LIVE_MODE
+    || validQuoteRevision(model.quoteRevision);
+  const showCostPreview = !historicalRequestLocked
+    && !modelsLoading
+    && costPreview.available
+    && currentQuoteRevisionValid;
+  const readinessPrimaryBlocker = generationReadiness.blockers[0] ?? null;
+  const readinessPrimaryReason = readinessReasons[0] || (
+    generationReadiness.status === "unverified"
+      ? "生成条件尚未确认，请刷新模型后重试。"
+      : generationReadiness.status === "unsupported"
+        ? "当前模型不支持已选择的人脸处理选项，请关闭后重试。"
+        : "当前组合暂不满足生成条件，请查看生成就绪依据。"
+  );
+  const personalRequestUnsupported = isPersonalWorkspace
+    && !historicalRequestLocked
+    && (
+      !["text_to_video", "text_to_image"].includes(generationMode)
+      || faceEnabled
+      || Object.values(files).some((items) => items.length > 0)
+    );
+  const referenceUploadNote = historicalRequestLocked
+    ? "原提交尚未确认，参考素材暂时锁定。"
+    : LIVE_MODE && !canManageAssets
+      ? "当前账号不能上传新素材，但仍可选用素材库中的已有内容。"
+      : "";
+  const composerSubmitState = (() => {
+    if (submitting) {
+      return { code: "submitting", label: "正在提交", message: "", disabled: true, tone: "progress" };
+    }
+    if (uploadingKind) {
+      return { code: "uploading", label: "正在上传素材", message: "", disabled: true, tone: "progress" };
+    }
+    if (taskStageIsActive) {
+      const label = stage === "accepted"
+        ? "任务已接收"
+        : stage === "queued"
+          ? "正在排队"
+          : "正在生成";
+      return {
+        code: `task_${stage}`,
+        label,
+        message: taskTrackingUnavailable
+          ? "任务已经提交，但当前账号不能查看进度；页面已停止轮询。"
+          : formError || "",
+        disabled: true,
+        tone: formError ? "danger" : "progress",
+      };
+    }
+    if (LIVE_MODE && !identityReady) {
+      return {
+        code: "identity_pending",
+        label: "暂不可生成",
+        message: "正在确认当前账号的任务创建权限。",
+        disabled: true,
+        tone: "warning",
+      };
+    }
+    if (LIVE_MODE && !canCreateTasks) {
+      return {
+        code: "permission_denied",
+        label: "暂不可生成",
+        message: isPersonalWorkspace
+          ? "当前个人空间未开放生成能力。"
+          : "当前账号不能开始生成，请联系企业负责人开通任务创建权限。",
+        disabled: true,
+        tone: "danger",
+      };
+    }
+    if (modelsLoading) {
+      return { code: "models_loading", label: "正在读取模型", message: "", disabled: true, tone: "progress" };
+    }
+    if (historicalRequestLocked) {
+      return {
+        code: "pending_confirmation",
+        label: "确认原提交",
+        message: formError || "再次提交只会确认同一次请求，并继续使用原设置。",
+        disabled: false,
+        tone: "warning",
+      };
+    }
+    if (models.length === 0 || !model.id) {
+      return {
+        code: "model_missing",
+        label: "暂不可生成",
+        message: modelsError || (isPersonalWorkspace
+          ? "个人空间当前没有可用模型。"
+          : "公司当前没有已授权模型。"),
+        disabled: true,
+        tone: "danger",
+      };
+    }
+    if (!activeCapability) {
+      return {
+        code: "capability_missing",
+        label: "暂不可生成",
+        message: "当前模型能力不可用，请切换模型或联系平台管理员。",
+        disabled: true,
+        tone: "danger",
+      };
+    }
+    if (!currentCapabilityRevisionValid) {
+      return {
+        code: "capability_revision_invalid",
+        label: "暂不可生成",
+        message: "当前模型配置无效，请联系平台管理员检查模型配置。",
+        disabled: true,
+        tone: "danger",
+      };
+    }
+    if (!currentQuoteRevisionValid || (LIVE_MODE && !costPreview.available)) {
+      return {
+        code: "price_unverified",
+        label: "暂不可生成",
+        message: "当前模型的价格尚未确认，请刷新模型后重试。",
+        disabled: true,
+        tone: "danger",
+      };
+    }
+    if (personalRequestUnsupported) {
+      return {
+        code: "personal_request_unsupported",
+        label: "暂不可生成",
+        message: "个人空间本期仅支持无素材、无人脸输入的文生视频与文生图片。",
+        disabled: true,
+        tone: "warning",
+      };
+    }
+    if (readinessBlocking) {
+      return {
+        code: readinessPrimaryBlocker?.code || "readiness_blocked",
+        source: "readiness",
+        label: "暂不可生成",
+        message: readinessPrimaryReason,
+        disabled: true,
+        tone: generationReadiness.status === "unverified" ? "warning" : "danger",
+      };
+    }
+    const transientError = promptError || formError;
+    if (transientError) {
+      return {
+        code: promptError ? "prompt_error" : "form_error",
+        label: "开始生成",
+        message: transientError,
+        disabled: false,
+        tone: "danger",
+      };
+    }
+    return { code: "ready", label: "开始生成", message: "", disabled: false, tone: "ready" };
+  })();
+  const readinessEvidenceReasons = composerSubmitState.source === "readiness"
+    ? readinessReasons.slice(1)
+    : readinessReasons;
+  const composerSubmitMessageId = composerSubmitState.message
+    ? "composer-submit-message"
+    : undefined;
+  const promptSubmissionIssue = ["prompt_required", "prompt_too_long", "prompt_error"]
+    .includes(composerSubmitState.code);
+  const activeTaskTimingLabel = taskTimingLabel(currentTask, {
+    status: currentTask?.status || (stage === "rendering" ? "processing" : stage),
+  });
+  const hasStoredArtifacts = LIVE_MODE && activeArtifactEvidence.complete;
   const StoredStateIcon =
     LIVE_MODE && !hasStoredArtifacts ? ClockCounterClockwise : Check;
   const storedStateTitle = LIVE_MODE
     ? hasStoredArtifacts
-      ? "产物已安全转存"
-      : resultTask
-        ? "任务记录已保存"
-        : "尚未生成产物"
-    : "产物已保存";
+      ? "作品已保存"
+      : currentTask?.status === "succeeded"
+        ? "作品保存未确认"
+        : resultTask
+          ? "任务记录已同步"
+          : "还没有作品"
+    : "演示预览，未写入存储";
 
   const updateTaskCompletionNotices = (enabled) => {
     const nextValue = Boolean(enabled);
@@ -1514,8 +1644,34 @@ export function App() {
         : "当前浏览器阻止了偏好存储，本次选择仅在当前页面有效",
     );
   };
-  const activeCapabilityRef = useRef(activeCapability);
-  activeCapabilityRef.current = activeCapability;
+  const creationScopeKey = identityReady && studioWorkspaceKey && sessionIdentity?.user_id
+    ? JSON.stringify([DEMO_MODE ? "demo" : "live", runtimePlatformConfig.baseUrl, sessionIdentity.user_id, isPersonalWorkspace ? "personal" : "company", studioWorkspaceKey])
+    : "";
+  const {
+    personalModelCatalog,
+    personalModelCatalogLoading,
+    personalModelCatalogError,
+  } = usePersonalModelCatalog({
+    liveMode: LIVE_MODE,
+    authExpired,
+    hasStudioSession,
+    creationScopeKey,
+    isPersonalWorkspace,
+    effectiveSurface,
+    canReadStudioModels,
+    studioClient,
+    onAuthenticationError: expireSessionIfNeeded,
+    formatError: readableApiError,
+  });
+  const {
+    generationUploadGate, activeCapabilityRef, generationInputContext,
+    appendDraftInputs, invalidateGenerationInputContext,
+  } = useGenerationInputs({
+    capability: activeCapability, modelId, mode: generationMode,
+    capabilityVersion: model.capabilityVersion, workspaceKey: creationScopeKey,
+    filesRef, setFiles, pendingCreateRef,
+    draftKey: draftIdentity,
+  });
 
   const studioDraft = () => ({
     prompt,
@@ -1524,10 +1680,11 @@ export function App() {
     resolution,
     outputCount,
     faceEnabled,
-    files,
+    files: filesRef.current,
   });
 
   const applyReconciledDraft = (result, { announce = true } = {}) => {
+    invalidateGenerationInputContext();
     setGenerationMode(result.mode);
     setPrompt(result.draft.prompt ?? "");
     setDuration(result.draft.duration);
@@ -1559,6 +1716,18 @@ export function App() {
     );
   };
 
+  const workbenchDraftFromReconciliation = (result, selectedModelId) => ({
+    modelId: selectedModelId,
+    generationMode: result.mode,
+    prompt: result.draft.prompt ?? "",
+    ratio: result.draft.aspectRatio ?? "",
+    resolution: result.draft.resolution ?? "",
+    duration: result.draft.duration,
+    outputCount: result.draft.outputCount,
+    faceEnabled: result.draft.faceEnabled,
+    files: result.draft.files,
+  });
+
   const selectStudioModel = (nextModelId) => {
     if (pendingCreateRef.current) return;
     const nextModel = models.find((item) => item.id === nextModelId) ?? EMPTY_MODEL;
@@ -1585,6 +1754,93 @@ export function App() {
     setFormError(result.ok ? "" : result.error);
   };
 
+  const generationDraftSnapshot = {
+    modelId, generationMode, prompt, ratio, resolution, duration, outputCount, faceEnabled, files,
+  };
+  const generationDraftSnapshotRef = useRef(generationDraftSnapshot);
+  generationDraftSnapshotRef.current = generationDraftSnapshot;
+  const creationScopeRef = useRef(creationScopeKey);
+  creationScopeRef.current = creationScopeKey;
+  const creationRouteRef = useRef({ activeNav, workbench: creationWorkbench });
+  creationRouteRef.current = { activeNav, workbench: creationWorkbench };
+  const pendingStorageKey = creationScopeKey;
+
+  function workbenchDraftForTask(task) {
+    const payload = task?.request_payload || {};
+    const taskModel = models.find((item) => item.id === task?.model_id);
+    const requested = filesFromPendingRequest(payload);
+    const verifiedFiles = Object.fromEntries(Object.entries(requested).map(([kind, items]) => [kind, items.flatMap((item) => {
+      const asset = assets.find((candidate) => inputAssetId(candidate) === inputAssetId(item) && inputAssetType(candidate) === kind && candidate.status === "active");
+      return asset ? [asset] : [];
+    })]));
+    return {
+      modelId: taskModel?.id || "", generationMode: payload.mode || "", prompt: payload.prompt || "",
+      ratio: payload.aspect_ratio || "", resolution: payload.resolution || "",
+      duration: payload.duration_seconds ?? null, outputCount: payload.output_count ?? null,
+      faceEnabled: Boolean(payload.face_enabled), files: verifiedFiles,
+    };
+  }
+
+  const creationSession = useCreationWorkspaceSession({
+    scopeKey: creationScopeKey,
+    workbench: phoneAdvancedWorkbenchGate ? "entry" : creationWorkbench,
+    draft: generationDraftSnapshot,
+    draftIdentity,
+    replaceDraft,
+    panel: composerPanel,
+    mobileOpen: mobileComposerOpen,
+    restoreDisclosure: (panel, mobileOpen) => {
+      invalidateGenerationInputContext();
+      composerPanelTriggerRef.current = null;
+      restoreComposerPanelFocusRef.current = false;
+      setComposerPanel(panel);
+      setMobileComposerOpen(mobileOpen);
+      setPromptError("");
+      setFormError("");
+    },
+    locked: submitting || Boolean(uploadingKind) || Boolean(pendingCreateRef.current),
+    onNavigate: navigateCreationWorkbench,
+    onNotice: setToast,
+    draftForTask: workbenchDraftForTask,
+  });
+  const ownedCreationTaskIds = useMemo(
+    () => [...new Set(creationSession.state.entries.flatMap((entry) => entry.taskIds))],
+    [creationSession.state.entries],
+  );
+  const workbenchRecords = useWorkbenchTaskRecords({
+    client: studioClient,
+    scopeKey: creationScopeKey,
+    enabled: LIVE_MODE && canReadStudioTasks && !authExpired && activeNav === "create" && creationWorkbench !== "entry" && !phoneAdvancedWorkbenchGate,
+    taskIds: creationSession.state.entries.filter((entry) => entry.kind === creationWorkbench).flatMap((entry) => entry.taskIds),
+    knownTasks: [],
+    onAuthError: expireSessionIfNeeded,
+  });
+
+  useGenerationTaskLifecycle({
+    runtime: generationTaskRuntime,
+    demoMode: DEMO_MODE,
+    liveMode: LIVE_MODE,
+    authExpired,
+    hasStudioSession,
+    canReadStudioTasks,
+    effectiveSurface,
+    isPersonalWorkspace,
+    studioClient,
+    studioWorkspaceKey,
+    creationScopeKey,
+    creationScopeRef,
+    creationRouteRef,
+    taskBelongsToCurrentDraft: creationSession.taskBelongsToCurrentDraft,
+    refreshPersonalWallet,
+    taskCompletionNotices,
+    previewDuration: duration,
+    onAuthenticationError: expireSessionIfNeeded,
+    onOpenResult: () => setResultOpen(true),
+    onClearDownloadError: () => setDownloadError(""),
+    onToast: setToast,
+    formatError: readableApiError,
+  });
+
   useEffect(() => {
     if (!identityResolved) return;
     if (sessionSurfaces.includes(surface)) return;
@@ -1602,223 +1858,75 @@ export function App() {
   }, [activeNav, identityResolved, sessionIdentity?.user_id, sessionSurfaceKey, surface]);
 
   useEffect(() => {
-    if (!LIVE_MODE || authExpired) return undefined;
-    const controller = new AbortController();
-
-    setIdentityResolved(false);
-    setIdentityError("");
-    const legacyIdentityProbe = async () => {
-      const companyProbe = activeCompanyId
-        ? createPlatformClient({
-            ...runtimePlatformConfig,
-            companyId: activeCompanyId,
-          }).getCompanyMe({ signal: controller.signal })
-        : Promise.reject(new PlatformApiError("当前会话没有公司上下文", {
-            code: "COMPANY_ID_NOT_CONFIGURED",
-          }));
-      const [companyResult, adminResult] = await Promise.allSettled([
-        companyProbe,
-        liveClient.getPlatformAdminMe({ signal: controller.signal }),
-      ]);
-      return { companyResult, adminResult, personalResult: null, catalog: null };
-    };
-
-    const discoverIdentity = async () => {
-      let catalog;
-      try {
-        catalog = normalizeSessionSurfaces(
-          await liveClient.getSessionSurfaces({ signal: controller.signal }),
-        );
-      } catch (error) {
-        if (!missingCollectionEndpoint(error)) throw error;
-        return legacyIdentityProbe();
-      }
-
-      const selectedCompanyId = preferredCompanyId(
-        catalog,
-        activeCompanyId || runtimePlatformConfig.companyId,
-      );
-      if (selectedCompanyId && selectedCompanyId !== activeCompanyId) {
-        setActiveCompanyId(selectedCompanyId);
-      }
-      if (selectedCompanyId) {
-        try {
-          globalThis.sessionStorage?.setItem("ai-video.company-id", selectedCompanyId);
-        } catch {
-          // The selected server-authorized company still applies in memory.
-        }
-      }
-      const selectedCompanyClient = selectedCompanyId
-        ? createPlatformClient({
-            ...runtimePlatformConfig,
-            companyId: selectedCompanyId,
-          })
-        : null;
-      const [companyResult, adminResult, personalResult] = await Promise.allSettled([
-        selectedCompanyClient
-          ? selectedCompanyClient.getCompanyMe({ signal: controller.signal })
-          : Promise.resolve(null),
-        catalog.platform_admin
-          ? liveClient.getPlatformAdminMe({ signal: controller.signal })
-          : Promise.resolve(null),
-        catalog.personal
-          ? liveClient.getPersonalMe({ signal: controller.signal })
-          : Promise.resolve(null),
-      ]);
-      return { companyResult, adminResult, personalResult, catalog };
-    };
-
-    discoverIdentity()
-      .then(({ companyResult, adminResult, personalResult, catalog }) => {
-        if (controller.signal.aborted) return;
-        const errors = [
-          companyResult?.status === "rejected" ? companyResult.reason : null,
-          adminResult?.status === "rejected" ? adminResult.reason : null,
-          personalResult?.status === "rejected" ? personalResult.reason : null,
-        ].filter(Boolean);
-        const authError = errors.find((error) => (
-          error instanceof PlatformApiError &&
-          (error.status === 401 || error.code === "AUTH_NOT_CONFIGURED")
-        ));
-        if (authError) {
-          expireSessionIfNeeded(authError);
-          return;
-        }
-
-        const nextCompanyIdentity = companyResult?.status === "fulfilled"
-          ? companyResult.value
-          : null;
-        const nextPlatformIdentity = adminResult?.status === "fulfilled" && adminResult.value
-          ? {
-              ...adminResult.value,
-              company_id: null,
-              permission_codes: [],
-              roles: [],
-              is_platform_admin: true,
-            }
-          : null;
-        const nextPersonalIdentity = catalog
-          && personalResult?.status === "fulfilled"
-          && personalResult.value
-          ? {
-              ...personalIdentityFromSession(catalog),
-              ...personalResult.value,
-              company_id: null,
-              workspace_id: catalog.personal?.workspace_id,
-              workspace_kind: "personal",
-              workspace_label: catalog.personal?.label || "个人空间",
-              personal_capabilities: catalog.personal?.capabilities || {},
-              permission_codes: [],
-              roles: [],
-              is_personal: true,
-              is_platform_admin: false,
-            }
-          : null;
-
-        setSessionSurfaceCatalog(catalog);
-        setCompanyIdentity(nextCompanyIdentity);
-        setPlatformIdentity(nextPlatformIdentity);
-        setPersonalIdentity(nextPersonalIdentity);
-        if (!nextCompanyIdentity && !nextPlatformIdentity && !nextPersonalIdentity) {
-          setIdentityError(
-            catalog
-              ? "当前账号没有可用的个人、公司或平台工作区。"
-              : "无法确认当前账号属于公司成员还是平台管理员，请稍后重试。",
-          );
-        } else {
-          setIdentityError("");
-        }
-      })
-      .catch((error) => {
-        if (controller.signal.aborted) return;
-        if (!expireSessionIfNeeded(error)) {
-          setIdentityError("无法读取账号工作区，请稍后重试。");
-        }
-        setSessionSurfaceCatalog(null);
-        setCompanyIdentity(null);
-        setPlatformIdentity(null);
-        setPersonalIdentity(null);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setIdentityResolved(true);
-      });
-
-    return () => controller.abort();
-  }, [activeCompanyId, authExpired]);
-
-  useEffect(() => {
     if (!LIVE_MODE || !identityResolved || !hasStudioSession || !studioWorkspaceKey) {
       return;
     }
-    const pendingCreate = readPendingCreate(studioWorkspaceKey);
+    const legacyPending = readPendingCreate(studioWorkspaceKey);
+    const pendingCreate = readPendingCreate(pendingStorageKey)
+      || (legacyPending?.version < 6 ? legacyPending : null);
+    studioWorkspaceEvidenceKeyRef.current = studioWorkspaceKey;
     pendingCreateRef.current = pendingCreate;
+    activeSubmissionRef.current = null;
     setModels([]);
-    setModelId(pendingCreate?.modelId || "");
-    setGenerationMode(pendingCreate?.requestPayload?.mode || "");
-    setPrompt(pendingCreate?.requestPayload?.prompt || "");
-    setDuration(pendingCreate?.requestPayload?.duration_seconds ?? null);
-    setOutputCount(pendingCreate?.requestPayload?.output_count ?? null);
-    setRatio(pendingCreate?.requestPayload?.aspect_ratio || "");
-    setResolution(pendingCreate?.requestPayload?.resolution || "");
-    setFaceEnabled(Boolean(pendingCreate?.requestPayload?.face_enabled));
-    setFiles(
-      pendingCreate
-        ? filesFromPendingRequest(pendingCreate.requestPayload)
-        : { image: [], video: [], audio: [] },
-    );
+    if (pendingCreate) {
+      creationSession.restoreContext(pendingCreate.creationContext || { scopeKey: creationScopeKey, kind: "quick", entryId: "" });
+      restorePendingCreate(pendingCreate);
+    }
     setAssets([]);
-    setHistoryTasks([]);
-    setArtworks([]);
+    resetTaskCollections();
+    resetArtworkCollection();
     setArtworkPreviewUrls({});
     setIssuedArtifacts({});
-    setCurrentTask(null);
-    setCurrentTaskId("");
-    setDetailTask(null);
-    setStage("idle");
-    setProgress(0);
-    setHistoryScope("mine");
-    setHistoryStatus("");
-    setArtworkScope("mine");
-    setArtworkMediaFilter("");
-    setArtworkDownloadFilter("");
-    setCreationStatus("");
-    setCreationDays("30");
-    setCreationModelId("");
-    setCreationMediaType("video");
-    setCreationQuery("");
-    setHistoryPage(1);
-    setCreationPage(1);
-    setArtworkPage(1);
-    setFormError(
-      pendingCreate
-        ? "上次提交结果尚未确认，已恢复当前工作空间的原参数；再次提交会复用原幂等键。"
+    generationTaskRuntime.resetWorkspace({
+      formError: pendingCreate
+        ? "上次提交结果尚未确认，已恢复当前工作区的原设置。再次提交只会确认同一次请求，不会创建重复任务。"
         : "",
-    );
-    setPromptError("");
+    });
     closeResultDialog();
-  }, [hasStudioSession, identityResolved, studioWorkspaceKey]);
+  }, [
+    hasStudioSession,
+    identityResolved,
+    resetArtworkCollection,
+    resetTaskCollections,
+    studioWorkspaceKey,
+    pendingStorageKey,
+  ]);
 
   useEffect(() => {
     if (
       !LIVE_MODE ||
       authExpired ||
       !hasStudioSession ||
-      !canReadStudioModels ||
+      !creationScopeKey ||
       !["studio", "personal"].includes(effectiveSurface)
     ) return undefined;
+    if (!canReadStudioModels) {
+      setModels([]);
+      setModelId("");
+      setModelsLoading(false);
+      setModelsError(isPersonalWorkspace
+        ? "当前个人空间没有模型读取能力。"
+        : "当前账号不能查看企业模型。请联系企业负责人调整模型访问权限。");
+      return undefined;
+    }
     const controller = new AbortController();
+    const requestScope = creationScopeKey;
     setModelsLoading(true);
 
     studioClient
       .listModels({ signal: controller.signal })
       .then((items) => {
+        if (controller.signal.aborted || creationScopeRef.current !== requestScope) return;
         const normalized = Array.isArray(items)
           ? items.map((source) => normalizeLiveModel(source, { requireEffective: true }))
           : [];
         setModels(normalized);
         const pendingCreate = pendingCreateRef.current;
+        if (pendingCreate?.creationContext && creationSession.bindingRef.current?.key !== JSON.stringify([
+          pendingCreate.creationContext.scopeKey, pendingCreate.creationContext.entryId || "quick",
+        ])) { setModelsError(""); return; }
         const selectedModel =
-          normalized.find((item) => item.id === pendingCreate?.modelId) ??
+          normalized.find((item) => item.id === (pendingCreate?.modelId || generationDraftSnapshotRef.current.modelId)) ??
           normalized[0];
         setModelId(pendingCreate?.modelId ?? selectedModel?.id ?? "");
         if (pendingCreate) {
@@ -1834,8 +1942,8 @@ export function App() {
         } else {
           const result = reconcileGenerationDraft(
             selectedModel?.effectiveCapabilities,
-            selectedModel?.defaultMode ?? "",
-            studioDraft(),
+            generationDraftSnapshotRef.current.generationMode || selectedModel?.defaultMode || "",
+            { ...generationDraftSnapshotRef.current, aspectRatio: generationDraftSnapshotRef.current.ratio },
           );
           applyReconciledDraft(result, { announce: false });
           if (!result.ok && selectedModel) setFormError(result.error);
@@ -1844,6 +1952,7 @@ export function App() {
       })
       .catch((error) => {
         if (error?.name !== "AbortError") {
+          if (creationScopeRef.current !== requestScope || controller.signal.aborted) return;
           expireSessionIfNeeded(error);
           setModelsError(readableApiError(error));
         }
@@ -1853,7 +1962,7 @@ export function App() {
       });
 
     return () => controller.abort();
-  }, [authExpired, canReadStudioModels, effectiveSurface, hasStudioSession, studioClient, studioWorkspaceKey]);
+  }, [authExpired, canReadStudioModels, creationScopeKey, effectiveSurface, hasStudioSession, isPersonalWorkspace, studioClient, studioWorkspaceKey]);
 
   useEffect(() => {
     if (
@@ -1873,37 +1982,59 @@ export function App() {
   }, [authExpired, effectiveSurface, hasStudioSession, refreshPersonalWallet, studioWorkspaceKey]);
 
   useEffect(() => {
-    if (!LIVE_MODE || authExpired || !hasCompanySession || effectiveSurface !== "studio") return undefined;
+    if (
+      !LIVE_MODE
+      || authExpired
+      || !hasCompanySession
+      || effectiveSurface !== "studio"
+      || !hasPublishingPermission
+    ) {
+      setPublishingReadiness(null);
+      setPublishingReadinessResolved(false);
+      setPublishingReadinessError("");
+      return undefined;
+    }
     const controller = new AbortController();
-    setResourcesResolved(false);
+    setPublishingReadiness(null);
+    setPublishingReadinessResolved(false);
+    setPublishingReadinessError("");
 
     companyClient
-      .listResources({ signal: controller.signal })
-      .then((response) => {
-        const items = Array.isArray(response)
-          ? response
-          : Array.isArray(response?.items)
-            ? response.items
-            : [];
-        setAvailableResources(items);
+      .getPublishingReadiness({ signal: controller.signal })
+      .then((readiness) => {
+        setPublishingReadiness(readiness && typeof readiness === "object" ? readiness : null);
       })
       .catch((error) => {
         if (error?.name !== "AbortError") {
           expireSessionIfNeeded(error);
-          setAvailableResources([]);
-          setToast(`自动发布授权读取失败：${readableApiError(error)}`);
+          setPublishingReadiness(null);
+          setPublishingReadinessError(`发布就绪状态核对失败：${readableApiError(error)}`);
         }
       })
       .finally(() => {
-        if (!controller.signal.aborted) setResourcesResolved(true);
+        if (!controller.signal.aborted) setPublishingReadinessResolved(true);
       });
 
     return () => controller.abort();
-  }, [authExpired, companyClient, effectiveSurface, hasCompanySession, sessionIdentity?.user_id]);
+  }, [
+    authExpired,
+    companyClient,
+    effectiveSurface,
+    hasCompanySession,
+    hasPublishingPermission,
+    sessionIdentity?.user_id,
+  ]);
 
   useEffect(() => {
     if (!LIVE_MODE || authExpired || !hasCompanySession || effectiveSurface !== "studio") return undefined;
+    if (!canReadStudioAssets) {
+      setAssets([]);
+      setAssetsLoading(false);
+      setAssetsError("当前账号不能查看企业素材。拥有素材管理权限时仍可上传新素材。");
+      return undefined;
+    }
     const controller = new AbortController();
+    setAssetsLoading(true);
 
     companyClient
       .listAssets({ status: "active" }, { signal: controller.signal })
@@ -1937,222 +2068,7 @@ export function App() {
       });
 
     return () => controller.abort();
-  }, [authExpired, companyClient, effectiveSurface, hasCompanySession, sessionIdentity?.user_id]);
-
-  useEffect(() => {
-    if (
-      !LIVE_MODE ||
-      authExpired ||
-      !hasStudioSession ||
-      !canReadStudioTasks ||
-      !["studio", "personal"].includes(effectiveSurface)
-    ) return undefined;
-    const controller = new AbortController();
-    const requestGeneration = ++activeTaskRequestGenerationRef.current;
-
-    Promise.all([
-      fetchTaskHistoryPage(
-        studioClient,
-        {
-          page: 1,
-          page_size: 1,
-          ...(!isPersonalWorkspace ? { scope: "mine" } : {}),
-          status: "accepted",
-        },
-        { signal: controller.signal },
-      ),
-      fetchTaskHistoryPage(
-        studioClient,
-        {
-          page: 1,
-          page_size: 1,
-          ...(!isPersonalWorkspace ? { scope: "mine" } : {}),
-          status: "queued",
-        },
-        { signal: controller.signal },
-      ),
-      fetchTaskHistoryPage(
-        studioClient,
-        {
-          page: 1,
-          page_size: 1,
-          ...(!isPersonalWorkspace ? { scope: "mine" } : {}),
-          status: "processing",
-        },
-        { signal: controller.signal },
-      ),
-    ])
-      .then((pages) => {
-        if (requestGeneration !== activeTaskRequestGenerationRef.current) return;
-        const activeTask = pages
-          .flatMap((pageData) => pageData.items)
-          .sort((left, right) => (
-            Date.parse(right.created_at || right.updated_at || 0)
-            - Date.parse(left.created_at || left.updated_at || 0)
-          ))[0];
-        if (activeTask) {
-          const activeTaskId = activeTask.id || activeTask.task_id;
-          setCurrentTask(activeTask);
-          setCurrentTaskId(activeTaskId);
-          setCurrentTaskScope("mine");
-          setStage(mapTaskStage(activeTask.status));
-          setProgress(progressForTask(activeTask.status));
-        }
-      })
-      .catch((error) => {
-        if (error?.name !== "AbortError" && requestGeneration === activeTaskRequestGenerationRef.current) {
-          expireSessionIfNeeded(error);
-        }
-      })
-      .finally(() => {
-        // The route-owned list request controls loading and error presentation.
-      });
-
-    return () => {
-      activeTaskRequestGenerationRef.current += 1;
-      controller.abort();
-    };
-  }, [authExpired, canReadStudioTasks, effectiveSurface, hasStudioSession, isPersonalWorkspace, studioClient, studioWorkspaceKey]);
-
-  useEffect(() => {
-    if (
-      !LIVE_MODE ||
-      authExpired ||
-      !hasStudioSession ||
-      !canReadStudioTasks ||
-      !["studio", "personal"].includes(effectiveSurface) ||
-      !["create", "history"].includes(activeNav)
-    ) return undefined;
-    let stopped = false;
-    let timer;
-    let controller;
-    const requestGeneration = ++historyRequestGenerationRef.current;
-    setHistoryLoading(true);
-
-    const refreshHistory = async () => {
-      controller = new AbortController();
-      try {
-        const pageData = await fetchTaskHistoryPage(
-          studioClient,
-          {
-            page: activeNav === "create" ? creationPage : historyPage,
-            page_size: COLLECTION_PAGE_SIZE,
-            ...(!isPersonalWorkspace
-              ? { scope: activeNav === "create" ? "mine" : historyScope }
-              : {}),
-            status: activeNav === "create" ? creationStatus : historyStatus,
-            model_id: activeNav === "create" ? creationModelId : "",
-            media_type: activeNav === "create" ? creationMediaType : "",
-            query: !isPersonalWorkspace && activeNav === "create" ? creationQuery.trim() : "",
-            start_time: !isPersonalWorkspace && activeNav === "create" && creationDays !== "all"
-              ? new Date(Date.now() - Number(creationDays) * 86_400_000).toISOString()
-              : "",
-          },
-          { signal: controller.signal },
-        );
-        if (stopped || requestGeneration !== historyRequestGenerationRef.current) return;
-        setHistoryTasks(pageData.items);
-        if (activeNav === "create") {
-          setCreationTotal(pageData.total);
-        } else {
-          setHistoryTotal(pageData.total);
-        }
-        setHistoryError("");
-      } catch (error) {
-        if (!stopped && requestGeneration === historyRequestGenerationRef.current && error?.name !== "AbortError") {
-          if (expireSessionIfNeeded(error)) {
-            stopped = true;
-            return;
-          }
-          setHistoryError(readableApiError(error));
-        }
-      } finally {
-        if (!stopped && requestGeneration === historyRequestGenerationRef.current) {
-          setHistoryLoading(false);
-          timer = window.setTimeout(refreshHistory, 10_000);
-        }
-      }
-    };
-
-    refreshHistory();
-    return () => {
-      stopped = true;
-      historyRequestGenerationRef.current += 1;
-      window.clearTimeout(timer);
-      controller?.abort();
-    };
-  }, [activeNav, authExpired, canReadStudioTasks, creationDays, creationMediaType, creationModelId, creationPage, creationQuery, creationStatus, effectiveSurface, hasStudioSession, historyPage, historyScope, historyStatus, isPersonalWorkspace, studioClient, studioWorkspaceKey]);
-
-  useEffect(() => {
-    if (
-      !LIVE_MODE ||
-      authExpired ||
-      !hasStudioSession ||
-      !canReadStudioArtworks ||
-      !["studio", "personal"].includes(effectiveSurface) ||
-      activeNav !== "artworks"
-    ) return undefined;
-    let stopped = false;
-    let timer;
-    let controller;
-    const requestGeneration = ++artworkRequestGenerationRef.current;
-    setArtworksLoading(true);
-
-    const refreshArtworks = async () => {
-      controller = new AbortController();
-      try {
-        const pageData = await fetchArtworkPage(
-          studioClient,
-          {
-            page: artworkPage,
-            page_size: COLLECTION_PAGE_SIZE,
-            ...(!isPersonalWorkspace ? { scope: artworkScope } : {}),
-            media_type: artworkMediaFilter,
-            downloaded: !isPersonalWorkspace ? artworkDownloadFilter : "",
-          },
-          { signal: controller.signal },
-        );
-        if (stopped || requestGeneration !== artworkRequestGenerationRef.current) return;
-        setArtworks(pageData.items);
-        setArtworkTotal(pageData.total);
-        setArtworksError("");
-      } catch (error) {
-        if (!stopped && requestGeneration === artworkRequestGenerationRef.current && error?.name !== "AbortError") {
-          if (expireSessionIfNeeded(error)) {
-            stopped = true;
-            return;
-          }
-          setArtworksError(readableApiError(error));
-        }
-      } finally {
-        if (!stopped && requestGeneration === artworkRequestGenerationRef.current) {
-          setArtworksLoading(false);
-          timer = window.setTimeout(refreshArtworks, 15_000);
-        }
-      }
-    };
-
-    refreshArtworks();
-    return () => {
-      stopped = true;
-      artworkRequestGenerationRef.current += 1;
-      window.clearTimeout(timer);
-      controller?.abort();
-    };
-  }, [
-    activeNav,
-    artworkDownloadFilter,
-    artworkMediaFilter,
-    artworkPage,
-    artworkScope,
-    authExpired,
-    effectiveSurface,
-    canReadStudioArtworks,
-    hasStudioSession,
-    isPersonalWorkspace,
-    studioClient,
-    studioWorkspaceKey,
-  ]);
+  }, [authExpired, canReadStudioAssets, companyClient, effectiveSurface, hasCompanySession, sessionIdentity?.user_id]);
 
   useEffect(() => {
     if (!identityReady || activeNav !== "publish" || showPublishingNavigation) return;
@@ -2166,146 +2082,18 @@ export function App() {
   }, [canViewCompanyRecords, identityReady]);
 
   useEffect(() => {
-    if (pendingCreateRef.current || modelsLoading || !model.id) return;
+    if (pendingCreateRef.current || modelsLoading) return;
+    if (!model.id) {
+      if (!modelId && models[0]) selectStudioModel(models[0].id);
+      return;
+    }
     const result = reconcileGenerationDraft(
       model.effectiveCapabilities,
       generationMode,
       studioDraft(),
     );
     applyReconciledDraft(result);
-  }, [generationMode, model, modelsLoading]);
-
-  useEffect(() => {
-    if (!DEMO_MODE) return undefined;
-    if (stage === "queued") {
-      const timer = window.setTimeout(() => {
-        setStage("rendering");
-        setProgress((value) => Math.max(value, 12));
-      }, 850);
-      return () => window.clearTimeout(timer);
-    }
-
-    if (stage === "rendering") {
-      const timer = window.setInterval(() => {
-        setProgress((value) => {
-          if (value >= 100) {
-            window.clearInterval(timer);
-            setStage("complete");
-            if (taskCompletionNotices) {
-              setToast(isPersonalWorkspace
-                ? "成片已生成，归档元数据已写入个人空间"
-                : "成片已生成并转存到公司存储");
-            }
-            return 100;
-          }
-          return Math.min(100, value + 3);
-        });
-      }, 900);
-      return () => window.clearInterval(timer);
-    }
-    return undefined;
-  }, [isPersonalWorkspace, stage, taskCompletionNotices]);
-
-  useEffect(() => {
-    if (
-      !LIVE_MODE ||
-      authExpired ||
-      !hasStudioSession ||
-      !canReadStudioTasks ||
-      !["studio", "personal"].includes(effectiveSurface) ||
-      !currentTaskId
-    ) return undefined;
-    let stopped = false;
-    let timer;
-    let activeController;
-
-    const poll = async () => {
-      activeController = new AbortController();
-      try {
-        const task = await studioClient.getTask(currentTaskId, {
-          signal: activeController.signal,
-          ...(!isPersonalWorkspace ? { scope: currentTaskScope } : {}),
-        });
-        if (stopped) return;
-        const nextStatus = resolveTaskStatus(task.status);
-        const nextStage = nextStatus.stage;
-        setCurrentTask(task);
-        setStage(nextStage);
-        setProgress(nextStatus.progress);
-        if (task.status === "succeeded") {
-          if (isPersonalWorkspace) refreshPersonalWallet();
-          setDownloadError("");
-          setResultOpen(true);
-          if (taskCompletionNotices) {
-            setToast(
-              task.output_artifacts?.length
-                ? `任务已完成，共 ${task.output_artifacts.length} 个产物可下载`
-                : "任务已完成，但平台暂未返回产物元数据",
-            );
-          }
-          return;
-        }
-        if (task.status === "failed") {
-          if (isPersonalWorkspace) refreshPersonalWallet();
-          const message = task.failure_reason || nextStatus.detail;
-          setFormError(message);
-          if (taskCompletionNotices) setToast(message);
-          return;
-        }
-        if (task.status === "cancelled") {
-          if (isPersonalWorkspace) refreshPersonalWallet();
-          return;
-        }
-        if (isTaskAttentionRequired(task.status) || nextStatus.stage === "unknown") {
-          if (isPersonalWorkspace && nextStatus.terminal) refreshPersonalWallet();
-          const message = task.failure_reason || nextStatus.detail;
-          setFormError(message);
-          if (taskCompletionNotices) setToast(message);
-          return;
-        }
-        if (nextStatus.terminal) return;
-        timer = window.setTimeout(poll, 2000);
-      } catch (error) {
-        if (error?.name === "AbortError" || stopped) return;
-        if (expireSessionIfNeeded(error)) return;
-        setFormError(`任务状态同步失败：${readableApiError(error)}`);
-        timer = window.setTimeout(poll, 4000);
-      }
-    };
-
-    poll();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-      activeController?.abort();
-    };
-  }, [
-    authExpired,
-    currentTaskId,
-    currentTaskScope,
-    effectiveSurface,
-    canReadStudioTasks,
-    hasStudioSession,
-    isPersonalWorkspace,
-    sessionIdentity?.user_id,
-    refreshPersonalWallet,
-    studioClient,
-    taskCompletionNotices,
-  ]);
-
-  useEffect(() => {
-    if (!playing) return undefined;
-    const timer = window.setInterval(() => {
-      setPlayhead((value) => {
-        if (value >= duration) {
-          setPlaying(false);
-          return 0;
-        }
-        return Math.min(duration, value + 0.25);
-      });
-    }, 250);
-    return () => window.clearInterval(timer);
-  }, [playing, duration]);
+  }, [generationMode, model, modelsLoading, draftIdentity]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -2337,24 +2125,43 @@ export function App() {
     if (LIVE_MODE && !canManageAssets) {
       const message = isPersonalWorkspace
         ? "个人空间本期只开放无素材的文生视频与文生图片，素材输入尚未开放。"
-        : "当前账号没有 assets.manage 素材管理权限，请联系公司老板授权。";
+        : "当前账号不能上传素材。请联系企业负责人开通素材管理权限。";
       setFormError(message);
       setToast(message);
-      return;
-    }
-    const limit = mediaLimits[kind] ?? 0;
-    const remaining = Math.max(0, limit - files[kind].length);
-    const selected = incoming.slice(0, remaining);
-    if (!selected.length) {
-      setToast(`${kind === "image" ? "图片" : kind === "video" ? "视频" : "音频"}素材已达到模型上限`);
-      return;
+      return { ok: false, addedCount: 0, message };
     }
     if (pendingCreateRef.current) {
+      const message = "存在结果尚未确认的提交，不能改变素材；请先安全确认原任务。";
       restorePendingCreate(
         pendingCreateRef.current,
-        "存在结果尚未确认的提交，不能改变素材；请先安全确认原任务。",
+        message,
       );
-      return;
+      return { ok: false, addedCount: 0, message };
+    }
+    if (generationUploadGate.busy) {
+      const message = "请等待当前素材上传完成后再添加";
+      setToast(message);
+      return { ok: false, addedCount: 0, message };
+    }
+    const limit = capabilityMediaLimits(activeCapabilityRef.current)[kind] ?? 0;
+    const remaining = Math.max(0, limit - (filesRef.current[kind]?.length ?? 0));
+    const selected = incoming.slice(0, remaining);
+    if (!selected.length) {
+      const message = limit > 0 ? `这类素材最多可添加 ${limit} 个，已达到模型上限` : "当前模型不支持这类素材";
+      setToast(message);
+      return { ok: false, addedCount: 0, message };
+    }
+    const omittedNote = incoming.length > selected.length
+      ? `；超出模型上限的 ${incoming.length - selected.length} 个未添加`
+      : "";
+    const invalid = selected.find(
+      (file) => file.type && !file.type.toLowerCase().startsWith(`${kind}/`),
+    );
+    if (invalid) {
+      const message = `${invalid.name} 的文件类型与${kind === "image" ? "图片" : kind === "video" ? "视频" : "音频"}输入不匹配`;
+      setFormError(message);
+      setToast(message);
+      return { ok: false, addedCount: 0, message };
     }
     if (!LIVE_MODE) {
       const localAssets = selected.map((file) => ({
@@ -2368,55 +2175,35 @@ export function App() {
         source_file: file,
         status: "active",
       }));
-      setFiles((current) => ({
-        ...current,
-        [kind]: [...current[kind], ...localAssets],
-      }));
+      const appended = appendDraftInputs(kind, localAssets);
       setAssets((current) => [...localAssets, ...current]);
-      setToast(`${selected.length} 个素材已加入当前任务`);
-      return;
-    }
-
-    const invalid = selected.find(
-      (file) => file.type && !file.type.toLowerCase().startsWith(`${kind}/`),
-    );
-    if (invalid) {
-      const message = `${invalid.name} 的文件类型与${kind === "image" ? "图片" : kind === "video" ? "视频" : "音频"}输入不匹配`;
-      setFormError(message);
+      const message = `${appended.addedCount} 个素材已加入当前任务${omittedNote}`;
       setToast(message);
-      return;
+      return { ok: appended.addedCount > 0, addedCount: appended.addedCount, message };
     }
 
+    const uploadRequest = generationUploadGate.begin(generationInputContext());
+    if (!uploadRequest) {
+      const message = "当前素材上传尚未结束，请稍后重试。";
+      return { ok: false, addedCount: 0, message };
+    }
     setUploadingKind(kind);
     setFormError("");
     const uploaded = [];
+    let uploadError = null;
+    let outcome = { ok: false, addedCount: 0, message: "取景图未能加入当前镜头。" };
     try {
       for (const file of selected) {
+        if (!generationUploadGate.canAppend(uploadRequest, generationInputContext())) break;
         const asset = await companyClient.uploadAsset(file, kind);
         uploaded.push(asset);
       }
-      setAssets((current) => {
-        const incomingIds = new Set(uploaded.map(inputAssetId));
-        return [
-          ...uploaded,
-          ...current.filter((asset) => !incomingIds.has(inputAssetId(asset))),
-        ];
-      });
-      setFiles((current) => ({
-        ...current,
-        [kind]: [...current[kind], ...uploaded].slice(
-          0,
-          activeCapabilityRef.current?.inputMediaTypes.includes(kind)
-            ? activeCapabilityRef.current.limits[
-                kind === "image" ? "maxImages" : kind === "video" ? "maxVideos" : "maxAudio"
-              ]
-            : 0,
-        ),
-      }));
-      setAssetsError("");
-      setToast(`${uploaded.length} 个素材已私有上传并加入当前任务`);
     } catch (error) {
-      if (uploaded.length) {
+      uploadError = error;
+      expireSessionIfNeeded(error);
+    } finally {
+      const context = generationInputContext();
+      if (context.workspaceKey === uploadRequest.workspaceKey) {
         setAssets((current) => {
           const incomingIds = new Set(uploaded.map(inputAssetId));
           return [
@@ -2424,33 +2211,46 @@ export function App() {
             ...current.filter((asset) => !incomingIds.has(inputAssetId(asset))),
           ];
         });
-        setFiles((current) => ({
-          ...current,
-          [kind]: [...current[kind], ...uploaded].slice(
-            0,
-            activeCapabilityRef.current?.inputMediaTypes.includes(kind)
-              ? activeCapabilityRef.current.limits[
-                  kind === "image" ? "maxImages" : kind === "video" ? "maxVideos" : "maxAudio"
-                ]
-              : 0,
-          ),
-        }));
+        const canAppend = generationUploadGate.canAppend(uploadRequest, context);
+        const appended = canAppend ? appendDraftInputs(kind, uploaded) : { addedCount: 0 };
+        const successNote = uploaded.length === 0 ? ""
+          : appended.addedCount === uploaded.length
+            ? `${appended.addedCount} 个素材已私有上传并加入当前任务`
+            : `${uploaded.length} 个素材已保存到素材库，${appended.addedCount} 个加入当前任务${canAppend
+              ? appended.invalidCount ? "（其余素材信息不符合当前输入要求）" : "（其余超出当前上限或已在草稿中）"
+              : "（草稿已切换或锁定）"}`;
+        if (uploadError) {
+          const message = `素材上传失败：${readableApiError(uploadError)}`;
+          if (canAppend) setFormError(message);
+          setAssetsError(message);
+          const combinedMessage = [message, successNote].filter(Boolean).join("；");
+          setToast(combinedMessage);
+          outcome = {
+            ok: appended.addedCount > 0,
+            addedCount: appended.addedCount,
+            message: combinedMessage,
+          };
+        } else {
+          setAssetsError("");
+          const message = `${successNote || "草稿已切换，本次上传已停止"}${omittedNote}`;
+          setToast(message);
+          outcome = {
+            ok: appended.addedCount > 0,
+            addedCount: appended.addedCount,
+            message,
+          };
+        }
       }
-      expireSessionIfNeeded(error);
-      const message = `素材上传失败：${readableApiError(error)}`;
-      setFormError(message);
-      setAssetsError(message);
-      setToast(message);
-    } finally {
-      setUploadingKind("");
+      if (generationUploadGate.finish(uploadRequest)) setUploadingKind("");
     }
+    return outcome;
   };
 
   const addLibraryAssetToTask = (asset) => {
     if (LIVE_MODE && !canCreateTasks) {
       setToast(isPersonalWorkspace
         ? "当前个人空间未开放任务创建能力。"
-        : "当前账号没有 tasks.create 任务创建权限，请联系公司老板授权。");
+        : "当前账号不能开始生成。请联系企业负责人开通任务创建权限。");
       return;
     }
     if (pendingCreateRef.current) {
@@ -2460,34 +2260,38 @@ export function App() {
       );
       return;
     }
+    if (generationUploadGate.busy) {
+      setToast("请等待当前素材上传完成后再添加");
+      return;
+    }
     const kind = inputAssetType(asset);
-    const limit = mediaLimits[kind] ?? 0;
-    if (limit <= 0) {
-      setToast("当前模型不支持这类素材");
-      return;
-    }
-    if (files[kind].some((item) => inputAssetId(item) === inputAssetId(asset))) {
-      setToast("该素材已经在当前任务中");
-      return;
-    }
-    if (files[kind].length >= limit) {
-      setToast(`当前模型最多使用 ${limit} 个这类素材`);
-      return;
-    }
-    setFiles((current) => ({
-      ...current,
-      [kind]: [...current[kind], asset],
-    }));
-    navigateStudio("shots");
-    setToast(`${inputAssetName(asset)} 已加入当前任务`);
+    const changed = creationSession.updateQuickDraft((quick) => {
+      const selectedModel = models.find((candidate) => candidate.id === quick.modelId) || models[0];
+      const result = reconcileGenerationDraft(selectedModel?.effectiveCapabilities, quick.generationMode || selectedModel?.defaultMode, {
+        ...quick, aspectRatio: quick.ratio,
+      });
+      if (!result.ok) throw new Error(result.error || "请先为快捷创作选择可用模型。");
+      const capability = capabilityForMode(selectedModel.effectiveCapabilities, result.mode);
+      const limit = capabilityMediaLimits(capability)[kind] ?? 0;
+      if (limit <= 0) throw new Error("快捷创作的当前模式不支持这类素材，请先切换创作方式。");
+      const appended = appendGenerationInputAssets(capability, result.draft.files, kind, [asset]);
+      if (appended.duplicateCount) throw new Error("该素材已经在快捷草稿中。");
+      if (!appended.addedCount) throw new Error(`快捷草稿最多使用 ${limit} 个这类素材。`);
+      return { ...workbenchDraftFromReconciliation(result, selectedModel.id), files: appended.files };
+    }, { panel: "references" });
+    if (changed) setToast(`${inputAssetName(asset)} 已加入快捷草稿`);
   };
 
   const uploadLibraryFiles = async (incoming) => {
     if (!incoming.length) return;
+    if (generationUploadGate.busy) {
+      setToast("请等待当前素材上传完成后再添加");
+      return;
+    }
     if (LIVE_MODE && !canManageAssets) {
       const message = isPersonalWorkspace
         ? "个人空间素材库与上传能力尚未开放。"
-        : "当前账号没有 assets.manage 素材管理权限，请联系公司老板授权。";
+        : "当前账号不能上传素材。请联系企业负责人开通素材管理权限。";
       setAssetsError(message);
       setToast(message);
       return;
@@ -2523,13 +2327,17 @@ export function App() {
       return;
     }
 
+    const uploadRequest = generationUploadGate.begin(generationInputContext());
+    if (!uploadRequest) return;
     setUploadingKind("library");
     setAssetsError("");
     const uploaded = [];
     try {
       for (const item of typedFiles) {
+        if (generationInputContext().workspaceKey !== uploadRequest.workspaceKey) break;
         uploaded.push(await companyClient.uploadAsset(item.file, item.kind));
       }
+      if (generationInputContext().workspaceKey !== uploadRequest.workspaceKey) return;
       setAssets((current) => {
         const uploadedIds = new Set(uploaded.map(inputAssetId));
         return [
@@ -2539,15 +2347,16 @@ export function App() {
       });
       setToast(`${uploaded.length} 个素材已保存到公司私有素材库`);
     } catch (error) {
+      expireSessionIfNeeded(error);
+      if (generationInputContext().workspaceKey !== uploadRequest.workspaceKey) return;
       if (uploaded.length) {
         setAssets((current) => [...uploaded, ...current]);
       }
-      expireSessionIfNeeded(error);
       const message = `素材上传失败：${readableApiError(error)}`;
       setAssetsError(message);
       setToast(message);
     } finally {
-      setUploadingKind("");
+      if (generationUploadGate.finish(uploadRequest)) setUploadingKind("");
     }
   };
 
@@ -2564,8 +2373,10 @@ export function App() {
       if (!previewWindow) setToast("浏览器阻止了预览窗口，请允许弹窗后重试");
       return;
     }
-    if (isPersonalWorkspace || !canManageAssets) {
-      setToast("个人空间素材访问尚未开放，未发起任何访问请求。");
+    if (isPersonalWorkspace || !canReadStudioAssets) {
+      setToast(isPersonalWorkspace
+        ? "个人空间素材访问尚未开放，未发起任何访问请求。"
+        : "当前账号不能预览企业素材。请联系企业负责人调整素材访问权限。");
       return;
     }
     const pendingWindow = window.open("about:blank", "_blank");
@@ -2595,7 +2406,7 @@ export function App() {
     if (LIVE_MODE && !canManageAssets) {
       setToast(isPersonalWorkspace
         ? "个人空间素材管理尚未开放。"
-        : "当前账号没有 assets.manage 素材管理权限，请联系公司老板授权。");
+        : "当前账号不能停用素材。请联系企业负责人开通素材管理权限。");
       return;
     }
     if (!LIVE_MODE) {
@@ -2643,6 +2454,8 @@ export function App() {
   };
 
   const restorePendingCreate = (pendingCreate, message) => {
+    if (pendingCreate.creationContext && !creationSession.restoreContext(pendingCreate.creationContext)) return;
+    invalidateGenerationInputContext();
     const payload = pendingCreate.requestPayload;
     setModelId(pendingCreate.modelId);
     setGenerationMode(payload.mode);
@@ -2657,19 +2470,23 @@ export function App() {
     );
     setFaceEnabled(Boolean(payload.face_enabled));
     setFiles(filesFromPendingRequest(payload));
-    setStage("idle");
-    setProgress(0);
+    generationTaskRuntime.returnToIdle();
     closeResultDialog();
     setPromptError("");
     const recoveryMessage =
       message ??
-      "上一条提交结果尚未确认，已恢复原参数；请先复用原幂等键确认结果。";
+      "上一条提交结果尚未确认，已恢复原设置。再次提交只会确认同一次请求，不会创建重复任务。";
     setFormError(recoveryMessage);
     setToast(recoveryMessage);
   };
 
   const startGeneration = async () => {
-    if (uploadingKind) {
+    if (submitting) return;
+    if (pendingCreateRef.current && !pendingBelongsToDraft) {
+      restorePendingCreate(pendingCreateRef.current);
+      return;
+    }
+    if (uploadingKind || generationUploadGate.busy) {
       setPromptError("");
       setFormError("素材仍在上传，请完成后再提交任务。");
       return;
@@ -2681,7 +2498,7 @@ export function App() {
         identityReady
           ? isPersonalWorkspace
             ? "当前个人空间未开放任务创建能力。"
-            : "当前账号没有 tasks.create 任务创建权限，请联系公司老板授权。"
+            : "当前账号不能开始生成。请联系企业负责人开通任务创建权限。"
           : "正在确认当前账号的任务创建权限，请稍后再试。",
       );
       return;
@@ -2700,10 +2517,29 @@ export function App() {
     }
     if (!storedPending && !activeCapability) {
       setPromptError("");
-      setFormError("当前模型没有可用的生成能力声明，请联系平台管理员。");
+      setFormError("当前模型暂不能生成。请切换模型，或联系平台管理员检查模型配置。");
       return;
     }
-    if (!storedPending && prompt.trim().length > promptLimit) {
+    if (LIVE_MODE && !storedPending && !costPreview.available) {
+      setPromptError("");
+      setFormError("当前模型的价格尚未确认，暂不能提交。请刷新模型后重试。");
+      return;
+    }
+    if (!storedPending && readinessBlocking) {
+      setPromptError("");
+      setFormError(
+        readinessReasons[0] || (
+          generationReadiness.status === "unverified"
+            ? "生成条件尚未确认，请刷新模型后重试。"
+            : generationReadiness.status === "unsupported"
+              ? "当前模型不支持已选择的人脸处理选项，请关闭后重试。"
+              : "当前组合暂不满足生成条件，请查看生成就绪状态。"
+        ),
+      );
+      openComposerPanel("readiness");
+      return;
+    }
+    if (!storedPending && generationPromptLength(prompt.trim()) > promptLimit) {
       setFormError("");
       setPromptError(`当前模式的制作说明最多 ${promptLimit} 个字`);
       return;
@@ -2741,7 +2577,7 @@ export function App() {
         (!Number.isInteger(targetCapabilityVersion) || targetCapabilityVersion < 1)
       ) {
         setPromptError("");
-        setFormError("旧提交缺少可确认的能力版本，已阻止继续提交；请刷新模型后重新发起。");
+        setFormError("原任务的模型配置已经失效，不能继续提交。请刷新模型后新建任务。");
         return;
       }
       if (
@@ -2750,7 +2586,7 @@ export function App() {
           !/^sha256:[0-9a-f]{64}$/.test(targetQuoteRevision))
       ) {
         setPromptError("");
-        setFormError("旧提交缺少可确认的报价版本，已阻止继续提交；请刷新模型后重新发起。");
+        setFormError("原任务的价格信息已经失效，不能继续提交。请刷新模型后新建任务。");
         return;
       }
     } else {
@@ -2759,7 +2595,7 @@ export function App() {
         (!Number.isInteger(model.capabilityVersion) || model.capabilityVersion < 1)
       ) {
         setPromptError("");
-        setFormError("当前模型缺少有效的能力版本，已阻止提交，请联系平台管理员。");
+        setFormError("当前模型配置无效，暂不能提交。请联系平台管理员检查模型配置。");
         return;
       }
       if (
@@ -2768,7 +2604,7 @@ export function App() {
           !/^sha256:[0-9a-f]{64}$/.test(model.quoteRevision))
       ) {
         setPromptError("");
-        setFormError("当前模型缺少有效的报价版本，已阻止提交，请刷新后重试。");
+        setFormError("当前模型的价格信息无效，暂不能提交。请刷新后重试。");
         return;
       }
       const built = buildCapabilityRequestPayload(
@@ -2788,6 +2624,11 @@ export function App() {
       targetCapabilityVersion = model.capabilityVersion;
       targetQuoteRevision = model.quoteRevision;
     }
+    const submissionContext = storedPending?.creationContext || (storedPending
+      ? { scopeKey: creationScopeKey, kind: "quick", entryId: "", draftRevision: creationSession.state.revision }
+      : creationSession.captureContext());
+    if (!submissionContext) { setFormError("工作区尚未就绪，请稍后再试。"); return; }
+    const submissionStorageKey = submissionContext.scopeKey;
     const fingerprint = JSON.stringify(
       storedPending?.version < 4
         ? { modelId: targetModelId, requestPayload }
@@ -2802,6 +2643,7 @@ export function App() {
             capabilityVersion: targetCapabilityVersion,
             quoteRevision: targetQuoteRevision,
             requestPayload,
+            ...(!storedPending || storedPending.version >= 6 ? { creationContext: submissionContext } : {}),
           },
     );
     const requestFingerprint = taskRequestFingerprint(fingerprint);
@@ -2809,10 +2651,12 @@ export function App() {
       restorePendingCreate(storedPending);
       return;
     }
-    if (storedPending && storedPending.version < 5) {
+    if (storedPending && storedPending.version < 6) {
       const upgradedPending = {
         ...storedPending,
-        version: 5,
+        version: 6,
+        workspaceKey: submissionStorageKey,
+        creationContext: submissionContext,
         capabilityVersion: targetCapabilityVersion,
         quoteRevision: targetQuoteRevision,
         fingerprint: taskRequestFingerprint(JSON.stringify({
@@ -2820,27 +2664,37 @@ export function App() {
           capabilityVersion: targetCapabilityVersion,
           quoteRevision: targetQuoteRevision,
           requestPayload,
+          creationContext: submissionContext,
         })),
       };
       pendingCreateRef.current = upgradedPending;
-      rememberPendingCreate(studioWorkspaceKey, upgradedPending);
+      rememberPendingCreate(submissionStorageKey, upgradedPending);
     }
 
     setPromptError("");
     setFormError("");
     setDownloadError("");
     closeResultDialog();
-    setProgress(6);
-    setStage("queued");
+    if (submissionContext.kind === "quick") navigateStudio("create");
+    generationTaskRuntime.queueSubmission();
+    setMobileComposerOpen(false);
     if (!LIVE_MODE) {
-      setToast("任务已提交，失败不会扣费");
+      const task = {
+        id: `demo-${makeIdempotencyKey()}`, status: "succeeded", model_id: targetModelId,
+        model_display_name: model.name, request_payload: requestPayload, output_artifacts: [],
+        created_at: new Date().toISOString(),
+      };
+      creationSession.bindTask(submissionContext, task.id);
+      generationTaskRuntime.activateTask(task, { stage: "complete", progress: 100 });
+      setToast("演示操作已完成，未调用模型或扣费。");
       return;
     }
 
     if (!pendingCreateRef.current) {
       pendingCreateRef.current = {
-        version: 5,
-        workspaceKey: studioWorkspaceKey,
+        version: 6,
+        workspaceKey: submissionStorageKey,
+        creationContext: submissionContext,
         ...(!isPersonalWorkspace ? { companyId: activeCompanyId } : {}),
         modelId: targetModelId,
         capabilityVersion: targetCapabilityVersion,
@@ -2850,10 +2704,20 @@ export function App() {
         idempotencyKey: makeIdempotencyKey(),
         uncertain: false,
       };
-      rememberPendingCreate(studioWorkspaceKey, pendingCreateRef.current);
+      rememberPendingCreate(submissionStorageKey, pendingCreateRef.current);
     }
     const pendingCreate = pendingCreateRef.current;
-
+    const pendingReceipt = rememberPendingCreate(submissionStorageKey, pendingCreate);
+    if (!pendingReceipt.ok) {
+      if (!storedPending) pendingCreateRef.current = null;
+      generationTaskRuntime.returnToIdle();
+      setMobileComposerOpen(true);
+      setFormError(`本次没有发送。${pendingReceipt.notice}`);
+      setToast(`本次没有发送。${pendingReceipt.notice}`);
+      return;
+    }
+    const submissionToken = {};
+    activeSubmissionRef.current = submissionToken;
     setSubmitting(true);
     try {
       const task = await studioClient.createTask(
@@ -2871,19 +2735,25 @@ export function App() {
         !task.id ||
         typeof task.status !== "string"
       ) {
-        throw new PlatformApiError("客户平台返回了不完整的任务响应", {
+        throw new PlatformApiError("任务响应不完整，请刷新后重试", {
           code: "INVALID_RESPONSE",
         });
       }
+      let bindingSaved = true;
+      try { bindingSaved = creationSession.bindTask(submissionContext, task.id)?.ok !== false; }
+      catch { bindingSaved = false; }
+      rememberPendingCreate(submissionStorageKey, null);
+      if (storedPending?.version < 6) rememberPendingCreate(studioWorkspaceKey, null);
+      if (creationScopeRef.current !== submissionContext.scopeKey) return;
       pendingCreateRef.current = null;
-      rememberPendingCreate(studioWorkspaceKey, null);
-      setCurrentTask(task);
-      setCurrentTaskId(task.id);
-      setCurrentTaskScope("mine");
-      setStage(mapTaskStage(task.status));
-      setProgress(progressForTask(task.status));
+      generationTaskRuntime.activateTask(task, { scope: "mine" });
+      if (submissionContext.kind !== "quick" && globalThis.matchMedia?.("(max-width: 620px)")?.matches) creationSession.onStopEditing();
       if (isPersonalWorkspace) refreshPersonalWallet();
-      setToast(`真实任务已提交 · ${shortId(task.id)}`);
+      setToast(!bindingSaved
+        ? "任务已接收，但本机版本关联未保存。可稍后从历史任务重新加入工作台。"
+        : canReadStudioTasks
+        ? `任务已提交，编号 ${shortId(task.id)}`
+        : `任务已提交，编号 ${shortId(task.id)}。当前账号不能查看任务进度，页面不会继续轮询。`);
     } catch (error) {
       const submissionUncertain = Boolean(
         pendingCreate.uncertain ||
@@ -2897,22 +2767,26 @@ export function App() {
       );
       if (submissionUncertain) {
         pendingCreate.uncertain = true;
-        rememberPendingCreate(studioWorkspaceKey, pendingCreate);
+        rememberPendingCreate(submissionStorageKey, pendingCreate);
       } else {
-        pendingCreateRef.current = null;
-        rememberPendingCreate(studioWorkspaceKey, null);
+        if (creationScopeRef.current === submissionContext.scopeKey) pendingCreateRef.current = null;
+        rememberPendingCreate(submissionStorageKey, null);
       }
+      if (creationScopeRef.current !== submissionContext.scopeKey) return;
       expireSessionIfNeeded(error);
-      setStage("idle");
-      setProgress(0);
+      generationTaskRuntime.returnToIdle();
+      setMobileComposerOpen(true);
       const reason = readableApiError(error);
       const message = submissionUncertain
-        ? `提交结果尚未确认，原参数和幂等键已保留。稍后再次点击会安全确认同一任务。${reason}`
+        ? `提交结果尚未确认，原设置已保留。稍后再次提交只会确认同一次请求，不会创建重复任务。${reason}`
         : reason;
       setFormError(message);
       setToast(message);
     } finally {
-      setSubmitting(false);
+      if (activeSubmissionRef.current === submissionToken) {
+        activeSubmissionRef.current = null;
+        setSubmitting(false);
+      }
     }
   };
 
@@ -2920,32 +2794,18 @@ export function App() {
     const taskId = task?.id || task?.task_id;
     if (!taskId) return;
     resultReturnFocusRef.current = globalThis.document?.activeElement ?? null;
-    setDetailTask(task);
-    setDetailTaskScope(requestedScope);
-    setFormError(task.failure_reason || "");
+    setFormError(taskUserMessage(task.failure_reason, ""));
     setDownloadError("");
     setResultOpen(true);
-    if (!LIVE_MODE) return;
-    taskDetailControllerRef.current?.abort();
-    const controller = new AbortController();
-    taskDetailControllerRef.current = controller;
-    const requestGeneration = ++taskDetailRequestGenerationRef.current;
-    try {
-      const detail = await studioClient.getTask(taskId, {
-        ...(!isPersonalWorkspace ? { scope: requestedScope } : {}),
-        signal: controller.signal,
-      });
-      if (requestGeneration !== taskDetailRequestGenerationRef.current) return;
-      setDetailTask(detail);
-    } catch (error) {
-      if (error?.name === "AbortError" || requestGeneration !== taskDetailRequestGenerationRef.current) return;
-      expireSessionIfNeeded(error);
-      setToast(`任务详情读取失败：${readableApiError(error)}`);
-    } finally {
-      if (requestGeneration === taskDetailRequestGenerationRef.current) {
-        taskDetailControllerRef.current = null;
-      }
-    }
+    await generationTaskRuntime.loadTaskDetail({
+      task,
+      scope: requestedScope,
+      client: studioClient,
+      liveMode: LIVE_MODE,
+      isPersonalWorkspace,
+      onAuthenticationError: expireSessionIfNeeded,
+      onError: (error) => setToast(`任务详情读取失败：${readableApiError(error)}`),
+    });
   };
 
   const openArtworkTask = (artwork) =>
@@ -2961,12 +2821,11 @@ export function App() {
     if (LIVE_MODE && !canCreateTasks) {
       setToast(isPersonalWorkspace
         ? "当前个人空间未开放任务创建能力。"
-        : "当前账号没有 tasks.create 任务创建权限，请联系公司老板授权。");
+        : "当前账号不能开始生成。请联系企业负责人开通任务创建权限。");
       return;
     }
     if (pendingCreateRef.current) {
       restorePendingCreate(pendingCreateRef.current);
-      navigateStudio("create");
       return;
     }
     if (!task) return;
@@ -2994,6 +2853,7 @@ export function App() {
     );
     let retryMessage = `${actionLabel}草稿已恢复；确认当前参数和报价后再开始生成`;
     let retryError = "";
+    let restoredDraft;
 
     if (taskModel) {
       const result = reconcileGenerationDraft(
@@ -3012,8 +2872,7 @@ export function App() {
           files: verifiedFiles,
         },
       );
-      setModelId(taskModel.id);
-      applyReconciledDraft(result, { announce: false });
+      restoredDraft = workbenchDraftFromReconciliation(result, taskModel.id);
       if (!result.ok) {
         retryError = result.error;
       } else if (result.changes.length || unavailableAssetCount > 0) {
@@ -3023,21 +2882,16 @@ export function App() {
           : "原任务参数已按当前模型能力调整；确认当前报价后再开始生成";
       }
     } else {
-      if (typeof task.request_payload?.prompt === "string") {
-        setPrompt(task.request_payload.prompt);
-      }
-      setFiles({ image: [], video: [], audio: [] });
-      setFaceEnabled(false);
+      restoredDraft = { prompt: typeof task.request_payload?.prompt === "string" ? task.request_payload.prompt : "" };
       retryError = "原任务使用的模型已不可用，未恢复素材和能力参数。";
       retryMessage = retryError;
     }
 
+    if (!creationSession.updateQuickDraft(restoredDraft, { panel: expanded ? "specs" : null })) return;
     setPromptError("");
     setFormError(retryError);
     setDownloadError("");
     closeResultDialog();
-    setComposerExpanded(expanded);
-    navigateStudio("create");
     setToast(retryMessage);
     globalThis.requestAnimationFrame?.(() => {
       composerRef.current?.querySelector("#prompt")?.focus();
@@ -3046,17 +2900,17 @@ export function App() {
 
   const retryHistoryTask = (task) => prepareHistoricalTask(task, {
     expanded: true,
-    actionLabel: "重试",
+    actionLabel: "恢复失败任务草稿",
   });
 
   const createAgainFromTask = (task) => prepareHistoricalTask(task, {
     expanded: false,
-    actionLabel: "再次生成",
+    actionLabel: "用此设置新建草稿",
   });
 
   const adjustHistoricalTask = (task) => prepareHistoricalTask(task, {
     expanded: true,
-    actionLabel: "调整后再创作",
+    actionLabel: "恢复并调整",
   });
 
   const openPublicationForArtifact = (artifact, requestedScope = resultTaskScope) => {
@@ -3064,12 +2918,12 @@ export function App() {
     const publicationScope = requestedScope === "company" ? "company" : "mine";
     if (!canStartPublication) {
       setToast(isPersonalWorkspace
-        ? "个人空间发布能力尚未开放，请切换到已获授权的企业工作区。"
+        ? "个人账号暂未开放发布能力；如需企业发布，请使用独立的受邀企业账号登录。"
         : "当前账号缺少发布权限，或公司尚未启用自动发布。");
       return;
     }
     if (!artifactId) {
-      setToast("该结果缺少平台归档作品标识，请从作品页刷新后再发布。");
+      setToast("这份结果尚未取得可发布的作品标识。请刷新作品页后再试。");
       return;
     }
     closeResultDialog();
@@ -3091,8 +2945,7 @@ export function App() {
       await startGeneration();
       return;
     }
-    setProgress(6);
-    setStage("queued");
+    generationTaskRuntime.queueSubmission();
     setToast("任务已重新提交");
   };
 
@@ -3109,9 +2962,7 @@ export function App() {
       try {
         setCancelling(true);
         const cancelled = await companyClient.cancelTask(currentTask.id);
-        setCurrentTask(cancelled);
-        setStage("cancelled");
-        setProgress(0);
+        generationTaskRuntime.markCancelled(cancelled);
         setToast("任务已在外发前取消，预留余额已全额释放。");
       } catch (error) {
         expireSessionIfNeeded(error);
@@ -3123,8 +2974,7 @@ export function App() {
       }
       return;
     }
-    setStage("cancelled");
-    setProgress(0);
+    generationTaskRuntime.markCancelled();
     setToast("任务已取消，未产生扣费");
   };
 
@@ -3135,13 +2985,12 @@ export function App() {
       return;
     }
     pendingCreateRef.current = null;
-    rememberPendingCreate(studioWorkspaceKey, null);
+    // The authentication layer owns explicit-logout browser-state cleanup.
+    // Logging out must never cancel an already accepted provider task.
     closeResultDialog();
-    setCurrentTask(null);
-    setCurrentTaskId("");
-    setDetailTask(null);
-    setHistoryTasks([]);
-    setArtworks([]);
+    generationTaskRuntime.clearActiveTask();
+    resetTaskCollections();
+    resetArtworkCollection();
     setAssets([]);
     setArtworkPreviewUrls({});
     setIssuedArtifacts({});
@@ -3149,11 +2998,45 @@ export function App() {
     await logoutSession();
   };
 
+  const invalidateStudioWorkspaceEvidence = () => {
+    studioWorkspaceEvidenceKeyRef.current = "";
+    pendingCreateRef.current = null;
+    closeResultDialog();
+    setModels([]);
+    setModelId("");
+    setAssets([]);
+    resetTaskCollections();
+    resetArtworkCollection();
+    setArtworkPreviewUrls({});
+    setIssuedArtifacts({});
+    generationTaskRuntime.clearActiveTask({ resetProgress: true });
+    setPublicationIntent(null);
+    setPublishingReadiness(null);
+    setPublishingReadinessResolved(false);
+    setPersonalWallet(null);
+  };
+
   const changeSurface = (nextSurface) => {
     if (!["personal", "studio", "company", "platform"].includes(nextSurface)) return;
     if (!sessionSurfaces.includes(nextSurface)) {
       setToast("当前账号没有这个工作区的访问权限");
       return;
+    }
+    if (nextSurface !== effectiveSurface && (submitting || cancelling || uploadingKind || generationUploadGate.busy)) {
+      setToast("当前操作完成前不能切换工作空间，请稍候。");
+      return;
+    }
+    const nextWorkspaceKey = nextSurface === "personal"
+      ? personalIdentity?.workspace_id ? `personal:${personalIdentity.workspace_id}` : ""
+      : nextSurface === "studio"
+        ? activeCompanyId || companyIdentity?.company_id || ""
+        : "";
+    if (
+      LIVE_MODE
+      && nextWorkspaceKey
+      && nextWorkspaceKey !== studioWorkspaceEvidenceKeyRef.current
+    ) {
+      invalidateStudioWorkspaceEvidence();
     }
     setNotificationsOpen(false);
     setUserMenuOpen(false);
@@ -3169,51 +3052,53 @@ export function App() {
     }
   };
 
-  const changeCompanyContext = (nextCompanyId) => {
-    const company = sessionSurfaceCatalog?.companies?.find(
-      (item) => item.company_id === nextCompanyId && item.status !== "deleted",
-    );
-    if (!company) {
-      setToast("该企业不在当前登录会话的授权范围内。");
+  const changeCompanyContext = (nextCompanyId, { targetSurface = "studio" } = {}) => {
+    if (submitting || cancelling || uploadingKind || generationUploadGate.busy) {
+      setToast("当前操作完成前不能切换企业，请稍候。");
       return;
     }
+    const company = sessionSurfaceCatalog?.companies?.find(
+      (item) => item.company_id === nextCompanyId && isActiveCompanyContext(item),
+    );
+    if (!company) {
+      setToast("该企业当前不可用，或不在本次登录的授权范围内。");
+      return;
+    }
+    const nextSurface = targetSurface === "company" ? "company" : "studio";
+    invalidateStudioWorkspaceEvidence();
+    beginCompanySwitch();
     setActiveCompanyId(company.company_id);
-    setSurface("studio");
-    const nextPath = surfacePath("studio", activeNav);
+    setSurface(nextSurface);
+    const nextPath = surfacePath(nextSurface, activeNav);
     if (globalThis.location?.pathname !== nextPath) {
       globalThis.history?.pushState?.({}, "", nextPath);
     }
     try {
       globalThis.sessionStorage?.setItem("ai-video.company-id", company.company_id);
-      globalThis.sessionStorage?.setItem("ai-video.surface", "studio");
+      globalThis.sessionStorage?.setItem("ai-video.surface", nextSurface);
     } catch {
       // The authorized company selection still applies in memory.
     }
   };
 
-  const switchDemoPersona = (nextPersonaId) => {
+  const switchDemoPersona = (nextPersonaId, { targetNav = "shots" } = {}) => {
     if (!DEMO_MODE) return;
     const nextPersona = resolveDemoPersona(nextPersonaId);
     const nextSurface = defaultSurfaceForIdentity(nextPersona.identity);
     closeResultDialog();
-    setCurrentTask(null);
-    setCurrentTaskId("");
-    setCurrentTaskScope("mine");
-    setStage("idle");
-    setProgress(0);
-    setHistoryTasks([]);
-    setHistoryTotal(0);
-    setCreationTotal(0);
-    setArtworks([]);
-    setArtworkTotal(0);
+    generationTaskRuntime.clearActiveTask({ resetProgress: true });
+    resetTaskCollections();
+    resetArtworkCollection();
     setArtworkPreviewUrls({});
     setIssuedArtifacts({});
     setArtifactActionKey("");
     setPublicationIntent(null);
+    setDemoProductContext(nextPersona.id === "platform_admin" ? "platform" : "");
+    setProductContextSwitch({ target: "", error: "" });
     setDemoPersonaId(nextPersona.id);
     setSurface(nextSurface);
-    setActiveNav("shots");
-    const nextPath = surfacePath(nextSurface, "shots");
+    setActiveNav(targetNav);
+    const nextPath = surfacePath(nextSurface, targetNav);
     if (globalThis.location?.pathname !== nextPath) {
       globalThis.history?.pushState?.({}, "", nextPath);
     }
@@ -3223,9 +3108,90 @@ export function App() {
     try {
       globalThis.sessionStorage?.setItem("ai-video.demo-persona", nextPersona.id);
       globalThis.sessionStorage?.setItem("ai-video.surface", nextSurface);
+      if (nextPersona.id === "platform_admin") {
+        globalThis.sessionStorage?.setItem("ai-video.demo-product-context", "platform");
+      } else {
+        globalThis.sessionStorage?.removeItem("ai-video.demo-product-context");
+      }
     } catch {
       // The explicit demo account still changes for the current page.
     }
+  };
+
+  const switchActiveProductContext = async (targetContext) => {
+    if (!["personal", "platform"].includes(targetContext)) return;
+    if (productContextSwitch.target) return;
+    if (!authorizedProductContexts.includes(targetContext)) {
+      setProductContextSwitch({
+        target: "",
+        error: targetContext === "personal"
+          ? "当前平台所有者尚未关联个人创作空间，平台会话保持不变。"
+          : "当前个人创作空间未关联 Platform，创作会话保持不变。",
+      });
+      return;
+    }
+    const nextSurface = targetContext === "personal" ? "personal" : "platform";
+    const nextNav = targetContext === "personal" ? "create" : "shots";
+    const nextPath = surfacePath(nextSurface, nextNav);
+    setToast("");
+    setProductContextSwitch({ target: targetContext, error: "" });
+
+    if (DEMO_MODE) {
+      setDemoProductContext(targetContext);
+      setSurface(nextSurface);
+      setActiveNav(nextNav);
+      setNotificationsOpen(false);
+      setUserMenuOpen(false);
+      if (globalThis.location?.pathname !== nextPath) {
+        globalThis.history?.pushState?.({}, "", nextPath);
+      }
+      try {
+        globalThis.sessionStorage?.setItem(
+          "ai-video.demo-product-context",
+          targetContext,
+        );
+        globalThis.sessionStorage?.setItem("ai-video.surface", nextSurface);
+      } catch {
+        // The explicit demo product context still changes in memory.
+      }
+      setProductContextSwitch({ target: "", error: "" });
+      setToast(targetContext === "personal"
+        ? "已使用平台所有者身份进入个人创作"
+        : "已返回 Platform");
+      return;
+    }
+
+    let contextCommitted = false;
+    try {
+      const nextSession = await switchProductContext?.({ targetContext });
+      const returnedContexts = availableProductContexts(nextSession);
+      if (
+        nextSession?.active_product_context !== targetContext
+        || !returnedContexts.includes(targetContext)
+      ) {
+        throw new PlatformApiError("账号服务未确认目标产品空间", {
+          code: "PRODUCT_CONTEXT_NOT_CONFIRMED",
+        });
+      }
+      contextCommitted = true;
+      if (typeof globalThis.location?.assign !== "function") {
+        throw new PlatformApiError("当前浏览器无法打开目标产品空间", {
+          code: "PRODUCT_CONTEXT_NAVIGATION_UNAVAILABLE",
+        });
+      }
+      globalThis.location.assign(nextPath);
+    } catch (error) {
+      setProductContextSwitch({
+        target: "",
+        error: contextCommitted
+          ? `${targetContext === "personal" ? "个人创作身份" : "Platform 身份"}已切换，但页面未能自动打开。请刷新页面继续。`
+          : `${targetContext === "personal" ? "进入个人创作" : "返回 Platform"}失败：${readableApiError(error)} 当前会话和页面均未切换，可以重试。`,
+      });
+    }
+  };
+
+  const openPersonalCreation = () => {
+    switchActiveProductContext("personal");
   };
 
   const accessArtifact = async (
@@ -3237,11 +3203,11 @@ export function App() {
     } = {},
   ) => {
     if (!LIVE_MODE || !taskId || !artifact?.asset_id) {
-      if (!LIVE_MODE) setToast("演示模式不会签发真实下载记录");
+      if (!LIVE_MODE) setToast("演示模式不提供真实下载");
       return;
     }
     if (!canAccessArtifacts) {
-      setToast("个人作品目前仅提供已归档元数据，预览与下载访问尚未开放。");
+      setToast("当前工作区只能查看作品信息，暂不能预览或下载文件。");
       return;
     }
     const key = `${taskId}:${artifact.asset_id}`;
@@ -3290,7 +3256,7 @@ export function App() {
       if (preview) {
         const lease = createPreviewLease(url.toString(), access.expires_seconds);
         if (!lease) {
-          throw new PlatformApiError("平台返回的预览有效期无效", {
+          throw new PlatformApiError("预览链接有效期无效，请刷新后重试", {
             code: "INVALID_PREVIEW_EXPIRY",
           });
         }
@@ -3308,8 +3274,8 @@ export function App() {
       }
       setToast(
         preview
-          ? `短时预览已签发，${access.expires_seconds} 秒内有效；不会计入下载记录`
-          : `短时地址已签发，${access.expires_seconds} 秒内有效；完成状态以存储侧回传为准`,
+          ? `预览已准备好，${access.expires_seconds} 秒内有效，不会记为已下载。`
+          : `下载已开始，链接在 ${access.expires_seconds} 秒内有效。完成状态将在文件传输确认后更新。`,
       );
     } catch (error) {
       pendingWindow?.close();
@@ -3338,19 +3304,20 @@ export function App() {
     } = {},
   ) => {
     if (!LIVE_MODE || !taskId || !artifact?.asset_id) {
-      setToast("演示模式不会创建虚假的私有参考素材");
+      setToast("演示模式不会创建真实参考素材");
       return;
     }
     if (!canAccessArtifacts || isPersonalWorkspace) {
-      setToast("个人空间尚未开放产物访问与转存素材能力，未发起任何请求。");
+      setToast("个人空间暂不支持预览、下载作品或保存为素材。");
       return;
     }
     if (!canManageAssets) {
-      setToast("当前账号没有 assets.manage 素材管理权限，请联系公司老板授权。");
+      setToast("当前账号不能存入素材库。请联系企业负责人开通素材管理权限。");
       return;
     }
 
     const key = `${taskId}:${artifact.asset_id}`;
+    const promotionContext = generationInputContext();
     setArtifactActionKey(`promote:${key}`);
     setDownloadError("");
     try {
@@ -3359,6 +3326,8 @@ export function App() {
         artifact.asset_id,
         { scope, idempotencyKey: `promote-${taskId}-${artifact.asset_id}` },
       );
+      const currentContext = generationInputContext();
+      if (currentContext.workspaceKey !== promotionContext.workspaceKey) return;
       if (promoted?.status && promoted.status !== "active") {
         setToast("这份参考素材此前已停用，未加入当前草稿。请在素材页确认后再继续。");
         return;
@@ -3371,26 +3340,19 @@ export function App() {
         ];
       });
 
-      if (addToDraft) {
+      let addedCount = 0;
+      if (addToDraft && canCreateTasks && !currentContext.locked
+        && currentContext.draftRevision === promotionContext.draftRevision
+        && !generationUploadGate.busy) {
         const kind = inputAssetType(promoted, artifact.media_type);
-        const limit = mediaLimits[kind] ?? 0;
-        if (limit > 0) {
-          setFiles((current) => {
-            const promotedId = inputAssetId(promoted);
-            const withoutDuplicate = current[kind].filter(
-              (item) => inputAssetId(item) !== promotedId,
-            );
-            return {
-              ...current,
-              [kind]: [promoted, ...withoutDuplicate].slice(0, limit),
-            };
-          });
-        }
+        addedCount = appendDraftInputs(kind, [promoted]).addedCount;
       }
       setToast(
         addToDraft
-          ? "产物已由服务端校验并转存为私有参考素材；支持时已加入当前草稿"
-          : "产物已由服务端校验并转存为私有参考素材",
+          ? addedCount > 0
+            ? "已存入素材库，并加入当前草稿。"
+            : "已存入素材库，未改动当前草稿；可在素材页按当前模型的能力添加。"
+          : "已存入素材库。",
       );
     } catch (error) {
       expireSessionIfNeeded(error);
@@ -3456,7 +3418,7 @@ export function App() {
           </span>
           <span className="view-kicker">会话安全检查</span>
           <h1 id="identity-loading-title">正在确认账号身份</h1>
-          <p>正在确认当前会话可访问的个人、企业与平台工作区，完成前不会开放任何数据。</p>
+          <p>正在确认当前账号类型与唯一工作入口，完成前不会开放任何数据。</p>
         </section>
       </main>
     );
@@ -3486,32 +3448,63 @@ export function App() {
 
   if (effectiveSurface === "company" || effectiveSurface === "platform") {
     return (
-      <ManagementConsole
-        key={DEMO_MODE ? demoPersonaId : effectiveSurface}
-        mode={effectiveSurface}
-        client={effectiveSurface === "company" ? companyClient : liveClient}
-        demoMode={DEMO_MODE}
-        demoIdentity={DEMO_MODE ? sessionIdentity : null}
-        demoPersonaId={demoPersonaId}
-        allowedSurfaces={sessionSurfaces}
-        onDemoPersonaChange={switchDemoPersona}
-        onSurfaceChange={changeSurface}
-        companyContexts={sessionSurfaceCatalog?.companies || []}
-        activeCompanyId={activeCompanyId}
-        onCompanyChange={changeCompanyContext}
-        onLogout={logout}
-        onSessionError={expireSessionIfNeeded}
-        skin={skin}
-        onSkinChange={setSkin}
-      />
+      <>
+        <Suspense fallback={<RouteLoadingFallback label={effectiveSurface === "platform" ? "正在打开平台运营台" : "正在打开企业管理台"} />}>
+          <ManagementConsole
+            key={DEMO_MODE ? `${demoPersonaId}:${demoProductContext}` : `${effectiveSurface}:${effectiveSurface === "company" ? activeCompanyId : ""}`}
+            mode={effectiveSurface}
+            client={effectiveSurface === "company" ? companyClient : liveClient}
+            demoMode={DEMO_MODE}
+            demoIdentity={DEMO_MODE ? sessionIdentity : null}
+            demoPersonaId={demoPersonaId}
+            allowedSurfaces={sessionSurfaces}
+            onDemoPersonaChange={switchDemoPersona}
+            onSurfaceChange={changeSurface}
+            onOpenPersonalCreation={authorizedProductContexts.includes("personal")
+              ? openPersonalCreation
+              : undefined}
+            personalCreationPending={productContextSwitch.target === "personal"}
+            personalCreationErrorMessageId={productContextSwitch.error
+              ? "product-context-switch-error"
+              : ""}
+            initialPlatformIdentity={effectiveSurface === "platform" ? platformIdentity : null}
+            companyContexts={activeCompanyContexts}
+            activeCompanyId={activeCompanyId}
+            onCompanyChange={(companyId) => changeCompanyContext(companyId, { targetSurface: "company" })}
+            onLogout={logout}
+            onSessionError={expireSessionIfNeeded}
+            skin={skin}
+            onSkinChange={setSkin}
+          />
+        </Suspense>
+        {productContextSwitch.error && (
+          <div id="product-context-switch-error" className="toast is-error" role="alert">
+            <WarningCircle size={19} weight="fill" aria-hidden="true" />
+            {productContextSwitch.error}
+          </div>
+        )}
+      </>
     );
   }
 
-  const focusCommunityComposer = () => {
-    navigateStudio(activeNav === "create" ? "create" : "shots");
-    globalThis.requestAnimationFrame?.(() => {
-      composerRef.current?.querySelector("#prompt")?.focus();
+  const focusComposerPrompt = () => {
+    const focusPrompt = () => {
+      composerRef.current?.querySelector("#prompt")?.focus({ preventScroll: true });
+    };
+    if (typeof globalThis.requestAnimationFrame !== "function") {
+      focusPrompt();
+      return;
+    }
+    globalThis.requestAnimationFrame(() => {
+      globalThis.requestAnimationFrame(focusPrompt);
     });
+  };
+
+  const focusCommunityComposer = () => {
+    restoreComposerPanelFocusRef.current = false;
+    setComposerPanel(null);
+    setMobileComposerOpen(true);
+    focusComposerPrompt();
   };
 
   const useCommunityPrompt = (nextPrompt) => {
@@ -3521,7 +3514,7 @@ export function App() {
       return;
     }
     const safeLimit = promptLimit || 1000;
-    setPrompt(nextPrompt.slice(0, safeLimit));
+    setPrompt(truncateGenerationPrompt(nextPrompt, safeLimit));
     setPromptError("");
     setToast("灵感制作说明已放入创作框");
     focusCommunityComposer();
@@ -3533,8 +3526,74 @@ export function App() {
   const modelSupportsMediaKind = (candidate, kind) =>
     Object.keys(candidate?.effectiveCapabilities?.modes ?? {})
       .some((mode) => modeMatchesMediaKind(mode, kind));
-  const composerVideoAvailable = models.some((item) => modelSupportsMediaKind(item, "video"));
-  const composerImageAvailable = models.some((item) => modelSupportsMediaKind(item, "image"));
+  const composerVideoAvailable = modelSupportsMediaKind(model, "video");
+  const composerImageAvailable = modelSupportsMediaKind(model, "image");
+  const composerReferenceCount = files.image.length + files.video.length + files.audio.length;
+  const composerSpecSummary = [
+    ratio,
+    resolution,
+    modeUsesDuration(generationMode) && duration ? `${duration} 秒` : "",
+  ].filter(Boolean).join(" · ") || "等待模型能力";
+
+  const composerModelPrice = (candidate) => {
+    const pricingUnit = candidate?.pricingMode === "per_second" ? "秒" : "个";
+    if (!LIVE_MODE) {
+      const amount = normalizePositivePrice(candidate?.rate);
+      return amount === null ? "" : `${formatPointAmount(amount)} / ${pricingUnit}`;
+    }
+    if (!validQuoteRevision(candidate?.quoteRevision)) return "";
+    const billing = billingPresentationState(candidate);
+    if (billing.kind === "legacy_cents" || !billing.available) return "";
+    const amount = normalizePositivePrice(candidate?.unitPricePoints);
+    if (amount === null) return "";
+    return `${formatPointAmount(amount, {
+      noun: billing.kind === "internal_test" ? "影子积分" : "积分",
+    })} / ${pricingUnit}`;
+  };
+
+  const openComposerPanel = (panel, { focusPanel = true } = {}) => {
+    composerPanelTriggerRef.current = composerRef.current
+      ?.querySelector(`[data-composer-panel-trigger="${panel}"]`) ?? null;
+    focusComposerPanelOnOpenRef.current = focusPanel;
+    restoreComposerPanelFocusRef.current = false;
+    setComposerPanel(panel);
+  };
+
+  const closeComposerPanel = (panel, { restoreFocus = true } = {}) => {
+    if (!composerPanelTriggerRef.current) {
+      composerPanelTriggerRef.current = composerRef.current
+        ?.querySelector(`[data-composer-panel-trigger="${panel}"]`) ?? null;
+    }
+    restoreComposerPanelFocusRef.current = restoreFocus;
+    setComposerPanel(null);
+  };
+
+  const toggleComposerPanel = (nextPanel, { focusPanel = true } = {}) => {
+    if (composerPanel === nextPanel) {
+      closeComposerPanel(nextPanel, { restoreFocus: false });
+      return;
+    }
+    openComposerPanel(nextPanel, { focusPanel });
+  };
+
+  const toggleComposerPanelFromTrigger = (event, nextPanel) => {
+    toggleComposerPanel(nextPanel, { focusPanel: event.detail === 0 });
+  };
+
+  const handleComposerEscape = (event) => {
+    if (event.key !== "Escape") return;
+    if (composerPanel) {
+      event.preventDefault();
+      closeComposerPanel(composerPanel);
+      return;
+    }
+    if (!mobileComposerOpen) return;
+    event.preventDefault();
+    setMobileComposerOpen(false);
+    globalThis.requestAnimationFrame?.(() => {
+      composerRef.current?.querySelector("#mobile-composer-launcher")?.focus();
+    });
+  };
 
   const selectComposerMediaKind = (nextKind) => {
     if (pendingCreateRef.current) return false;
@@ -3588,14 +3647,95 @@ export function App() {
     tabs[nextIndex].focus();
   };
 
+  function renderGenerationEditor({ variant = "quick", title = "", onClose } = {}) {
+    return <GenerationEditor {...{
+      variant, title, onClose,
+      pendingContext, pendingBelongsToDraft, restorePendingCreate, pendingCreateRef,
+      hasVisibleMediaInputs, composerExpanded, composerPanel, mobileComposerOpen,
+      composerRef, handleComposerEscape, focusCommunityComposer, activeNav,
+      generationMode, generationModeLabel, composerSpecSummary, setComposerPanel,
+      setMobileComposerOpen, modelsLoading, model, hasVisibleRecipe,
+      toggleComposerPanelFromTrigger, composerVideoAvailable, composerImageAvailable,
+      handleComposerMediaKeyDown, composerMediaKind, selectComposerMediaKind,
+      supportedModes, selectGenerationMode,
+      quickDraftStorageNotice: creationSession.storageNotice,
+      activeCapability, closeComposerPanel, prompt, historicalRequestLocked,
+      generationPromptLength, promptLimit, setPrompt, truncateGenerationPrompt,
+      promptError, setPromptError, formError, setFormError, promptSubmissionIssue,
+      composerSubmitMessageId, composerReferenceCount, visibleMediaLimits,
+      referenceUploadNote, MediaInputGroup, files, handleFiles, removeInputAsset,
+      uploadingKind, LIVE_MODE, canManageAssets, hasVisibleSpecifications,
+      ratio, resolution, modeUsesDuration, duration, outputCount,
+      setRatio, setResolution, setDuration, setOutputCount, fixedSpecificationFields,
+      isPersonalWorkspace, modelsError, models, modelId, composerModelPrice,
+      personalModelCatalog, personalModelCatalogLoading, personalModelCatalogError,
+      selectStudioModel, DEMO_MODE, generationReadiness, hasServerReadinessEvidence,
+      serverGenerationReadiness, localReadinessBlockers, readinessCheckedAtLabel,
+      faceControlAvailable, faceEnabled, setFaceEnabled, readinessEvidenceReasons,
+      historicalFaceVisible, readinessHeadline, showCostPreview, costLabel,
+      startGeneration, composerSubmitState, taskStageIsActive,
+    }} />;
+  }
+
   const currentView = (() => {
     if (activeNav === "create") {
       return (
         <CreationHub
+          workbench={creationWorkbench}
+          advancedWorkbenchesDesktopOnly={advancedWorkbenchesDesktopOnly}
+          onWorkbenchChange={navigateCreationWorkbench}
+          renderEditor={renderGenerationEditor}
+          directorHost={{
+            onCaptureFiles: (captureFiles, captureContext) => {
+              const route = creationRouteRef.current;
+              const binding = creationSession.bindingRef.current;
+              const isCurrentShot = Boolean(
+                route.activeNav === "create"
+                  && route.workbench === "console"
+                  && captureContext?.scopeKey === creationScopeRef.current
+                  && captureContext.scopeKey === binding?.scopeKey
+                  && captureContext.shotId === binding?.entryId
+                  && binding?.kind === "console",
+              );
+              if (!isCurrentShot) {
+                return Promise.resolve({
+                  ok: false,
+                  addedCount: 0,
+                  message: "当前镜头已经切换，这张取景图没有写入新的镜头。",
+                });
+              }
+              return handleFiles("image", captureFiles);
+            },
+          }}
+          workbenchController={{
+            ...creationSession,
+            entries: creationSession.state.entries.filter((entry) => entry.kind === creationWorkbench).map((entry) => ({
+              ...entry,
+              draft: entry.id === creationSession.activeEntryId ? generationDraftSnapshot : entry.draft,
+            })),
+            locked: submitting || Boolean(uploadingKind) || Boolean(pendingCreateRef.current),
+            onMoveEntry: (id, direction) => creationSession.onMoveEntry(id, direction === "up" ? -1 : 1),
+            onImportTask: async (task) => {
+              const origin = creationSession.captureContext();
+              try {
+                const verified = LIVE_MODE ? await studioClient.getTask(task.id, { scope: "mine" }) : task;
+                if (origin?.scopeKey !== creationScopeRef.current || origin?.entryId !== creationSession.bindingRef.current?.entryId) return;
+                creationSession.onImportTask(verified);
+              } catch (error) {
+                expireSessionIfNeeded(error);
+                setToast("无法读取这条任务，尚未加入工作台。");
+              }
+            },
+          }}
+          ownedTaskIds={ownedCreationTaskIds}
+          workbenchTasks={LIVE_MODE
+            ? Object.values(workbenchRecords.items)
+            : [...DEMO_HISTORY_TASKS, ...(currentTask ? [currentTask] : [])]}
           tasks={LIVE_MODE ? historyTasks : DEMO_HISTORY_TASKS}
           models={models}
           loading={LIVE_MODE && historyLoading}
           error={historyError}
+          historyAccessAvailable={!LIVE_MODE || canReadStudioTasks}
           liveMode={LIVE_MODE}
           generationMediaKind={composerMediaKind}
           onGenerationMediaChange={selectComposerMediaKind}
@@ -3640,6 +3780,27 @@ export function App() {
           supportsDateFilter={!isPersonalWorkspace}
           artifactAccessAvailable={canAccessArtifacts}
           onStartCreation={focusCommunityComposer}
+          onUsePrompt={useCommunityPrompt}
+          onContinueTask={createAgainFromTask}
+          onPromoteArtifact={(task, artifact) => promoteTaskArtifactToInputAsset(
+            artifact,
+            {
+              taskId: task?.id || task?.task_id,
+              scope: "mine",
+              addToDraft: false,
+            },
+          )}
+          onDownloadArtifact={(task, artifact) => accessArtifact(artifact, {
+            taskId: task?.id || task?.task_id,
+            scope: "mine",
+          })}
+          onPublishArtifact={(task, artifact) => openPublicationForArtifact(
+            { ...artifact, task_id: task?.id || task?.task_id },
+            "mine",
+          )}
+          canPromoteArtifact={LIVE_MODE && !isPersonalWorkspace && canAccessArtifacts && canManageAssets}
+          canDownloadArtifact={LIVE_MODE && canAccessArtifacts}
+          canPublishArtifact={canStartPublication}
         />
       );
     }
@@ -3653,95 +3814,6 @@ export function App() {
         />
       );
     }
-    if (LIVE_MODE && activeNav === "shots") {
-      return (
-        <div className="live-editor-view">
-          <section className="live-request-canvas" aria-labelledby="live-request-title">
-            <header className="live-request-header">
-              <div>
-                <span className="view-kicker">真实任务输入</span>
-                <h1 id="live-request-title">
-                  {generationMode ? generationModeLabel(generationMode) : "等待模型能力"}
-                </h1>
-                <p>
-                  {isPersonalWorkspace
-                    ? "中央画布只展示个人 API 会接收的真实字段；当前仅开放无素材文生能力。"
-                    : "中央画布只展示会提交到客户平台的真实字段；素材先进入公司私有素材库，再以受控引用参与生成。"}
-                </p>
-              </div>
-              <span className="live-request-icon" aria-hidden="true">
-                <GenerationIcon size={29} weight="fill" />
-              </span>
-            </header>
-            {pendingCreateRef.current && (
-              <div className="pending-create-notice" role="status">
-                <ClockCounterClockwise size={19} aria-hidden="true" />
-                <span>
-                  <strong>有一条提交结果尚未确认</strong>
-                  <small>原参数与幂等键已按当前工作空间保留；再次生成只会确认同一任务。</small>
-                </span>
-              </div>
-            )}
-            <dl className="live-request-summary">
-              <div className="live-summary-prompt">
-                <dt>制作说明</dt>
-                <dd>{prompt.trim() || "尚未填写，请在右侧输入制作说明"}</dd>
-              </div>
-              <div>
-                <dt>授权模型</dt>
-                <dd>{model.id ? model.name : "尚未选择"}</dd>
-              </div>
-              <div>
-                <dt>生成模式</dt>
-                <dd>{generationMode ? generationModeLabel(generationMode) : "不可用"}</dd>
-              </div>
-              <div>
-                <dt>画面比例</dt>
-                <dd>{ratio ? ratio.split(/\s/)[0] : "不可用"}</dd>
-              </div>
-              <div>
-                <dt>分辨率</dt>
-                <dd>{resolution || "不可用"}</dd>
-              </div>
-              <div>
-                <dt>目标时长</dt>
-                <dd>{duration ? `${duration} 秒` : "不可用"}</dd>
-              </div>
-              <div>
-                <dt>产物数量</dt>
-                <dd>{outputCount ? `${outputCount} 个` : "不可用"}</dd>
-              </div>
-              {showFaceSummary && (
-                <div>
-                  <dt>人脸能力</dt>
-                  <dd>
-                    {faceEnabled ? "启用" : "关闭"}
-                    {historicalFaceVisible && !faceControlAvailable ? "（历史提交，只读）" : ""}
-                  </dd>
-                </div>
-              )}
-            </dl>
-          </section>
-          <div className="save-strip">
-            <span className="save-icon">
-              <StoredStateIcon size={18} weight="bold" aria-hidden="true" />
-            </span>
-            <span>
-              <strong>{storedStateTitle}</strong>
-              <small>
-                {hasStoredArtifacts
-                  ? `${activeOutputArtifacts.length} 个产物 · 私有存储`
-                  : "真实任务与产物状态以客户平台记录为准"}
-              </small>
-            </span>
-            <button className="folder-button" type="button" onClick={() => navigateStudio("history")}>
-              查看历史
-              <FolderOpen size={19} aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      );
-    }
     if (activeNav === "media") {
       if (isPersonalWorkspace && !canManageAssets) {
         return (
@@ -3751,13 +3823,21 @@ export function App() {
           />
         );
       }
+      if (LIVE_MODE && !canReadStudioAssets && !canManageAssets) {
+        return (
+          <WorkspaceCapabilityUnavailableView
+            capability="素材"
+            description="当前账号不能查看或管理企业素材。请联系企业负责人调整素材访问权限。"
+          />
+        );
+      }
       return (
         <MediaLibrary
           liveMode={LIVE_MODE}
           assets={assets}
           loading={assetsLoading}
           error={assetsError}
-          uploading={uploadingKind === "library"}
+          uploading={Boolean(uploadingKind)}
           canManageAssets={canManageAssets}
           canCreateTasks={canCreateTasks}
           onUpload={uploadLibraryFiles}
@@ -3766,12 +3846,20 @@ export function App() {
           onDelete={deleteLibraryAsset}
           onUse={(id) => {
             chooseScene(id);
-            setToast("已设为当前镜头，可继续在素材库中选择");
+            setToast("已用于当前创作，可继续选择其他素材");
           }}
         />
       );
     }
     if (activeNav === "history") {
+      if (LIVE_MODE && !canReadStudioTasks) {
+        return (
+          <WorkspaceCapabilityUnavailableView
+            capability="历史"
+            description="当前账号不能查看任务记录。请联系企业负责人调整任务访问权限。"
+          />
+        );
+      }
       return (
         <HistoryView
           onRetry={LIVE_MODE ? retryHistoryTask : retryGeneration}
@@ -3807,6 +3895,14 @@ export function App() {
       );
     }
     if (activeNav === "artworks") {
+      if (LIVE_MODE && !canReadStudioArtworks) {
+        return (
+          <WorkspaceCapabilityUnavailableView
+            capability="作品"
+            description="当前账号不能查看任务与作品，预览和下载也暂不可用。请联系企业负责人调整访问权限。"
+          />
+        );
+      }
       return (
         <ArtworksView
           liveMode={LIVE_MODE}
@@ -3868,7 +3964,7 @@ export function App() {
         return (
           <WorkspaceCapabilityUnavailableView
             capability="发布"
-            description="个人空间的发布账号、审批与外部平台提交尚未开放；切换到具备发布权限的企业工作区后可使用完整流程。"
+            description="个人账号的发布、审批与外部平台提交尚未开放；如需企业发布，请使用独立的受邀企业账号登录。"
           />
         );
       }
@@ -3884,7 +3980,11 @@ export function App() {
           canReadJobs={canReadPublicationJobs}
           canManageJobs={canManagePublicationJobs}
           autoPublishingEnabled={hasAutoPublishEntitlement}
-          publishingEntitlementResolved={DEMO_MODE || resourcesResolved}
+          publishingEntitlementResolved={DEMO_MODE || publishingReadinessResolved}
+          accountSideEffectsEnabled={accountPublishingSideEffectsEnabled}
+          jobSideEffectsEnabled={jobPublishingSideEffectsEnabled}
+          publishingReadinessError={publishingReadinessError}
+          publishingBlockingReasons={publishingReadiness?.blocking_reasons || []}
           onSessionError={expireSessionIfNeeded}
           initialArtifactId={publicationIntent?.artifactId || ""}
           initialArtwork={publicationIntent?.artwork ?? null}
@@ -3908,6 +4008,8 @@ export function App() {
           demoIdentity={DEMO_MODE ? sessionIdentity : null}
           taskCompletionNotices={taskCompletionNotices}
           onTaskCompletionNoticesChange={updateTaskCompletionNotices}
+          skin={skin}
+          onSkinChange={setSkin}
         />
       );
     }
@@ -3936,9 +4038,11 @@ export function App() {
             <small>
               {LIVE_MODE
                 ? hasStoredArtifacts
-                  ? `${activeOutputArtifacts.length} 个产物 · 私有存储`
-                  : "真实任务与产物状态以客户平台记录为准"
-                : "公司存储 / 产品推广 / 当前版本"}
+                  ? `${activeOutputArtifacts.length} 个作品文件，已保存`
+                  : currentTask?.status === "succeeded"
+                    ? "任务已完成，但作品保存尚未确认，后续操作已关闭"
+                    : "任务和作品状态以服务端记录为准"
+                : "演示内容，未生成或保存真实作品"}
             </small>
           </span>
           <button
@@ -3948,7 +4052,7 @@ export function App() {
               if (LIVE_MODE) {
                 navigateStudio("history");
               } else {
-                setToast("已打开当前项目产物列表");
+                setToast("已打开当前项目作品列表");
               }
             }}
           >
@@ -3961,96 +4065,233 @@ export function App() {
   })();
 
   const isPrimaryStudioView = activeNav === "shots" || activeNav === "create";
+  const isAdvancedWorkbench = activeNav === "create" && ADVANCED_WORKBENCHES.includes(creationWorkbench);
+  const isQuickStudioView = isPrimaryStudioView && !isAdvancedWorkbench;
+  const studioProjectTitle = isPersonalWorkspace
+    ? "个人空间"
+    : LIVE_MODE
+      ? companyName || "企业工作空间"
+      : "防水音箱 15 秒短片";
+  const studioProjectCode = currentTask?.id
+    ? `任务 ${shortId(currentTask.id)}`
+    : LIVE_MODE
+      ? "尚未选择任务"
+      : "项目 PRJ-20250508-01";
 
   return (
     <div
-      className={`app-shell ${isPrimaryStudioView ? "is-community-home" : "is-secondary-page"} ${activeNav === "create" ? "is-creation-hub" : ""} ${composerExpanded ? "is-composer-expanded" : ""}`}
+      className={`app-shell ${isQuickStudioView ? "is-community-home" : isAdvancedWorkbench ? "is-advanced-workbench" : "is-secondary-page"} ${activeNav === "create" ? "is-creation-hub" : ""} ${isQuickStudioView && composerExpanded ? "is-composer-expanded" : ""} ${isQuickStudioView && mobileComposerOpen ? "is-mobile-composer-open" : ""}`}
+      data-workbench={isAdvancedWorkbench ? creationWorkbench : undefined}
       data-theme={skin}
+      data-composer-surface={activeNav === "create" ? "creation" : "home"}
     >
       <header className="topbar">
-        <div className="brand" aria-label={BRAND_NAME}>
-          <BrandLogo variant="responsive" />
-        </div>
-        <span className="brand-context">
-          {isPersonalWorkspace ? "个人创作空间" : "企业创作工作台"}
-        </span>
-        <span className={`mode-badge ${LIVE_MODE ? "is-live" : ""}`}>
-          {LIVE_MODE ? (isPersonalWorkspace ? "个人 API" : "真实 API") : "演示模式"}
-        </span>
-        {DEMO_MODE && (
-          <DemoAccountSwitcher value={demoPersonaId} onChange={switchDemoPersona} />
-        )}
-        {sessionSurfaces.length > 1 && (
-          <div className="surface-switch is-studio" aria-label="工作区切换">
-            {sessionSurfaces.includes("personal") && (
-              <button
-                className={effectiveSurface === "personal" ? "is-active" : ""}
-                type="button"
-                aria-pressed={effectiveSurface === "personal"}
-                onClick={() => changeSurface("personal")}
-              >个人</button>
-            )}
-            {sessionSurfaces.includes("studio") && (
-              <button
-                className={effectiveSurface === "studio" ? "is-active" : ""}
-                type="button"
-                aria-pressed={effectiveSurface === "studio"}
-                aria-label="企业创作工作区"
-                onClick={() => changeSurface("studio")}
-              ><span className="surface-label-long">企业创作</span><span className="surface-label-short" aria-hidden="true">企业</span></button>
-            )}
-            {sessionSurfaces.includes("company") && <button type="button" aria-pressed="false" aria-label="企业管理工作区" onClick={() => changeSurface("company")}><span className="surface-label-long">企业管理</span><span className="surface-label-short" aria-hidden="true">管理</span></button>}
-            {sessionSurfaces.includes("platform") && <button type="button" aria-pressed="false" onClick={() => changeSurface("platform")}>平台</button>}
+        <div className="studio-mobile-commandbar">
+          <div className="studio-mobile-mark" aria-label={BRAND_NAME}>
+            <BrandLogo variant="symbol" />
           </div>
-        )}
-        {LIVE_MODE ? (
-          <label className="project-select workspace-select">
-            <span className="visually-hidden">当前工作空间</span>
-            <select
-              value={isPersonalWorkspace ? "personal" : activeCompanyId}
-              onChange={(event) => {
-                if (event.target.value === "personal") changeSurface("personal");
-                else changeCompanyContext(event.target.value);
-              }}
-            >
-              {sessionSurfaceCatalog?.personal && <option value="personal">个人空间</option>}
-              {(sessionSurfaceCatalog?.companies || []).map((company) => (
-                <option key={company.company_id} value={company.company_id}>
-                  {company.name || company.company_id}
-                </option>
-              ))}
-              {!sessionSurfaceCatalog && hasCompanySession && (
-                <option value={activeCompanyId}>{companyName || "企业工作区"}</option>
-              )}
-            </select>
-            <CaretDown size={14} aria-hidden="true" />
-          </label>
-        ) : (
-          <label className="project-select">
-            <span className="visually-hidden">当前项目</span>
-            <select defaultValue="产品推广视频">
-              <option>产品推广视频</option>
-              <option>夏季带货系列</option>
-              <option>品牌素材测试</option>
-            </select>
-            <CaretDown size={14} aria-hidden="true" />
-          </label>
-        )}
-        {LIVE_MODE && isPersonalWorkspace && (
-          <span
-            className={`personal-balance ${personalWalletError ? "is-error" : ""}`}
-            title={personalWalletError || `预留 ${Number(personalWallet?.reserved_points || 0)} 积分`}
+          <div className="studio-mobile-context" aria-label="当前创作上下文">
+            <small>
+              创作
+              <span aria-hidden="true"> · </span>
+              {DEMO_MODE
+                ? activeDemoPersona?.identity?.display_name || "演示账号"
+                : sessionIdentity?.display_name || "已登录用户"}
+            </small>
+            <strong>{studioProjectTitle}</strong>
+          </div>
+          <details
+            className="studio-mobile-command-menu"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              event.currentTarget.open = false;
+              event.currentTarget.querySelector("summary")?.focus();
+            }}
           >
-            {personalWalletError
-              ? "积分读取失败"
-              : personalWallet
-                ? `${Number(personalWallet.available_points || 0)} 积分`
-                : "积分读取中"}
-          </span>
-        )}
+            <summary aria-label="打开工作台命令菜单" aria-haspopup="true">
+              <SlidersHorizontal size={20} aria-hidden="true" />
+            </summary>
+            <div className="studio-mobile-command-panel">
+              {studioManagementSurfaces.length > 0 && (
+                <section>
+                  <span>管理入口</span>
+                  <div className="studio-mobile-surface-list">
+                    {sessionSurfaces.includes("company") && (
+                      <button type="button" aria-pressed="false" onClick={() => changeSurface("company")}>企业管理</button>
+                    )}
+                    {canReturnToPlatform ? (
+                      <button
+                        type="button"
+                        aria-pressed="false"
+                        aria-label="返回 Platform"
+                        aria-busy={productContextSwitch.target === "platform" ? "true" : undefined}
+                        aria-describedby={productContextSwitch.error ? "product-context-switch-error" : undefined}
+                        disabled={productContextSwitch.target === "platform"}
+                        onClick={() => switchActiveProductContext("platform")}
+                      >
+                        {productContextSwitch.target === "platform" ? "正在返回" : "返回 Platform"}
+                      </button>
+                    ) : sessionSurfaces.includes("platform") ? (
+                      <button type="button" aria-pressed="false" onClick={() => changeSurface("platform")}>平台运营</button>
+                    ) : null}
+                  </div>
+                </section>
+              )}
+              {LIVE_MODE ? (
+                canSwitchCompany && (
+                  <section>
+                    <span>当前企业</span>
+                    <label className="studio-mobile-select">
+                      <span className="visually-hidden">切换当前企业</span>
+                      <select
+                        value={activeCompanyId || sessionIdentity?.company_id || ""}
+                        onChange={(event) => changeCompanyContext(event.target.value)}
+                      >
+                        {activeCompanyContexts.map((company) => (
+                          <option key={company.company_id} value={company.company_id}>
+                            {company.name || company.company_id}
+                          </option>
+                        ))}
+                      </select>
+                      <CaretDown size={14} aria-hidden="true" />
+                    </label>
+                  </section>
+                )
+              ) : (
+                <section>
+                  <span>当前项目</span>
+                  <label className="studio-mobile-select">
+                    <span className="visually-hidden">当前项目</span>
+                    <select defaultValue="产品推广视频">
+                      <option>产品推广视频</option>
+                      <option>夏季带货系列</option>
+                      <option>品牌素材测试</option>
+                    </select>
+                    <CaretDown size={14} aria-hidden="true" />
+                  </label>
+                </section>
+              )}
+              {DEMO_MODE && <section><span>演示身份</span><DemoAccountSwitcher value={demoPersonaId} onChange={switchDemoPersona} /></section>}
+              <section><span>界面</span><SkinSwitcher value={skin} onChange={setSkin} /></section>
+              <section className="studio-mobile-task-state" aria-live="polite">
+                <span>任务提醒</span>
+                <strong>
+                  {LIVE_MODE
+                    ? currentTask
+                      ? `任务 ${shortId(currentTask.id)} · ${taskStatus.label}`
+                      : "当前没有选中的真实任务"
+                    : "演示数据不会连接真实生成渠道"}
+                </strong>
+                {LIVE_MODE && currentTask && (
+                  <small>{hasStoredArtifacts ? `${activeOutputArtifacts.length} 个作品文件已保存` : "作品状态正在同步"}</small>
+                )}
+              </section>
+              {LIVE_MODE && (
+                <section className="studio-mobile-account-actions">
+                  <span>{sessionIdentity?.display_name || "已登录用户"} · {identityRoleLabel(sessionIdentity)}</span>
+                  <div>
+                    <button type="button" onClick={() => navigateStudio("settings")}>账号设置</button>
+                    <button type="button" onClick={logout}>退出登录</button>
+                  </div>
+                </section>
+              )}
+            </div>
+          </details>
+        </div>
+        <div className="topbar-identity">
+          <div className="brand" aria-label={BRAND_NAME}>
+            <BrandLogo variant="responsive" />
+          </div>
+          <div className="topbar-project" aria-label="当前工作空间与任务">
+            <span>当前工作空间</span>
+            <strong>{studioProjectTitle}</strong>
+            <small>{studioProjectCode}</small>
+          </div>
+        </div>
+        <div className="topbar-command-cluster">
+          {DEMO_MODE && <span className="mode-badge">演示模式</span>}
+          {studioManagementSurfaces.length > 0 && (
+            <div className="surface-switch is-studio" aria-label="管理入口">
+              {sessionSurfaces.includes("company") && <button type="button" aria-pressed="false" aria-label="企业管理工作区" onClick={() => changeSurface("company")}><span className="surface-label-long">企业管理</span><span className="surface-label-short" aria-hidden="true">管理</span></button>}
+              {canReturnToPlatform ? (
+                <button
+                  type="button"
+                  aria-pressed="false"
+                  aria-label="返回 Platform"
+                  aria-busy={productContextSwitch.target === "platform" ? "true" : undefined}
+                  aria-describedby={productContextSwitch.error ? "product-context-switch-error" : undefined}
+                  disabled={productContextSwitch.target === "platform"}
+                  onClick={() => switchActiveProductContext("platform")}
+                >
+                  {productContextSwitch.target === "platform" ? "正在返回" : "返回 Platform"}
+                </button>
+              ) : sessionSurfaces.includes("platform") ? (
+                <button type="button" aria-pressed="false" onClick={() => changeSurface("platform")}>平台运营</button>
+              ) : null}
+            </div>
+          )}
+          {LIVE_MODE ? (
+            canSwitchCompany && (
+            <label className="project-select workspace-select">
+              <span className="visually-hidden">切换当前企业</span>
+              <FolderOpen className="project-select-mobile-icon" size={18} aria-hidden="true" />
+              <select
+                value={activeCompanyId || sessionIdentity?.company_id || ""}
+                onChange={(event) => changeCompanyContext(event.target.value)}
+              >
+                {activeCompanyContexts.map((company) => (
+                  <option key={company.company_id} value={company.company_id}>
+                    {company.name || company.company_id}
+                  </option>
+                ))}
+              </select>
+              <CaretDown size={14} aria-hidden="true" />
+            </label>
+            )
+          ) : (
+            <label className="project-select">
+              <span className="visually-hidden">当前项目</span>
+              <FolderOpen className="project-select-mobile-icon" size={18} aria-hidden="true" />
+              <select defaultValue="产品推广视频">
+                <option>产品推广视频</option>
+                <option>夏季带货系列</option>
+                <option>品牌素材测试</option>
+              </select>
+              <CaretDown size={14} aria-hidden="true" />
+            </label>
+          )}
+        </div>
         <div className="topbar-spacer" />
-        <SkinSwitcher value={skin} onChange={setSkin} />
-        <div className="popover-anchor notification-anchor" ref={notificationAnchorRef}>
+        <div className="topbar-account-cluster">
+          {DEMO_MODE && (
+            <DemoAccountSwitcher value={demoPersonaId} onChange={switchDemoPersona} />
+          )}
+          {LIVE_MODE && isPersonalWorkspace && (
+            <span
+              className={`personal-balance ${personalWalletError ? "is-error" : ""}`}
+              title={personalWalletError || (personalWallet
+                ? `预留 ${billingAmountLabel(personalWallet, {
+                    pointsField: "reserved_points",
+                    centsField: "reserved_cents",
+                  })}`
+                : "正在读取个人积分")}
+            >
+              {personalWalletError
+                ? "积分读取失败"
+                : personalWallet
+                  ? billingAmountLabel(personalWallet, {
+                      pointsField: "available_points",
+                      centsField: "available_cents",
+                    })
+                  : "积分读取中"}
+            </span>
+          )}
+          <SkinSwitcher value={skin} onChange={setSkin} />
+          <div className="popover-anchor notification-anchor" ref={notificationAnchorRef}>
           <IconButton
             label="通知"
             onClick={() => {
@@ -4072,8 +4313,8 @@ export function App() {
                     </p>
                     <p>
                       {hasStoredArtifacts
-                        ? `${activeOutputArtifacts.length} 个产物已完成转存。`
-                        : "状态来自客户平台，页面会继续同步。"}
+                        ? `${activeOutputArtifacts.length} 个作品文件已保存。`
+                        : "作品状态正在同步。"}
                     </p>
                   </>
                 ) : (
@@ -4087,9 +4328,9 @@ export function App() {
               )}
             </div>
           )}
-        </div>
-        {LIVE_MODE && (
-        <div className="popover-anchor user-anchor" ref={userAnchorRef}>
+          </div>
+          {LIVE_MODE && (
+          <div className="popover-anchor user-anchor" ref={userAnchorRef}>
           <button
             className="user-button"
             type="button"
@@ -4114,548 +4355,72 @@ export function App() {
               </button>
             </div>
           )}
+          </div>
+          )}
         </div>
-        )}
       </header>
 
       <nav className="side-nav" aria-label="工作台导航">
-        <div>
-          {NAV_ITEMS.filter((item) => item.id !== "publish" || showPublishingNavigation).map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                className={activeNav === item.id ? "is-active" : ""}
-                type="button"
-                key={item.id}
-                onClick={() => navigateStudio(item.id)}
-                aria-current={activeNav === item.id ? "page" : undefined}
-              >
-                <Icon size={26} aria-hidden="true" />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
+        <div className="side-nav-track" ref={studioNavTrackRef}>
+          <div className="side-nav-primary">
+            {visibleStudioNavItems.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  className={activeNav === item.id ? "is-active" : ""}
+                  type="button"
+                  key={item.id}
+                  onClick={() => navigateStudio(item.id)}
+                  onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" })}
+                  aria-current={activeNav === item.id ? "page" : undefined}
+                >
+                  <Icon size={26} aria-hidden="true" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="side-nav-footer">
+            <button
+              className={activeNav === "settings" ? "is-active" : ""}
+              type="button"
+              onClick={() => navigateStudio("settings")}
+              onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" })}
+              aria-current={activeNav === "settings" ? "page" : undefined}
+            >
+              <Gear size={27} aria-hidden="true" />
+              <span>设置</span>
+            </button>
+          </div>
         </div>
         <button
-          className={activeNav === "settings" ? "is-active" : ""}
+          className="side-nav-scroll-forward"
           type="button"
-          onClick={() => navigateStudio("settings")}
-          aria-current={activeNav === "settings" ? "page" : undefined}
+          aria-label="显示后续导航；抵达末尾后返回开头"
+          onClick={() => {
+            const track = studioNavTrackRef.current;
+            if (!track) return;
+            const atEnd = track.scrollLeft + track.clientWidth >= track.scrollWidth - 4;
+            track.scrollTo({ left: atEnd ? 0 : track.scrollLeft + Math.max(152, track.clientWidth * 0.62), behavior: "smooth" });
+          }}
         >
-          <Gear size={27} aria-hidden="true" />
-          <span>设置</span>
+          <CaretRight size={18} aria-hidden="true" />
         </button>
       </nav>
 
-      <main ref={mainCanvasRef} className="main-canvas">{currentView}</main>
+      <main ref={mainCanvasRef} className="main-canvas">
+        <Suspense fallback={(
+          <RouteLoadingFallback
+            label={`正在打开${activeNav === "settings" ? "设置" : NAV_ITEMS.find((item) => item.id === activeNav)?.label || "工作台"}`}
+          />
+        )}>
+          {currentView}
+        </Suspense>
+      </main>
 
-      {isPrimaryStudioView && (
-      <aside
-        className={`inspector community-composer ${composerExpanded ? "is-expanded" : ""}`}
-        aria-label="生成参数"
-        ref={composerRef}
-      >
-        <header className="community-composer-header">
-          <div
-            className="composer-media-tabs"
-            role="tablist"
-            aria-label="生成内容类型"
-            onKeyDown={handleComposerMediaKeyDown}
-          >
-            <button
-              id="composer-media-tab-video"
-              type="button"
-              role="tab"
-              aria-selected={composerMediaKind === "video"}
-              aria-controls="composer-parameters-panel"
-              tabIndex={composerMediaKind === "video" ? 0 : -1}
-              className={composerMediaKind === "video" ? "is-active" : ""}
-              disabled={!composerVideoAvailable || Boolean(pendingCreateRef.current)}
-              onClick={() => selectComposerMediaKind("video")}
-            >
-              <VideoCamera size={16} aria-hidden="true" />
-              视频
-            </button>
-            <button
-              id="composer-media-tab-image"
-              type="button"
-              role="tab"
-              aria-selected={composerMediaKind === "image"}
-              aria-controls="composer-parameters-panel"
-              tabIndex={composerMediaKind === "image" ? 0 : -1}
-              className={composerMediaKind === "image" ? "is-active" : ""}
-              disabled={!composerImageAvailable || Boolean(pendingCreateRef.current)}
-              onClick={() => selectComposerMediaKind("image")}
-            >
-              <ImageSquare size={16} aria-hidden="true" />
-              图片
-            </button>
-            <button
-              id="composer-media-tab-audio"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="composer-parameters-panel"
-              tabIndex={-1}
-              disabled
-              title="音频生成能力尚未开放"
-            >
-              <MusicNote size={16} aria-hidden="true" />
-              音频
-            </button>
-          </div>
-          <span className="composer-current-mode">
-            {generationMode ? generationModeLabel(generationMode) : "等待模型能力"}
-          </span>
-          <button
-            className="composer-settings-button"
-            type="button"
-            aria-expanded={composerExpanded}
-            onClick={() => setComposerExpanded((value) => !value)}
-          >
-            <SlidersHorizontal size={15} aria-hidden="true" />
-            {composerExpanded ? "收起设置" : "详细设置"}
-            <CaretDown size={13} aria-hidden="true" />
-          </button>
-        </header>
-        <div
-          id="composer-parameters-panel"
-          className="inspector-scroll"
-          role="tabpanel"
-          aria-labelledby={`composer-media-tab-${composerMediaKind}`}
-        >
-          <section className="inspector-section model-section">
-            <div className="model-heading">
-              <label htmlFor="model">模型</label>
-              {modelsLoading && <span>{isPersonalWorkspace ? "正在读取个人零售模型…" : "正在读取公司授权…"}</span>}
-            </div>
-            <div className="select-wrap">
-              <select
-                id="model"
-                value={modelId}
-                disabled={
-                  modelsLoading ||
-                  models.length === 0 ||
-                  Boolean(pendingCreateRef.current)
-                }
-                onChange={(event) => selectStudioModel(event.target.value)}
-              >
-                {modelsLoading && <option value="">加载中…</option>}
-                {!modelsLoading && models.length === 0 && (
-                  <option value="">暂无已授权模型</option>
-                )}
-                {modelId && !models.some((item) => item.id === modelId) && (
-                  <option value={modelId}>历史授权模型 · 仅用于确认原提交</option>
-                )}
-                {models.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} · {item.tier}
-                  </option>
-                ))}
-              </select>
-              <CaretDown size={15} aria-hidden="true" />
-            </div>
-            {modelsLoading ? (
-              <div className="capability-skeleton" role="status" aria-label="正在加载模型能力">
-                <span />
-                <span />
-                <span />
-              </div>
-            ) : modelsError ? (
-              <p className="inline-state is-error">
-                <WarningCircle size={15} weight="fill" aria-hidden="true" />
-                {modelsError}
-              </p>
-            ) : models.length === 0 && !modelsLoading ? (
-              <p className="inline-state is-error">
-                <WarningCircle size={15} weight="fill" aria-hidden="true" />
-                {isPersonalWorkspace
-                  ? "个人空间当前没有可用的零售模型。"
-                  : "公司当前没有已授权模型，请联系管理员配置。"}
-              </p>
-            ) : historicalRequestLocked ? (
-              <p className="inline-state is-locked">
-                <ClockCounterClockwise size={15} weight="fill" aria-hidden="true" />
-                当前仅展示上次未确认提交的原始参数，所有字段均为只读。
-              </p>
-            ) : !activeCapability ? (
-              <p className="inline-state is-error">
-                <WarningCircle size={15} weight="fill" aria-hidden="true" />
-                当前模型的能力声明无效，制作台已关闭全部输入。
-              </p>
-            ) : (
-              <p className="capability-note">
-                支持 {supportedModes.map(generationModeLabel).join("、") || "未声明模式"}。
-                当前模式最多使用 {mediaLimits.image} 张图片、{mediaLimits.video} 个视频、
-                {mediaLimits.audio} 段音频，单次最多 {Math.max(...activeCapability.limits.outputCounts)} 个产物。
-                {activeCapability.supportsFace ? " 支持人脸能力。" : ""}
-              </p>
-            )}
-            <label className="mode-select-label" htmlFor="generation-mode">生成模式</label>
-            <div className="select-wrap">
-              <select
-                id="generation-mode"
-                value={generationMode}
-                disabled={
-                  modelsLoading ||
-                  supportedModes.length === 0 ||
-                  Boolean(pendingCreateRef.current)
-                }
-                onChange={(event) => selectGenerationMode(event.target.value)}
-              >
-                {generationMode && !supportedModes.includes(generationMode) && (
-                  <option value={generationMode}>历史提交模式 · {generationModeLabel(generationMode)}</option>
-                )}
-                {supportedModes.map((item) => (
-                  <option key={item} value={item}>{generationModeLabel(item)}</option>
-                ))}
-              </select>
-              <CaretDown size={15} aria-hidden="true" />
-            </div>
-            {LIVE_MODE && (
-              <p className="live-mode-note">
-                {isPersonalWorkspace
-                  ? "已连接个人 API。个人积分、任务与企业钱包完全隔离；本期不提交任何素材引用。"
-                  : "已连接客户平台。文件会先上传到公司私有素材库，任务只提交经公司隔离校验的素材引用。"}
-              </p>
-            )}
-          </section>
+      {isQuickStudioView && renderGenerationEditor()}
 
-          <section className="inspector-section composer-prompt-section">
-            <div
-              className="composer-mode-rail"
-              role="tablist"
-              aria-label="生成模式"
-              onKeyDown={handleComposerMediaKeyDown}
-            >
-              {supportedModes.map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  role="tab"
-                  aria-selected={generationMode === item}
-                  aria-controls="prompt"
-                  tabIndex={generationMode === item ? 0 : -1}
-                  className={generationMode === item ? "is-active" : ""}
-                  disabled={Boolean(pendingCreateRef.current)}
-                  onClick={() => selectGenerationMode(item)}
-                >
-                  {generationModeLabel(item)}
-                </button>
-              ))}
-            </div>
-            <div className="field-heading">
-              <label htmlFor="prompt">制作说明</label>
-              <span>
-                {historicalRequestLocked
-                  ? `${prompt.length} 字，只读`
-                  : `${prompt.length} / ${promptLimit}`}
-              </span>
-            </div>
-            <div className="composer-prompt-row">
-              {!composerExpanded && (
-                <button
-                  className="composer-add-media"
-                  type="button"
-                  onClick={() => setComposerExpanded(true)}
-                  disabled={historicalRequestLocked || !activeCapability}
-                  aria-label="打开素材和高级设置"
-                  title="打开素材和高级设置"
-                >
-                  <Plus size={20} aria-hidden="true" />
-                  <span>素材</span>
-                </button>
-              )}
-              <textarea
-                id="prompt"
-                value={prompt}
-                maxLength={promptLimit || undefined}
-                placeholder="描述您想要创作的内容"
-                disabled={historicalRequestLocked || !activeCapability}
-                onChange={(event) => {
-                  setPrompt(event.target.value);
-                  if (promptError) setPromptError("");
-                }}
-                aria-invalid={Boolean(promptError)}
-                aria-describedby={promptError ? "prompt-error" : undefined}
-              />
-            </div>
-            {promptError && (
-              <p className="form-error" id="prompt-error" role="alert">
-                <WarningCircle size={16} weight="fill" aria-hidden="true" />
-                {promptError}
-              </p>
-            )}
-          </section>
-
-          {Object.values(visibleMediaLimits).some((maximum) => maximum > 0) && (
-          <section className="inspector-section media-groups">
-            {visibleMediaLimits.image > 0 && (
-              <MediaInputGroup
-                kind="image"
-                label="参考图"
-                limit={visibleMediaLimits.image}
-                accept="image/*"
-                files={files.image}
-                onFiles={(incoming) => handleFiles("image", incoming)}
-                onRemove={(file) => removeInputAsset("image", file)}
-                uploading={uploadingKind === "image"}
-                uploadDisabled={Boolean(pendingCreateRef.current) || (LIVE_MODE && !canManageAssets)}
-                locked={Boolean(pendingCreateRef.current)}
-                disabledReason={
-                  pendingCreateRef.current
-                    ? "原提交尚未确认，素材已锁定。"
-                    : LIVE_MODE && !canManageAssets
-                    ? "缺少 assets.manage 权限，只能选用素材库中已有素材。"
-                    : ""
-                }
-                icon={ImageSquare}
-              />
-            )}
-            {visibleMediaLimits.video > 0 && (
-              <MediaInputGroup
-                kind="video"
-                label="参考视频"
-                limit={visibleMediaLimits.video}
-                accept="video/*"
-                files={files.video}
-                onFiles={(incoming) => handleFiles("video", incoming)}
-                onRemove={(file) => removeInputAsset("video", file)}
-                uploading={uploadingKind === "video"}
-                uploadDisabled={Boolean(pendingCreateRef.current) || (LIVE_MODE && !canManageAssets)}
-                locked={Boolean(pendingCreateRef.current)}
-                disabledReason={
-                  pendingCreateRef.current
-                    ? "原提交尚未确认，素材已锁定。"
-                    : LIVE_MODE && !canManageAssets
-                    ? "缺少 assets.manage 权限，只能选用素材库中已有素材。"
-                    : ""
-                }
-                icon={VideoCamera}
-              />
-            )}
-            {visibleMediaLimits.audio > 0 && (
-              <MediaInputGroup
-                kind="audio"
-                label="参考音频"
-                limit={visibleMediaLimits.audio}
-                accept="audio/*"
-                files={files.audio}
-                onFiles={(incoming) => handleFiles("audio", incoming)}
-                onRemove={(file) => removeInputAsset("audio", file)}
-                uploading={uploadingKind === "audio"}
-                uploadDisabled={Boolean(pendingCreateRef.current) || (LIVE_MODE && !canManageAssets)}
-                locked={Boolean(pendingCreateRef.current)}
-                disabledReason={
-                  pendingCreateRef.current
-                    ? "原提交尚未确认，素材已锁定。"
-                    : LIVE_MODE && !canManageAssets
-                    ? "缺少 assets.manage 权限，只能选用素材库中已有素材。"
-                    : ""
-                }
-                icon={MusicNote}
-              />
-            )}
-          </section>
-          )}
-
-          {historicalRequestLocked ? (
-            <section className="inspector-section historical-parameters" aria-labelledby="historical-parameters-title">
-              <div className="field-heading">
-                <strong id="historical-parameters-title">历史提交参数</strong>
-                <span>只读</span>
-              </div>
-              <dl>
-                <div><dt>比例</dt><dd>{ratio || "未记录"}</dd></div>
-                <div><dt>分辨率</dt><dd>{resolution || "未记录"}</dd></div>
-                <div><dt>时长</dt><dd>{duration ? `${duration} 秒` : "未记录"}</dd></div>
-                <div><dt>产物数</dt><dd>{outputCount ? `${outputCount} 个` : "未记录"}</dd></div>
-                {historicalFaceVisible && (
-                  <div className={faceEnabled && !faceControlAvailable ? "is-warning" : ""}>
-                    <dt>人脸能力</dt>
-                    <dd>
-                      {faceEnabled ? "已启用" : "已关闭"}
-                      {faceEnabled && !faceControlAvailable
-                        ? "，当前能力已不支持，仅按原提交确认"
-                        : "，历史提交值"}
-                    </dd>
-                  </div>
-                )}
-              </dl>
-            </section>
-          ) : activeCapability ? (
-          <section className="inspector-section compact-fields">
-            <label>
-              <span>比例</span>
-              <div className="select-wrap">
-                <select
-                  value={ratio}
-                  disabled={Boolean(pendingCreateRef.current)}
-                  onChange={(event) => setRatio(event.target.value)}
-                >
-                  {!activeCapability.limits.aspectRatios.includes(ratio) && (
-                    <option value={ratio}>{ratio} · 历史提交值</option>
-                  )}
-                  {activeCapability.limits.aspectRatios.map((item) => (
-                    <option key={item}>{item}</option>
-                  ))}
-                </select>
-                <CaretDown size={15} aria-hidden="true" />
-              </div>
-            </label>
-            <label>
-              <span>分辨率</span>
-              <div className="select-wrap">
-                <select
-                  value={resolution}
-                  disabled={Boolean(pendingCreateRef.current)}
-                  onChange={(event) => setResolution(event.target.value)}
-                >
-                  {!activeCapability.limits.resolutions.includes(resolution) && (
-                    <option value={resolution}>{resolution} · 历史提交值</option>
-                  )}
-                  {activeCapability.limits.resolutions.map((item) => (
-                    <option key={item}>{item}</option>
-                  ))}
-                </select>
-                <CaretDown size={15} aria-hidden="true" />
-              </div>
-            </label>
-            <label>
-              <span>时长</span>
-              <div className="select-wrap">
-                <select
-                  value={duration}
-                  disabled={Boolean(pendingCreateRef.current)}
-                  onChange={(event) => setDuration(Number(event.target.value))}
-                >
-                  {!activeCapability.limits.durations.includes(duration) && (
-                    <option value={duration}>{duration} 秒 · 历史提交值</option>
-                  )}
-                  {activeCapability.limits.durations.map((item) => (
-                    <option key={item} value={item}>
-                      {item} 秒
-                    </option>
-                  ))}
-                </select>
-                <CaretDown size={15} aria-hidden="true" />
-              </div>
-            </label>
-            <label>
-              <span>产物数</span>
-              <div className="select-wrap">
-                <select
-                  value={outputCount}
-                  disabled={Boolean(pendingCreateRef.current)}
-                  onChange={(event) => setOutputCount(Number(event.target.value))}
-                >
-                  {!activeCapability.limits.outputCounts.includes(outputCount) && (
-                    <option value={outputCount}>{outputCount} 个 · 历史提交值</option>
-                  )}
-                  {activeCapability.limits.outputCounts.map((item) => (
-                    <option key={item} value={item}>
-                      {item} 个
-                    </option>
-                  ))}
-                </select>
-                <CaretDown size={15} aria-hidden="true" />
-              </div>
-            </label>
-          </section>
-          ) : null}
-          {!historicalRequestLocked && faceControlAvailable && (
-            <section className="inspector-section face-control">
-              <label>
-                <span>
-                  <strong>启用人脸能力</strong>
-                  <small>仅在当前模型和模式明确支持时可用。</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={faceEnabled}
-                  onChange={(event) => setFaceEnabled(event.target.checked)}
-                  disabled={Boolean(pendingCreateRef.current)}
-                />
-              </label>
-              {activeCapability.requiredResourceKeys.length > 0 && (
-                <small className="required-resource-note">
-                  所需授权：{activeCapability.requiredResourceKeys.join("、")}
-                </small>
-              )}
-            </section>
-          )}
-        </div>
-
-        <div className="inspector-actions">
-          {LIVE_MODE && (!identityReady || !canCreateTasks) && (
-            <p className="permission-note" role="note">
-              {!identityReady
-                ? "正在确认当前账号权限，确认完成前不能提交任务。"
-                : isPersonalWorkspace
-                  ? "当前个人空间未开放生成能力。"
-                  : "缺少 tasks.create 权限，不能提交生成任务，请联系公司老板授权。"}
-            </p>
-          )}
-          {formError && (
-            <p className="form-error" role="alert">
-              <WarningCircle size={16} weight="fill" aria-hidden="true" />
-              {formError}
-            </p>
-          )}
-          <div className="cost-row">
-            <span>
-              预计消耗
-              <SlidersHorizontal size={15} aria-hidden="true" />
-            </span>
-            <strong>{costLabel}</strong>
-          </div>
-          <button
-            className="generate-button"
-            type="button"
-            onClick={startGeneration}
-            disabled={
-              submitting ||
-              Boolean(uploadingKind) ||
-              modelsLoading ||
-              (models.length === 0 && !pendingCreateRef.current) ||
-              (!activeCapability && !pendingCreateRef.current) ||
-              (LIVE_MODE && (!identityReady || !canCreateTasks)) ||
-              taskStageIsActive
-            }
-          >
-            {submitting || uploadingKind || taskStageIsActive ? (
-              <SpinnerGap className="spin" size={21} aria-hidden="true" />
-            ) : (
-              <Play size={20} weight="fill" aria-hidden="true" />
-            )}
-            {submitting
-              ? "正在提交"
-              : uploadingKind
-                ? "正在上传素材"
-              : LIVE_MODE && identityReady && !canCreateTasks
-                ? "无任务创建权限"
-              : LIVE_MODE && !identityReady
-                ? "正在确认权限"
-              : !activeCapability && !pendingCreateRef.current
-                ? "模型能力不可用"
-              : stage === "accepted"
-              ? "任务已接收"
-              : stage === "queued"
-              ? "正在排队"
-              : stage === "rendering"
-                ? "正在生成"
-                : "开始生成"}
-          </button>
-          <p>
-            {isPersonalWorkspace
-              ? "失败不扣积分；个人余额不与企业钱包混用"
-              : "失败不扣费，完成后自动转存"}
-          </p>
-        </div>
-      </aside>
-      )}
-
-      <footer
+      {!isPrimaryStudioView && (taskStageIsActive || taskStageNeedsAttention) && <footer
         className={`taskbar task-${stage}`}
         aria-live="polite"
         aria-label={`当前任务：${taskStatus.label}`}
@@ -4690,14 +4455,20 @@ export function App() {
           <strong>{progress}%</strong>
         </div>
         <span className="task-eta">
-          {stage === "accepted"
-            ? "平台已接收"
-            : stage === "queued"
-            ? "等待调度"
-            : stage === "rendering"
-              ? `预计剩余 ${Math.max(8, Math.round((100 - progress) * 0.55))} 秒`
+          {taskTrackingUnavailable
+            ? "已提交，当前账号不能查看进度"
+            : taskStageIsActive
+              ? LIVE_MODE
+                ? activeTaskTimingLabel
+                : stage === "accepted"
+                  ? "演示任务已接收"
+                  : stage === "queued"
+                    ? "演示等待调度"
+                    : "演示生成中"
               : stage === "complete"
-                ? "已转存"
+                ? LIVE_MODE ? "已转存" : "演示完成，未转存"
+                : stage === "artifact-evidence-missing"
+                  ? "作品保存未确认"
                 : stage === "timed-out"
                   ? "已停止等待"
                   : stage === "reconciliation-required"
@@ -4705,7 +4476,7 @@ export function App() {
                     : stage === "unknown"
                       ? "请刷新确认"
                 : stage === "failed" && currentTask?.failure_reason
-                  ? currentTask.failure_reason
+                  ? taskUserMessage(currentTask.failure_reason, taskStatus.detail)
                   : "未计费"}
         </span>
         {taskStageIsActive && LIVE_MODE && !canCancelTasks ? (
@@ -4734,7 +4505,7 @@ export function App() {
               setResultOpen(true);
             }}
           >
-            {LIVE_MODE ? `查看产物${activeOutputArtifacts.length ? ` (${activeOutputArtifacts.length})` : ""}` : "查看成片"}
+            {LIVE_MODE ? `查看作品${activeOutputArtifacts.length ? ` (${activeOutputArtifacts.length})` : ""}` : "查看成片"}
           </button>
         ) : taskStageNeedsAttention ? (
           <button
@@ -4753,13 +4524,13 @@ export function App() {
             type="button"
             onClick={retryGeneration}
             disabled={LIVE_MODE && !canCreateTasks}
-            title={LIVE_MODE && !canCreateTasks ? "缺少 tasks.create 权限" : undefined}
+            title={LIVE_MODE && !canCreateTasks ? "当前账号不能创建任务" : undefined}
           >
             <ArrowCounterClockwise size={17} aria-hidden="true" />
             重新生成
           </button>
         )}
-      </footer>
+      </footer>}
 
       {resultOpen && (
         <div
@@ -4777,30 +4548,32 @@ export function App() {
             aria-labelledby="result-title"
             tabIndex={-1}
           >
-            <ResultDetailView
-              resultTask={resultTask}
-              liveMode={LIVE_MODE}
-              resultTaskStatus={resultTaskStatus}
-              ResultStatusIcon={ResultStatusIcon}
-              resultOutputArtifacts={resultOutputArtifacts}
-              artworks={artworks}
-              canAccessArtifacts={canAccessArtifacts}
-              issuedArtifacts={issuedArtifacts}
-              artifactActionKey={artifactActionKey}
-              downloadingAssetId={downloadingAssetId}
-              canManageAssets={canManageAssets}
-              canStartPublication={canStartPublication}
-              isPersonalWorkspace={isPersonalWorkspace}
-              canCreateTasks={canCreateTasks}
-              downloadError={downloadError}
-              onClose={closeResultDialog}
-              onDownloadArtifact={downloadArtifact}
-              onPromoteArtifact={promoteTaskArtifactToInputAsset}
-              onOpenPublication={openPublicationForArtifact}
-              onCreateAgain={createAgainFromTask}
-              onAdjust={adjustHistoricalTask}
-              onDemoDownload={() => setToast("演示模式不会记录真实下载行为")}
-            />
+            <Suspense fallback={<RouteLoadingFallback label="正在读取任务详情" compact />}>
+              <ResultDetailView
+                resultTask={resultTask}
+                liveMode={LIVE_MODE}
+                resultTaskStatus={resultTaskStatus}
+                ResultStatusIcon={ResultStatusIcon}
+                resultArtifactEvidence={resultArtifactEvidence}
+                resultOutputArtifacts={resultOutputArtifacts}
+                artworks={artworks}
+                canAccessArtifacts={canAccessArtifacts}
+                issuedArtifacts={issuedArtifacts}
+                artifactActionKey={artifactActionKey}
+                downloadingAssetId={downloadingAssetId}
+                canManageAssets={canManageAssets}
+                canStartPublication={canStartPublication}
+                isPersonalWorkspace={isPersonalWorkspace}
+                canCreateTasks={canCreateTasks}
+                downloadError={downloadError}
+                onClose={closeResultDialog}
+                onDownloadArtifact={downloadArtifact}
+                onPromoteArtifact={promoteTaskArtifactToInputAsset}
+                onOpenPublication={openPublicationForArtifact}
+                onCreateAgain={createAgainFromTask}
+                onAdjust={adjustHistoricalTask}
+              />
+            </Suspense>
           </section>
         </div>
       )}
@@ -4809,6 +4582,12 @@ export function App() {
         <div className="toast" role="status">
           <CheckCircle size={19} weight="fill" aria-hidden="true" />
           {toast}
+        </div>
+      )}
+      {productContextSwitch.error && (
+        <div id="product-context-switch-error" className="toast is-error" role="alert">
+          <WarningCircle size={19} weight="fill" aria-hidden="true" />
+          {productContextSwitch.error}
         </div>
       )}
     </div>

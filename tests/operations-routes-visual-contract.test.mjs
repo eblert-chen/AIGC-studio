@@ -8,6 +8,8 @@ const operationsRoutes = readFileSync(
   new URL("../src/design-system/operations-routes.css", import.meta.url),
   "utf8",
 );
+const presentationMarker = operationsRoutes.indexOf("* Operations route presentation");
+const operationsAnatomy = operationsRoutes.slice(0, presentationMarker);
 
 test("Operations exposes the active module and a stable page-title relationship", () => {
   assert.match(
@@ -35,6 +37,9 @@ test("Operations resolves every rendered and brand navigation target through the
 });
 
 test("Operations Canvas uses hierarchy instead of an equal-weight card wall", () => {
+  assert.match(operationsSource, /className="ops-task-stream"/);
+  assert.match(operationsSource, /className="ops-cockpit-canvas"/);
+  assert.doesNotMatch(operationsSource, /ops-(?:task|cockpit)-atlas/);
   assert.match(
     operationsRoutes,
     /\.ops-console \.ops-page-title p\s*\{[\s\S]*?display:\s*block;[\s\S]*?font-size:\s*var\(--text-body-sm, 13px\)/,
@@ -50,6 +55,26 @@ test("Operations Canvas uses hierarchy instead of an equal-weight card wall", ()
   assert.match(
     operationsRoutes,
     /--ops-panel-heading:\s*clamp\(1rem,[\s\S]*?1\.125rem\)/,
+  );
+});
+
+test("the Operate presentation owns visual geometry without reviving legacy shell conflicts", () => {
+  assert.ok(presentationMarker > 0);
+  assert.match(
+    operationsAnatomy,
+    /\.ops-topbar\s*\{[^}]*position:\s*sticky;[^}]*display:\s*grid;[^}]*grid-template-columns:/s,
+  );
+  assert.doesNotMatch(
+    operationsAnatomy,
+    /\.ops-topbar\s*\{[^}]*(?:height|padding|background|border-bottom)\s*:/s,
+  );
+  assert.doesNotMatch(operationsAnatomy, /\.ops-panel\s*\{/);
+  assert.doesNotMatch(operationsAnatomy, /@media \(max-width: 820px\)\s*\{[^}]*\.ops-topbar/s);
+  assert.doesNotMatch(operationsRoutes, /var\([^;]+\)[0-9a-f]{3,8}\b/i);
+  assert.doesNotMatch(operationsRoutes, /atlas/i);
+  assert.match(
+    operationsRoutes,
+    /\.ops-console \.ops-topbar nav button\.is-active::after\s*\{[^}]*content:\s*none/s,
   );
 });
 
@@ -106,7 +131,7 @@ test("Operations refinement remains light, token-driven, and responsive", () => 
 test("visual refinement does not weaken guarded Operations workflows", () => {
   assert.match(operationsSource, /未知提交只允许人工对账，严禁自动重试或跨渠道切换/);
   assert.match(operationsSource, /结果未知的发布任务禁止自动重试/);
-  assert.match(operationsSource, /成本缺失不会被静默当作零/);
+  assert.match(operationsSource, /最终毛利只在收入归因与渠道成本都完整时成立；积分不反推现金收入/);
   assert.match(operationsSource, /高风险运维/);
   assert.match(operationsSource, /operation_id 已锁定/);
 });

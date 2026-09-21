@@ -78,12 +78,28 @@ type PlatformRelayExternalDispatchResult struct {
 }
 
 func EnqueuePlatformChannelCost(input dto.PlatformChannelCostInput) (bool, error) {
-	if err := input.Validate(); err != nil {
+	event, err := buildPlatformChannelCostEvent(input)
+	if err != nil {
 		return false, err
+	}
+	return model.CreatePlatformChannelCostEvent(&event)
+}
+
+func enqueuePlatformChannelCostTx(tx *gorm.DB, input dto.PlatformChannelCostInput) (bool, error) {
+	event, err := buildPlatformChannelCostEvent(input)
+	if err != nil {
+		return false, err
+	}
+	return model.CreatePlatformChannelCostEventTx(tx, &event)
+}
+
+func buildPlatformChannelCostEvent(input dto.PlatformChannelCostInput) (model.PlatformChannelCostEvent, error) {
+	if err := input.Validate(); err != nil {
+		return model.PlatformChannelCostEvent{}, err
 	}
 	payload, err := common.Marshal(input.Payload())
 	if err != nil {
-		return false, err
+		return model.PlatformChannelCostEvent{}, err
 	}
 	digest := sha256.Sum256(payload)
 	event := model.PlatformChannelCostEvent{
@@ -95,6 +111,7 @@ func EnqueuePlatformChannelCost(input dto.PlatformChannelCostInput) (bool, error
 		OccurredAt:           input.OccurredAt.UTC(),
 		ExternalReference:    input.ExternalReference,
 		CompanyID:            input.CompanyID,
+		PersonalWorkspaceID:  input.PersonalWorkspaceID,
 		TaskID:               input.TaskID,
 		RelayJobID:           input.RelayJobID,
 		Note:                 input.Note,
@@ -104,7 +121,7 @@ func EnqueuePlatformChannelCost(input dto.PlatformChannelCostInput) (bool, error
 		PayloadJSON:          string(payload),
 		PayloadSHA256:        fmt.Sprintf("%x", digest),
 	}
-	return model.CreatePlatformChannelCostEvent(&event)
+	return event, nil
 }
 
 // SignPlatformRelayExternalEvent signs timestamp + "." + event_id + "." +
@@ -249,6 +266,7 @@ func dispatchPlatformChannelCost(
 		OccurredAt:           event.OccurredAt.UTC(),
 		ExternalReference:    event.ExternalReference,
 		CompanyID:            event.CompanyID,
+		PersonalWorkspaceID:  event.PersonalWorkspaceID,
 		TaskID:               event.TaskID,
 		RelayJobID:           event.RelayJobID,
 		Note:                 event.Note,

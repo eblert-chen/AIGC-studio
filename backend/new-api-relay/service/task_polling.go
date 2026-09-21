@@ -2,10 +2,11 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -80,6 +81,9 @@ func sweepTimedOutTaskRows(ctx context.Context, tasks []*model.Task) {
 	timedOutCount := 0
 
 	for _, task := range tasks {
+		if model.PlatformGenerationProviderResultReconciliationRequired(task) {
+			continue
+		}
 		isLegacy := task.SubmitTime > 0 && task.SubmitTime < model.TaskRefundLegacyCutoff
 
 		oldStatus := task.Status
@@ -149,6 +153,9 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 		timedOut := make([]*model.Task, 0, 100)
 		if constant.TaskTimeoutMinutes > 0 {
 			for _, task := range protectedTasks {
+				if model.PlatformGenerationProviderResultReconciliationRequired(task) {
+					continue
+				}
 				if len(timedOut) == 100 {
 					break
 				}
@@ -159,6 +166,9 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 		}
 		sweepTimedOutTaskRows(ctx, timedOut)
 		for _, task := range protectedTasks {
+			if model.PlatformGenerationProviderResultReconciliationRequired(task) {
+				continue
+			}
 			if task.Progress != "100%" && task.Status != model.TaskStatusFailure && task.Status != model.TaskStatusSuccess {
 				allTasks = append(allTasks, task)
 				if len(allTasks) == constant.TaskQueryLimit {
@@ -170,6 +180,14 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 		sweepTimedOutTasks(ctx)
 		allTasks = model.GetAllUnFinishSyncTasks(constant.TaskQueryLimit)
 	}
+	eligibleTasks := allTasks[:0]
+	for _, task := range allTasks {
+		if model.PlatformGenerationProviderResultReconciliationRequired(task) {
+			continue
+		}
+		eligibleTasks = append(eligibleTasks, task)
+	}
+	allTasks = eligibleTasks
 	summary.UnfinishedTasks = len(allTasks)
 	platformTask := make(map[constant.TaskPlatform][]*model.Task)
 	for _, t := range allTasks {
@@ -304,7 +322,7 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 		return fmt.Errorf("Get Task status code: %d", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := relaycommon.ReadProviderTaskResponseBody(resp.Body)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("Get Suno Task parse body error: %v", err))
 		return err
@@ -506,7 +524,25 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		logger.LogError(ctx, fmt.Sprintf("Task %s not found in taskM", taskId))
 		return fmt.Errorf("task %s not found", taskId)
 	}
+	isPlatformExternal := task.IsPlatformExternalBilling()
 	key := ch.Key
+	if isPlatformExternal && (ch.Type == constant.ChannelTypeGemini || ch.Type == constant.ChannelTypeVertexAi ||
+		task.PrivateData.ProviderTransportRevision != "" || task.PrivateData.ProviderTransportSHA256 != "") {
+		freshChannel, channelErr := model.GetChannelById(ch.Id, false)
+		if channelErr != nil {
+			return errors.New("protected Google task transport channel is unavailable")
+		}
+		expected := PlatformGenerationRuntimeTransportBinding{
+			Revision: task.PrivateData.ProviderTransportRevision,
+			SHA256:   task.PrivateData.ProviderTransportSHA256,
+		}
+		if err := ValidatePlatformGenerationRuntimeTransport(freshChannel, expected); err != nil {
+			return errors.New("protected Google task transport binding changed")
+		}
+		ch = freshChannel
+		baseURL = ch.GetBaseURL()
+		proxy = ch.GetSetting().Proxy
+	}
 
 	privateData := task.PrivateData
 	if privateData.LegacyProviderCredentialPresent {
@@ -521,20 +557,78 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	} else if privateData.PinnedKeyIndex != nil {
 		return fmt.Errorf("provider credential version is missing for task %s", taskId)
 	}
-	resp, err := fetchTaskWithContext(ctx, adaptor, baseURL, key, map[string]any{
-		"task_id": task.GetUpstreamTaskID(),
-		"action":  task.Action,
-	}, proxy)
+	providerModel := task.Properties.UpstreamModelName
+	if isPlatformExternal && (ch.Type == constant.ChannelTypeMiniMax ||
+		ch.Type == constant.ChannelTypeGemini || ch.Type == constant.ChannelTypeVertexAi) {
+		// A channel can host several provider protocols/models. Dispatch polling
+		// by the task's immutable route, never by mutable channel configuration.
+		binding, err := model.ResolvePlatformGenerationProviderResultBinding(*task)
+		if err != nil {
+			return errors.New("protected provider task route binding is unavailable")
+		}
+		providerModel = binding.Route.UpstreamModel
+		googleRoute := (binding.Route.AcceptedChannelType == constant.ChannelTypeGemini ||
+			binding.Route.AcceptedChannelType == constant.ChannelTypeVertexAi) &&
+			strings.HasPrefix(binding.Route.CapabilityProfileID, "google.")
+		if googleRoute {
+			if ch.Id != binding.Route.ChannelID ||
+				task.PrivateData.ProviderTransportRevision == "" || task.PrivateData.ProviderTransportSHA256 == "" {
+				return errors.New("protected Google task transport binding is unavailable")
+			}
+		}
+	}
+	pollRequest := map[string]any{"task_id": task.GetUpstreamTaskID(), "action": task.Action}
+	if providerModel != "" {
+		pollRequest["provider_model"] = providerModel
+	}
+	resp, err := fetchTaskWithContext(ctx, adaptor, baseURL, key, pollRequest, proxy)
 	if err != nil {
+		if isPlatformExternal {
+			errorDigest := sha256.Sum256([]byte(err.Error()))
+			return fmt.Errorf(
+				"provider fetch failed for protected task %s (error_sha256=%x)",
+				taskId,
+				errorDigest,
+			)
+		}
 		return fmt.Errorf("fetchTask failed for task %s: %w", taskId, err)
 	}
+	if resp == nil || resp.Body == nil {
+		if isPlatformExternal {
+			return fmt.Errorf("provider returned no response body for protected task %s", taskId)
+		}
+		return fmt.Errorf("provider returned no response body for task %s", taskId)
+	}
 	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := relaycommon.ReadProviderTaskResponseBody(resp.Body)
 	if err != nil {
+		if isPlatformExternal {
+			if errors.Is(err, relaycommon.ErrProviderTaskResponseBodyTooLarge) {
+				return fmt.Errorf("provider response exceeded the limit for protected task %s", taskId)
+			}
+			return fmt.Errorf("provider response read failed for protected task %s", taskId)
+		}
 		return fmt.Errorf("readAll failed for task %s: %w", taskId, err)
 	}
-
-	logger.LogDebug(ctx, "updateVideoSingleTask response: %s", responseBody)
+	responseDigest := sha256.Sum256(responseBody)
+	if isPlatformExternal && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) {
+		return fmt.Errorf(
+			"provider returned non-success status for protected task %s (status_code=%d body_bytes=%d body_sha256=%x)",
+			taskId,
+			resp.StatusCode,
+			len(responseBody),
+			responseDigest,
+		)
+	}
+	redactedResponseBody := redactVideoResponseBody(responseBody, isPlatformExternal)
+	logger.LogDebug(
+		ctx,
+		"updateVideoSingleTask provider response: task_id=%s status_code=%d body_bytes=%d body_sha256=%x",
+		task.TaskID,
+		resp.StatusCode,
+		len(responseBody),
+		responseDigest,
+	)
 
 	snap := task.Snapshot()
 
@@ -542,8 +636,13 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	// try parse as New API response format
 	var responseItems taskdto.TaskResponse[model.Task]
 	if err = common.Unmarshal(responseBody, &responseItems); err == nil && responseItems.IsSuccess() {
-		logger.LogDebug(ctx, "updateVideoSingleTask parsed as new api response format: %+v", responseItems)
+		logger.LogDebug(ctx, "updateVideoSingleTask parsed provider response: task_id=%s format=new-api", task.TaskID)
 		t := responseItems.Data
+		if isPlatformExternal {
+			if err := validateProtectedTaskResponseEnvelope(task, t); err != nil {
+				return persistPlatformGenerationProviderProofConflict(task, snap.Status, responseBody)
+			}
+		}
 		taskResult.TaskID = t.TaskID
 		taskResult.Status = string(t.Status)
 		taskResult.Url = t.GetResultURL()
@@ -551,12 +650,53 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		taskResult.Reason = t.FailReason
 		task.Data = t.Data
 	} else if taskResult, err = adaptor.ParseTaskResult(responseBody); err != nil {
+		if isPlatformExternal {
+			return persistPlatformGenerationProviderProofConflict(task, snap.Status, responseBody)
+		}
 		return fmt.Errorf("parseTaskResult failed for task %s: %w", taskId, err)
 	}
+	var providerResultReceipt *model.PlatformGenerationProviderResultReceipt
+	if isPlatformExternal {
+		if err := validateProtectedTaskResult(task, taskResult); err != nil {
+			return persistPlatformGenerationProviderProofConflict(task, snap.Status, responseBody)
+		}
+		if taskResult.Status == string(model.TaskStatusSuccess) || taskResult.Status == string(model.TaskStatusFailure) {
+			receipt, err := buildPlatformGenerationProviderResultReceipt(task, taskResult, responseBody)
+			if err != nil {
+				return persistPlatformGenerationProviderProofConflict(task, snap.Status, responseBody)
+			}
+			providerResultReceipt = &receipt
+		}
+	}
 
-	task.Data = redactVideoResponseBody(responseBody)
+	if isPlatformExternal {
+		// Platform-owned polling rows are observable through the native operator
+		// API while artifact transfer is still pending. Persist only a
+		// secret-free receipt; the signed provider URL remains solely in the
+		// private short-lived ResultURL used by the transfer worker.
+		if providerResultReceipt != nil {
+			task.SetData(*providerResultReceipt)
+		} else {
+			task.SetPlatformExternalResponseReceipt(responseBody, taskResult.Status)
+		}
+	} else {
+		task.Data = redactedResponseBody
+	}
 
-	logger.LogDebug(ctx, "updateVideoSingleTask taskResult: %+v", taskResult)
+	logger.LogDebug(
+		ctx,
+		"updateVideoSingleTask parsed result: task_id=%s status=%s progress=%s",
+		task.TaskID,
+		taskResult.Status,
+		taskResult.Progress,
+	)
+	if isPlatformExternal && taskResult.Status == string(model.TaskStatusSuccess) &&
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(taskResult.Url)), "data:") {
+		taskResult.Status = string(model.TaskStatusFailure)
+		taskResult.Progress = taskcommon.ProgressComplete
+		taskResult.Reason = "provider returned an unsupported inline artifact"
+		taskResult.Url = ""
+	}
 
 	now := time.Now().Unix()
 	if taskResult.Status == "" {
@@ -574,8 +714,12 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 				// 其他错误认为是任务失败，记录错误信息并更新任务状态
 				taskResult = relaycommon.FailTaskInfo("upstream returned error")
 			} else {
-				// unknown error format, log original response
-				logger.LogError(ctx, fmt.Sprintf("Task %s returned empty status with unrecognized error format, response: %s", taskId, string(responseBody)))
+				logger.LogError(ctx, fmt.Sprintf(
+					"Task %s returned empty status with unrecognized error format (body_bytes=%d body_sha256=%x)",
+					taskId,
+					len(responseBody),
+					responseDigest,
+				))
 				taskResult = relaycommon.FailTaskInfo("upstream returned unrecognized message")
 			}
 		}
@@ -613,14 +757,24 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		}
 		shouldSettle = true
 	case model.TaskStatusFailure:
-		logger.LogJson(ctx, fmt.Sprintf("Task %s failed", taskId), task)
 		task.Status = model.TaskStatusFailure
 		task.Progress = taskcommon.ProgressComplete
 		if task.FinishTime == 0 {
 			task.FinishTime = now
 		}
 		task.FailReason = taskResult.Reason
-		logger.LogInfo(ctx, fmt.Sprintf("Task %s failed: %s", task.TaskID, task.FailReason))
+		if isPlatformExternal {
+			reasonDigest := sha256.Sum256([]byte(taskResult.Reason))
+			task.FailReason = model.SanitizePlatformExternalFailReason(taskResult.Reason)
+			logger.LogInfo(ctx, fmt.Sprintf(
+				"Protected task %s failed (reason_sha256=%x)",
+				task.TaskID,
+				reasonDigest,
+			))
+		} else {
+			logger.LogJson(ctx, fmt.Sprintf("Task %s failed", taskId), task)
+			logger.LogInfo(ctx, fmt.Sprintf("Task %s failed: %s", task.TaskID, task.FailReason))
+		}
 		taskResult.Progress = taskcommon.ProgressComplete
 		if quota != 0 {
 			shouldRefund = true
@@ -663,30 +817,275 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	return nil
 }
 
-func redactVideoResponseBody(body []byte) []byte {
-	var m map[string]any
-	if err := common.Unmarshal(body, &m); err != nil {
-		return body
+func validateProtectedTaskResponseEnvelope(expected *model.Task, received model.Task) error {
+	if expected == nil {
+		return errors.New("protected task identity is missing")
 	}
-	resp, _ := m["response"].(map[string]any)
-	if resp != nil {
-		delete(resp, "bytesBase64Encoded")
-		if v, ok := resp["video"].(string); ok {
-			resp["video"] = truncateBase64(v)
+	expectedUpstreamTaskID := strings.TrimSpace(expected.GetUpstreamTaskID())
+	if expectedUpstreamTaskID == "" || received.TaskID != expectedUpstreamTaskID {
+		return errors.New("protected task response identity is inconsistent")
+	}
+	switch received.Status {
+	case model.TaskStatusSuccess, model.TaskStatusFailure:
+		if received.Progress != taskcommon.ProgressComplete {
+			return errors.New("protected task terminal response progress is inconsistent")
 		}
-		if vs, ok := resp["videos"].([]any); ok {
-			for i := range vs {
-				if vm, ok := vs[i].(map[string]any); ok {
-					delete(vm, "bytesBase64Encoded")
+	case model.TaskStatusNotStart, model.TaskStatusSubmitted, model.TaskStatusQueued, model.TaskStatusInProgress:
+		if received.Progress == taskcommon.ProgressComplete {
+			return errors.New("protected task non-terminal response progress is inconsistent")
+		}
+	default:
+		return errors.New("protected task response status is invalid")
+	}
+	return nil
+}
+
+func validateProtectedTaskResult(expected *model.Task, result *relaycommon.TaskInfo) error {
+	if expected == nil || result == nil {
+		return errors.New("protected task result is missing")
+	}
+	expectedUpstreamTaskID := strings.TrimSpace(expected.GetUpstreamTaskID())
+	if expectedUpstreamTaskID == "" {
+		return errors.New("protected task upstream identity is missing")
+	}
+	if result.TaskID != expectedUpstreamTaskID {
+		return errors.New("protected task result identity is inconsistent")
+	}
+	switch model.TaskStatus(result.Status) {
+	case model.TaskStatusSuccess:
+		if result.Progress != taskcommon.ProgressComplete {
+			return errors.New("protected task success progress is inconsistent")
+		}
+		resultURL := strings.TrimSpace(result.Url)
+		if !strings.HasPrefix(strings.ToLower(resultURL), "data:") && !absoluteHTTPProviderURL(resultURL) {
+			return errors.New("protected task result URL is invalid")
+		}
+		if err := validatePlatformGenerationProviderResultProof(expected, result, true); err != nil {
+			return err
+		}
+	case model.TaskStatusFailure:
+		if result.Progress != taskcommon.ProgressComplete {
+			return errors.New("protected task failure progress is inconsistent")
+		}
+		if err := validatePlatformGenerationProviderResultProof(expected, result, false); err != nil {
+			return err
+		}
+	case model.TaskStatusNotStart, model.TaskStatusSubmitted, model.TaskStatusQueued, model.TaskStatusInProgress:
+		if result.Progress == taskcommon.ProgressComplete {
+			return errors.New("protected task non-terminal progress is inconsistent")
+		}
+		if err := validatePlatformGenerationProviderIdentityProof(expected, result); err != nil {
+			return err
+		}
+	default:
+		return errors.New("protected task result status is invalid")
+	}
+	return nil
+}
+
+func validatePlatformGenerationProviderIdentityProof(expected *model.Task, result *relaycommon.TaskInfo) error {
+	binding, err := model.ResolvePlatformGenerationProviderResultBinding(*expected)
+	if err != nil {
+		return errors.New("protected task result database binding is unavailable")
+	}
+	_, profile, _, err := model.ResolvePlatformGenerationProviderResultContract(binding)
+	if err != nil {
+		return errors.New("protected task immutable result contract is inconsistent")
+	}
+	_, supported := model.PlatformGenerationProviderResultProofRevision(profile.Protocol)
+	proof := result.ProviderResultProof
+	if proof == nil || proof.SchemaVersion != 1 ||
+		!supported || proof.Protocol != profile.Protocol ||
+		proof.TaskID != expected.GetUpstreamTaskID() || proof.Model != binding.Route.UpstreamModel {
+		return errors.New("protected task provider identity proof is incomplete")
+	}
+	switch proof.ProviderStatus {
+	case "pending", "queued", "processing", "running":
+		return nil
+	default:
+		return errors.New("protected task provider non-terminal proof is inconsistent")
+	}
+}
+
+func buildPlatformGenerationProviderResultReceipt(
+	task *model.Task,
+	result *relaycommon.TaskInfo,
+	responseBody []byte,
+) (model.PlatformGenerationProviderResultReceipt, error) {
+	if task == nil || result == nil || result.ProviderResultProof == nil {
+		return model.PlatformGenerationProviderResultReceipt{}, errors.New("protected task provider proof is missing")
+	}
+	binding, err := model.ResolvePlatformGenerationProviderResultBinding(*task)
+	if err != nil {
+		return model.PlatformGenerationProviderResultReceipt{}, err
+	}
+	proof := result.ProviderResultProof
+	return model.NewPlatformGenerationProviderResultReceipt(
+		*task,
+		binding,
+		model.PlatformGenerationProviderResultObservation{
+			Protocol:             proof.Protocol,
+			TaskID:               proof.TaskID,
+			Model:                proof.Model,
+			ProviderStatus:       proof.ProviderStatus,
+			Resolution:           proof.Resolution,
+			DurationSeconds:      proof.DurationSeconds,
+			AspectRatio:          proof.AspectRatio,
+			FramesPresent:        proof.FramesPresent,
+			OutputCount:          proof.OutputCount,
+			MediaType:            proof.MediaType,
+			UsageComplete:        proof.UsageComplete,
+			InputTokens:          proof.InputTokens,
+			OutputTokens:         proof.OutputTokens,
+			OutputVideoTokens:    proof.OutputVideoTokens,
+			OutputTextTokens:     proof.OutputTextTokens,
+			ThoughtTokens:        proof.ThoughtTokens,
+			CachedTokens:         proof.CachedTokens,
+			TotalTokens:          proof.TotalTokens,
+			ProviderTotalSeconds: proof.ProviderTotalSeconds,
+			InputSeconds:         proof.InputSeconds,
+			OutputSeconds:        proof.OutputSeconds,
+			InputImageCount:      proof.InputImageCount,
+			ArtifactSizeBytes:    proof.ArtifactSizeBytes,
+			ArtifactSHA256:       proof.ArtifactSHA256,
+			FailureOwner:         proof.FailureOwner,
+			FailureCode:          proof.FailureCode,
+			Succeeded:            result.Status == string(model.TaskStatusSuccess),
+			ResponseBody:         responseBody,
+			ArtifactURL:          result.Url,
+		},
+	)
+}
+
+func persistPlatformGenerationProviderProofConflict(task *model.Task, fromStatus model.TaskStatus, responseBody []byte) error {
+	if task == nil {
+		return errors.New("protected task provider proof conflict task is missing")
+	}
+	task.Status = model.TaskStatusUnknown
+	task.Progress = "0%"
+	task.FinishTime = 0
+	task.FailReason = ""
+	task.PrivateData.ResultURL = ""
+	receipt := model.NewPlatformGenerationProviderProofConflictReceipt(responseBody)
+	if binding, err := model.ResolvePlatformGenerationProviderResultBinding(*task); err == nil {
+		if _, profile, _, err := model.ResolvePlatformGenerationProviderResultContract(binding); err == nil {
+			if boundReceipt, err := model.NewPlatformGenerationProviderProofConflictReceiptForProtocol(profile.Protocol, responseBody); err == nil {
+				receipt = boundReceipt
+			}
+		}
+	}
+	task.SetData(receipt)
+	won, err := task.UpdateWithStatus(fromStatus)
+	if err != nil {
+		return errors.New("protected task provider proof conflict could not be persisted")
+	}
+	if !won {
+		return errors.New("protected task provider proof conflict lost its task fence")
+	}
+	return nil
+}
+
+func validatePlatformGenerationProviderResultProof(
+	task *model.Task,
+	result *relaycommon.TaskInfo,
+	succeeded bool,
+) error {
+	binding, err := model.ResolvePlatformGenerationProviderResultBinding(*task)
+	if err != nil {
+		return errors.New("protected task result database binding is unavailable")
+	}
+	request, profile, artifact, err := model.ResolvePlatformGenerationProviderResultContract(binding)
+	if err != nil {
+		return errors.New("protected task immutable result contract is inconsistent")
+	}
+	_, supported := model.PlatformGenerationProviderResultProofRevision(profile.Protocol)
+	proof := result.ProviderResultProof
+	if proof == nil || proof.SchemaVersion != 1 ||
+		!supported || proof.Protocol != profile.Protocol ||
+		proof.TaskID != task.GetUpstreamTaskID() || proof.Model != binding.Route.UpstreamModel {
+		return errors.New("protected task provider result proof is incomplete")
+	}
+	if !succeeded {
+		switch proof.ProviderStatus {
+		case "failed", "cancelled", "expired":
+			return nil
+		default:
+			return errors.New("protected task provider failure proof is inconsistent")
+		}
+	}
+	if artifact.MediaType != "video" || artifact.Count != 1 ||
+		request.Output.Count != 1 || proof.ProviderStatus != "succeeded" ||
+		proof.Resolution != request.Output.Resolution ||
+		proof.DurationSeconds != request.Output.DurationSeconds ||
+		proof.AspectRatio != request.Output.AspectRatio || proof.FramesPresent ||
+		proof.OutputCount != request.Output.Count || proof.MediaType != artifact.MediaType {
+		return errors.New("protected task provider success proof is inconsistent")
+	}
+	return nil
+}
+
+func redactVideoResponseBody(body []byte, redactProviderURLs bool) []byte {
+	var decoded any
+	if err := common.Unmarshal(body, &decoded); err != nil {
+		return nil
+	}
+	if root, ok := decoded.(map[string]any); ok {
+		resp, _ := root["response"].(map[string]any)
+		if resp != nil {
+			delete(resp, "bytesBase64Encoded")
+			if v, ok := resp["video"].(string); ok && !absoluteHTTPProviderURL(v) {
+				resp["video"] = truncateBase64(v)
+			}
+			if vs, ok := resp["videos"].([]any); ok {
+				for i := range vs {
+					if vm, ok := vs[i].(map[string]any); ok {
+						delete(vm, "bytesBase64Encoded")
+					}
 				}
 			}
 		}
 	}
-	b, err := common.Marshal(m)
+	if redactProviderURLs {
+		redactAbsoluteProviderURLs(decoded)
+	}
+	b, err := common.Marshal(decoded)
 	if err != nil {
-		return body
+		return nil
 	}
 	return b
+}
+
+func redactAbsoluteProviderURLs(value any) {
+	switch node := value.(type) {
+	case map[string]any:
+		for key, child := range node {
+			if text, ok := child.(string); ok && absoluteHTTPProviderURL(text) {
+				node[key] = "[redacted-provider-url]"
+				continue
+			}
+			redactAbsoluteProviderURLs(child)
+		}
+	case []any:
+		for index, child := range node {
+			if text, ok := child.(string); ok && absoluteHTTPProviderURL(text) {
+				node[index] = "[redacted-provider-url]"
+				continue
+			}
+			redactAbsoluteProviderURLs(child)
+		}
+	}
+}
+
+func absoluteHTTPProviderURL(value string) bool {
+	candidate := strings.TrimSpace(value)
+	if candidate == "" || strings.ContainsAny(candidate, "\x00\r\n") {
+		return false
+	}
+	parsed, err := url.ParseRequestURI(candidate)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return strings.EqualFold(parsed.Scheme, "https") || strings.EqualFold(parsed.Scheme, "http")
 }
 
 func truncateBase64(s string) string {

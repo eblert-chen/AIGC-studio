@@ -1,0 +1,38 @@
+{
+  "schema_version": 3,
+  "kind": "ai_video_new_api_relay_candidate_baseline",
+  "generated_at_utc": "2026-08-31T00:18:16.826Z",
+  "status": "UNVERIFIED",
+  "production_cutover_authorized": false,
+  "active_production_relay": "new-api-v1",
+  "python_relay_artifact_mode": "offline_historical_oracle_only",
+  "python_relay_production_admission_allowed": false,
+  "upstream_git_revision": "0ab02020603d22e5613bc4cf46bfab06f8567769",
+  "source": {
+    "format": "sorted-portable-path-nul-content-nul-v1",
+    "sha1": "48f2cb030d6e1ef3a36ad1d4147e5997e6be6fcf",
+    "sha256": "sha256:47b297cbe483544564380233c3dea4a8461fc786f97ead60a797fdcce9814f37",
+    "file_count": 2184
+  },
+  "platform_source": {
+    "format": "sorted-portable-path-nul-content-nul-v1",
+    "sha1": "663cdcdba09009450dd4d312b45ead5fdc090605",
+    "sha256": "sha256:0340eceacfb86821b2678165f5da5b7371567bfaee7c8aeef18754ac67111bda",
+    "file_count": 316
+  },
+  "acceptance_harness": {
+    "format": "sorted-portable-path-nul-content-nul-v1",
+    "sha1": "e2ee6204e477e253ee935a5a33127db07818c5e3",
+    "sha256": "sha256:448f60f3860827b73b88e7784ca9a2244cba84a2952b3fda5e4f822fa2ec2da1",
+    "file_count": 117
+  },
+  "gates": {
+    "local_regression": "NOT_RUN",
+    "postgresql_redis_race": "NOT_RUN",
+    "fault_injection": "NOT_RUN",
+    "cross_service_cost": "NOT_RUN",
+    "huawei_obs_live": "NOT_RUN",
+    "real_provider_staging": "NOT_RUN"
+  },
+  "note": "This baseline freezes current source and harness provenance only; it contains no PASS claim and never authorizes the offline Python oracle for production admission."
+}

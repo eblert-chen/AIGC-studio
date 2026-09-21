@@ -1,10 +1,39 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { platformSourceSnapshot } from "../scripts/run-cross-service-cost-acceptance.mjs";
+import {
+  relaySourceSnapshot,
+  validateRelaySourceEnvironment,
+} from "../scripts/relay-fault-source-snapshot.mjs";
+
 const root = fileURLToPath(new URL("..", import.meta.url));
+const platformRoot = fileURLToPath(new URL("../backend/platform/", import.meta.url));
+const localEnvironmentExample = readFileSync(new URL("../.env.example", import.meta.url), "utf8");
+const platformSourceRevision = environmentExampleValue("PLATFORM_SOURCE_REVISION");
+const platformSourceSnapshotSha256 = environmentExampleValue("PLATFORM_SOURCE_SNAPSHOT_SHA256");
+const platformImageRootFiles = Object.freeze([
+  ".dockerignore",
+  "Dockerfile",
+  "alembic.ini",
+  "requirements.txt",
+  "scripts/platform_source_snapshot.py",
+]);
+const platformBuildServices = [
+  "platform-input-asset-init",
+  "platform-api",
+  "platform-dispatcher",
+  "platform-relay-sync",
+  "platform-relay-catalog-sync",
+  "platform-timeout-worker",
+  "platform-publishing-worker",
+  "platform-download-gateway-registration-worker",
+];
 const legacyServices = new Set([
   "relay-artifact-init",
   "relay-api",
@@ -16,11 +45,70 @@ const legacyServices = new Set([
   "relay-callback-worker",
 ]);
 
+function environmentExampleValue(name) {
+  const match = localEnvironmentExample.match(new RegExp(`^${name}=([^\\r\\n]*)$`, "m"));
+  assert.ok(match, `.env.example is missing ${name}`);
+  return match[1];
+}
+
+function platformImageSourceFiles(directory) {
+  const output = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.name === "__pycache__") continue;
+    const absolute = join(directory, entry.name);
+    assert.ok(!entry.isSymbolicLink(), `Platform image source contains a symbolic link: ${absolute}`);
+    if (entry.isDirectory()) output.push(...platformImageSourceFiles(absolute));
+    else if (entry.isFile() && !/\.py[co]$/i.test(entry.name)) output.push(absolute);
+  }
+  return output;
+}
+
+function platformImageSourceSnapshot() {
+  const files = [
+    ...platformImageRootFiles.map((name) => join(platformRoot, ...name.split("/"))),
+    ...platformImageSourceFiles(join(platformRoot, "platform_api")),
+    ...platformImageSourceFiles(join(platformRoot, "migrations")),
+  ].sort((left, right) => {
+    const leftName = relative(platformRoot, left).split(sep).join("/");
+    const rightName = relative(platformRoot, right).split(sep).join("/");
+    return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+  });
+  const digest = createHash("sha256");
+  for (const file of files) {
+    const contents = readFileSync(file);
+    const name = relative(platformRoot, file).split(sep).join("/");
+    digest.update(JSON.stringify([
+      name,
+      contents.byteLength,
+      createHash("sha256").update(contents).digest("hex"),
+    ]));
+    digest.update("\n");
+  }
+  return {
+    sha256: `sha256:${digest.digest("hex")}`,
+    fileCount: files.length,
+    files: files.map((file) => relative(platformRoot, file).split(sep).join("/")),
+  };
+}
+
+function composeConfigArgs(args) {
+  const hasEnvironmentFile = args.some((argument) =>
+    argument === "--env-file" || argument.startsWith("--env-file="));
+  const environmentFiles = hasEnvironmentFile ? [] : ["--env-file", ".env.example"];
+  return ["compose", ...environmentFiles, ...args, "config", "--format", "json"];
+}
+
 function render(args, environment = {}) {
-  const output = execFileSync("docker", ["compose", ...args, "config", "--format", "json"], {
+  const output = execFileSync("docker", composeConfigArgs(args), {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, COMPOSE_PROFILES: "", ...environment },
+    env: {
+      ...process.env,
+      COMPOSE_PROFILES: "",
+      PLATFORM_SOURCE_REVISION: platformSourceRevision,
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: platformSourceSnapshotSha256,
+      ...environment,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   return JSON.parse(output);
@@ -62,6 +150,33 @@ function assertSingleRelayDataPlane(rendered, label) {
   }
 }
 
+function assertLocalPlatformBuilds(rendered, label, installObs) {
+  for (const name of platformBuildServices) {
+    const build = rendered.services?.[name]?.build;
+    assert.ok(build, `${label}/${name} must keep its local Platform build`);
+    assert.match(
+      build.context,
+      /(?:^|[\\/])backend[\\/]platform$/,
+      `${label}/${name} must build the Platform context`,
+    );
+    assert.equal(
+      build.args?.PLATFORM_SOURCE_REVISION,
+      platformSourceRevision,
+      `${label}/${name} lost the frozen source revision`,
+    );
+    assert.equal(
+      build.args?.PLATFORM_SOURCE_SNAPSHOT_SHA256,
+      platformSourceSnapshotSha256,
+      `${label}/${name} lost the frozen source snapshot digest`,
+    );
+    assert.equal(
+      build.args?.INSTALL_OBS,
+      installObs,
+      `${label}/${name} rendered the wrong OBS build capability`,
+    );
+  }
+}
+
 function assertPlatformUsesOnlyNewApiBackend(platform, label) {
   const environment = platform.environment ?? {};
   assert.equal(environment.RELAY_DEFAULT_BACKEND_ID, "new-api-v1");
@@ -85,6 +200,35 @@ function assertPlatformUsesOnlyNewApiBackend(platform, label) {
   }
 }
 
+test("Compose contract rendering uses explicit public fixtures, never an implicit local .env", () => {
+  assert.deepEqual(composeConfigArgs(["-f", "docker-compose.yml"]), [
+    "compose", "--env-file", ".env.example", "-f", "docker-compose.yml",
+    "config", "--format", "json",
+  ]);
+  const protectedArgs = [
+    "--env-file", "deploy/relay-secure.env.example",
+    "--env-file", "deploy/relay-staging.env.example",
+    "-f", "docker-compose.yml",
+  ];
+  assert.deepEqual(composeConfigArgs(protectedArgs), [
+    "compose", ...protectedArgs, "config", "--format", "json",
+  ]);
+  const inlineArgs = ["--env-file=.env.example", "-f", "docker-compose.yml"];
+  assert.deepEqual(composeConfigArgs(inlineArgs), [
+    "compose", ...inlineArgs, "config", "--format", "json",
+  ]);
+});
+
+test("ordinary Compose Relay provenance matches the deterministic source bytes", async () => {
+  const snapshot = await relaySourceSnapshot();
+  assert.deepEqual(validateRelaySourceEnvironment(localEnvironmentExample, snapshot), []);
+  const rendered = ordinary();
+  const build = rendered.services?.["relay-new-api"]?.build;
+  assert.equal(build?.args?.RELAY_BUILD_SOURCE_REVISION, snapshot.sha1);
+  assert.equal(build?.args?.RELAY_BUILD_SOURCE_SNAPSHOT_SHA256, snapshot.sha256);
+  assert.equal(build?.args?.RELAY_BUILD_SOURCE_SNAPSHOT_FILE_COUNT, String(snapshot.file_count));
+});
+
 test("internal pilot renders the same single new-api data plane", () => {
   const rendered = render(
     ["-f", "docker-compose.yml", "-f", "deploy/compose.internal-pilot.yml"],
@@ -103,6 +247,54 @@ test("internal pilot renders the same single new-api data plane", () => {
   assertSingleRelayDataPlane(rendered, "internal-pilot");
   assertPlatformUsesOnlyNewApiBackend(rendered.services["platform-api"], "internal-pilot/platform-api");
   assert.equal(rendered.services["relay-new-api"].environment.RELAY_ARTIFACT_STORE, "huawei_obs");
+});
+
+test("every local Platform build keeps frozen provenance across the OBS pilot merge", async () => {
+  const fullSource = await platformSourceSnapshot();
+  const imageSource = platformImageSourceSnapshot();
+  assert.equal(
+    platformSourceRevision,
+    fullSource.sha1,
+    ".env.example Platform revision must match the deterministic full source snapshot",
+  );
+  assert.equal(
+    platformSourceSnapshotSha256,
+    imageSource.sha256,
+    ".env.example Platform digest must match the exact Docker runtime/build inputs",
+  );
+  assert.ok(imageSource.fileCount > 100, "Platform image source snapshot is unexpectedly incomplete");
+  for (const required of [
+    "platform_api/billing_worker.py",
+    "platform_api/database_privileges_v14.py",
+    "platform_api/database_privileges_behavior_v14.py",
+    "migrations/versions/0049_payment_finance_closure.py",
+    "scripts/platform_source_snapshot.py",
+  ]) assert.ok(imageSource.files.includes(required), `Platform image snapshot is missing ${required}`);
+  const base = ordinary(["--profile", "publishing-disabled-until-real-adapter"]);
+  assertLocalPlatformBuilds(base, "ordinary", "false");
+
+  const pilot = render(
+    [
+      "-f",
+      "docker-compose.yml",
+      "-f",
+      "deploy/compose.internal-pilot.yml",
+      "--profile",
+      "publishing-disabled-until-real-adapter",
+    ],
+    {
+      NEW_API_RELAY_HUAWEI_OBS_ENDPOINT: "https://obs.example.test",
+      NEW_API_RELAY_HUAWEI_OBS_BUCKET: "relay-test",
+      NEW_API_RELAY_HUAWEI_OBS_ACCESS_KEY_ID: "test-access",
+      NEW_API_RELAY_HUAWEI_OBS_SECRET_ACCESS_KEY: "test-secret",
+      NEW_API_RELAY_DOWNLOAD_EDGE_ALLOWED_OBS_HOSTS: "relay-test.obs.example.test",
+      PLATFORM_HUAWEI_OBS_ENDPOINT: "https://obs.example.test",
+      PLATFORM_HUAWEI_OBS_BUCKET: "platform-test",
+      PLATFORM_HUAWEI_OBS_ACCESS_KEY_ID: "test-access",
+      PLATFORM_HUAWEI_OBS_SECRET_ACCESS_KEY: "test-secret",
+    },
+  );
+  assertLocalPlatformBuilds(pilot, "internal-pilot", "true");
 });
 
 test("ordinary Compose renders one active new-api data plane without a profile", () => {
@@ -236,5 +428,11 @@ for (const environment of ["staging", "production"]) {
     assert.equal(relaySync.environment.RELAY_DEFAULT_BACKEND_ID, "new-api-v1");
     assert.equal(relaySync.depends_on["relay-new-api"].condition, "service_healthy");
     assert.equal(relaySync.depends_on["platform-api"].condition, "service_healthy");
+
+    const catalogSync = rendered.services["platform-relay-catalog-sync"];
+    assert.equal(catalogSync.environment.RELAY_DEFAULT_BACKEND_ID, "new-api-v1");
+    assert.equal(catalogSync.environment.RELAY_CATALOG_SYNC_ENABLED, "true");
+    assert.equal(catalogSync.depends_on["relay-new-api"].condition, "service_healthy");
+    assert.equal(catalogSync.depends_on["platform-api"].condition, "service_healthy");
   });
 }

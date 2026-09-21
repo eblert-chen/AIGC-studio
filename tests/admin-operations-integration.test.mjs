@@ -4,17 +4,25 @@ import test from "node:test";
 
 import { operationsSource as operations } from "./operations-source.mjs";
 
-const management = readFileSync(new URL("../src/ManagementConsole.jsx", import.meta.url), "utf8");
+const management = [
+  readFileSync(new URL("../src/ManagementConsole.jsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../src/demo/managementFixtures.js", import.meta.url), "utf8"),
+].join("\n");
+const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+const authGateway = readFileSync(new URL("../src/auth/AuthGateway.jsx", import.meta.url), "utf8");
 const container = readFileSync(new URL("../src/admin/AdminOperationsContainer.jsx", import.meta.url), "utf8");
 const adapter = readFileSync(new URL("../src/admin/adminApiAdapter.js", import.meta.url), "utf8");
 const nativeConsole = readFileSync(new URL("../src/admin/relayNativeConsole.js", import.meta.url), "utf8");
+const channelOperations = readFileSync(new URL("../src/admin/operations/ChannelAuditViews.jsx", import.meta.url), "utf8");
+const providerResultAdapter = readFileSync(new URL("../src/admin/relayProviderResultReconciliations.js", import.meta.url), "utf8");
+const platformAdminApi = readFileSync(new URL("../src/api/platformAdminApi.js", import.meta.url), "utf8");
 const operationsStyles = readFileSync(new URL("../src/design-system/operations-routes.css", import.meta.url), "utf8");
 const operationTokens = readFileSync(new URL("../src/design-system/tokens.css", import.meta.url), "utf8");
 
-test("platform operations console is lazy-loaded while company management stays on the legacy console", () => {
+test("platform operations console is lazy-loaded while company management stays on its configuration console", () => {
   assert.match(management, /React\.lazy\(\s*\(\) => import\("\.\/admin\/AdminOperationsContainer\.jsx"\)/);
   assert.match(management, /if \(props\.mode === "platform"\) return <PlatformManagementRouter/);
-  assert.match(management, /return <LegacyManagementConsole \{\.\.\.props\} \/>/);
+  assert.match(management, /return <ManagementConfigurationConsole \{\.\.\.resolvedProps\} \/>/);
 });
 
 test("platform administrators can switch between operations and permission-filtered base configuration", () => {
@@ -23,6 +31,38 @@ test("platform administrators can switch between operations and permission-filte
   assert.match(management, /PLATFORM_SECTION_PERMISSIONS/);
   assert.match(operations, /className="ops-basic-config-label">基础配置<\/span>/);
   assert.match(management, />运营指挥台/);
+});
+
+test("the platform owner enters a linked personal principal without logging out or gaining cross-scope data", () => {
+  assert.match(container, /onOpenPersonalCreation/);
+  assert.match(container, /onOpenPersonalCreation=\{onOpenPersonalCreation\}/);
+  assert.match(container, /demoMode \? demoIdentity : initialPlatformIdentity/);
+  assert.match(operations, /canOpenPersonalCreation=\{isPlatformOwner === true\}/);
+  assert.match(management, /import \{ OperationsWorkspaceActions \} from "\.\/admin\/OperationsWorkspaceActions\.jsx"/);
+  assert.match(
+    management,
+    /const canOpenPersonalCreation = mode === "platform"\s*&& platformIdentity\?\.is_platform_owner === true\s*&& Boolean\(onOpenPersonalCreation\)/,
+  );
+  assert.match(management, /is_platform_owner: resolvedIdentity\.is_platform_owner === true/);
+  assert.match(management, /compact[\s\S]*canOpenPersonalCreation=\{canOpenPersonalCreation\}[\s\S]*onOpenPersonalCreation=\{onOpenPersonalCreation\}/);
+  assert.match(operations, /if \(!canOpenPersonalCreation \|\| !onOpenPersonalCreation\) return null/);
+  assert.match(operations, /onClick=\{onOpenPersonalCreation\}/);
+  assert.match(operations, /aria-label="进入我的个人创作"/);
+  assert.match(operations, /pending \? "正在进入" : compact \? "创作" : "进入创作"/);
+  assert.match(operations, /不会退出登录或访问其他人的数据/);
+  assert.match(operations, /disabled=\{pending\}/);
+  assert.match(operations, /aria-busy=\{pending \? "true" : undefined\}/);
+  assert.match(app, /switchProductContext\?\.\(\{ targetContext \}\)/);
+  assert.match(app, /globalThis\.location\.assign\(nextPath\)/);
+  assert.match(app, /aria-label="返回 Platform"/);
+  assert.match(app, /authorizedProductContexts\.includes\("personal"\)/);
+  assert.match(app, /initialPlatformIdentity=\{effectiveSurface === "platform" \? platformIdentity : null\}/);
+  assert.match(authGateway, /const switchProductContext = useCallback/);
+  assert.match(authGateway, /client\.switchProductContext\(\{ targetContext \}\)/);
+  assert.match(authGateway, /publishSessionEvent\("product_context_changed"/);
+  assert.doesNotMatch(operations, /onSurfaceChange|allowedSurfaces|creationSurface/);
+  assert.doesNotMatch(app, /sessionSurfaces\.push\("personal"\)/);
+  assert.doesNotMatch(app, /switchDemoPersona\("personal_creator", \{ targetNav: "create" \}\)/);
 });
 
 test("the complete operations workspace survives a basic-configuration round trip", () => {
@@ -35,8 +75,8 @@ test("the complete operations workspace survives a basic-configuration round tri
   assert.match(management, /className="platform-operations-surface"/);
   assert.match(management, /hidden=\{view !== "operations"\}/);
   assert.match(management, /inert=\{view !== "operations"\}/);
-  assert.match(management, /\{operationsSurface\}[\s\S]*view === "legacy"/);
-  assert.doesNotMatch(management, /if \(view === "legacy"\) \{[\s\S]*return \([\s\S]*<LegacyManagementConsole/);
+  assert.match(management, /\{operationsSurface\}[\s\S]*view === "basic-configuration"/);
+  assert.doesNotMatch(management, /if \(view === "basic-configuration"\) \{[\s\S]*return \([\s\S]*<ManagementConfigurationConsole/);
   assert.match(container, /operationsContext = \{\}/);
   assert.match(container, /onOperationsContextChange\?\.\(\{ activeSection: nextSection, range \}\)/);
   assert.match(container, /onOperationsContextChange\?\.\(\{ activeSection, range: nextRange \}\)/);
@@ -92,6 +132,50 @@ test("Relay unknown-submission UI is wired through read, fresh detail, approval,
   assert.match(operations, /setRelayUnknownRequiresRefresh\(true\)/);
   assert.match(operations, /requiresRefresh \|\| !ready/);
   assert.doesNotMatch(operations, /setInterval\([^)]*resolveRelayUnknown/);
+  assert.match(operations, /item\.mode === "text_to_image" && outcome === "created"/);
+  assert.match(operations, /临时 Artifact URL 提交后只供 Platform → Relay 内部恢复结果使用/);
+  assert.match(operations, /审计和结果回执只保留 URL 的 SHA-256，不会回显原 URL/);
+  assert.match(operations, /fieldErrors\.provider_response_sha256/);
+  assert.match(operations, /setRelayUnknownRequiresRefresh\(mustRefresh\)/);
+});
+
+test("provider-result reconciliation stays a distinct read-only Platform evidence source", () => {
+  assert.match(
+    container,
+    /hasPermissions\(me, "platform\.relay_health\.read"\)[\s\S]*listAdminRelayProviderResultReconciliations/,
+  );
+  assert.match(container, /"relayProviderResultReconciliations"/);
+  assert.match(adapter, /adaptRelayProviderResultReconciliationPage/);
+  assert.match(channelOperations, /供应商结果证据核对（只读）/);
+  assert.match(channelOperations, /此处没有确认、重试或重新生成入口/);
+  assert.match(providerResultAdapter, /长期作品已发布/);
+  assert.match(providerResultAdapter, /不要重生成或删除作品/);
+  assert.match(providerResultAdapter, /作品尚未发布/);
+  assert.match(providerResultAdapter, /禁止重试或重新生成/);
+  assert.match(channelOperations, /当前没有供应商结果证据待核对/);
+  assert.match(channelOperations, /供应商结果证据队列暂不可用/);
+  assert.match(channelOperations, /无法确认队列是否为空/);
+  assert.match(channelOperations, /data\.relayProviderResultReconciliations\.map/);
+  assert.doesNotMatch(channelOperations, /onRelayProviderResult(?:Resolve|Retry)/);
+  assert.doesNotMatch(platformAdminApi, /resolveAdminRelayProviderResult|retryAdminRelayProviderResult/);
+  assert.match(
+    platformAdminApi,
+    /withQuery\("\/api\/v1\/platform-admin\/relay\/provider-result-reconciliation", filters\)/,
+  );
+  assert.doesNotMatch(platformAdminApi, /\/internal\/platform-generation-operations\/provider-result-reconciliation/);
+  for (const forbidden of [
+    "temporary_result_json",
+    "result_url",
+    "fail_reason",
+    "credential",
+    "tenant_id",
+  ]) {
+    assert.doesNotMatch(
+      providerResultAdapter,
+      new RegExp(`${forbidden}\\s*:`),
+      `${forbidden} must not enter the browser projection`,
+    );
+  }
 });
 
 test("Relay callback dead letters use Platform list/detail/redrive/result with one POST and readback", () => {
@@ -165,9 +249,9 @@ test("model-profit rows expose a named keyboard-operable details control", () =>
 test("small operational copy uses the accessible muted token", () => {
   assert.match(operationTokens, /--ops-muted:\s*var\(--text-muted\)/);
   assert.match(operationTokens, /--ops-accent:/);
-  assert.match(operationTokens, /--ops-blue:\s*var\(--info\)/);
+  assert.match(operationTokens, /--ops-blue:\s*var\(--selection-violet\)/);
   assert.match(operationTokens, /--ops-red:\s*var\(--danger\)/);
-  assert.match(operationTokens, /--ops-orange:\s*var\(--warning\)/);
+  assert.match(operationTokens, /--ops-orange:\s*var\(--workflow-orange\)/);
   assert.match(operationsStyles, /\.ops-last-refresh \{[\s\S]*color: var\(--ops-muted\)/);
   assert.match(operationsStyles, /\.ops-empty \{[\s\S]*color: var\(--ops-muted\)/);
   assert.match(operationsStyles, /\.ops-reason-row small \{[\s\S]*color: var\(--ops-muted\)/);
@@ -180,7 +264,7 @@ test("small operational copy uses the accessible muted token", () => {
   assert.doesNotMatch(operations, /#c7dcd7/);
   assert.match(operations, /cyan: "var\(--ops-chart-cyan\)"/);
   assert.match(operations, /contentReview: "var\(--ops-chart-warning\)"/);
-  assert.match(operationsStyles, /--ops-chart-cyan:\s*color-mix\([^;]+var\(--ops-accent\)[^;]+var\(--ops-blue\)\)/);
+  assert.match(operationsStyles, /--ops-chart-cyan:\s*color-mix\([^;]+var\(--ops-accent\)[^;]+var\(--ops-surface\)\)/);
   assert.match(operationsStyles, /--ops-chart-warning:\s*var\(--ops-orange\)/);
 });
 

@@ -15,6 +15,21 @@ import {
 } from "../scripts/run-cross-service-cost-acceptance.mjs";
 
 const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+const packageManifest = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8"),
+);
+const playwrightConfig = await readFile(
+  new URL("../playwright.config.mjs", import.meta.url),
+  "utf8",
+);
+const browserGate = await readFile(
+  new URL("./browser/critical-surfaces.spec.mjs", import.meta.url),
+  "utf8",
+);
+const mobileWorkbenchGate = await readFile(
+  new URL("./browser/advanced-workbench-mobile-gate.spec.mjs", import.meta.url),
+  "utf8",
+);
 const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
 const costRunner = await readFile(
   new URL("../scripts/run-cross-service-cost-acceptance.mjs", import.meta.url),
@@ -29,6 +44,46 @@ const releaseReadiness = await readFile(
   new URL("../docs/release-readiness.md", import.meta.url),
   "utf8",
 );
+const platformClosureMigration = await readFile(
+  new URL("../backend/platform/migrations/versions/0049_payment_finance_closure.py", import.meta.url),
+  "utf8",
+);
+const platformPrivilegeFacade = await readFile(
+  new URL("../backend/platform/platform_api/database_privileges.py", import.meta.url),
+  "utf8",
+);
+const currentPlatformPolicyAlias = platformPrivilegeFacade.match(
+  /^CURRENT_PLATFORM_DATABASE_PRIVILEGE_POLICY = (_policy_v([0-9]+))$/m,
+);
+if (!currentPlatformPolicyAlias) {
+  throw new Error("Platform privilege facade does not expose a canonical current policy alias");
+}
+const currentPlatformPolicyVersion = Number.parseInt(currentPlatformPolicyAlias[2], 10);
+const currentPlatformPolicy = await readFile(
+  new URL(
+    `../backend/platform/platform_api/database_privileges_v${currentPlatformPolicyVersion}.py`,
+    import.meta.url,
+  ),
+  "utf8",
+);
+const currentPlatformHeadMatch = currentPlatformPolicy.match(/^ALEMBIC_HEAD = "([a-z0-9_]+)"$/m);
+if (!currentPlatformHeadMatch) throw new Error("Current Platform policy does not bind an Alembic head");
+const currentPlatformHead = currentPlatformHeadMatch[1];
+const currentPlatformMigration = await readFile(
+  new URL(`../backend/platform/migrations/versions/${currentPlatformHead}.py`, import.meta.url),
+  "utf8",
+);
+const currentPlatformPreviousMatch = currentPlatformMigration.match(
+  /^down_revision: str \| None = "([a-z0-9_]+)"$/m,
+);
+if (!currentPlatformPreviousMatch) throw new Error("Current Platform migration does not bind one direct predecessor");
+const currentPlatformPrevious = currentPlatformPreviousMatch[1];
+const unqualifiedPlatformPolicies = await Promise.all(Array.from(
+  { length: currentPlatformPolicyVersion - 11 },
+  (_, index) => index + 12,
+).map((version) =>
+  readFile(new URL(`../backend/platform/platform_api/database_privileges_v${version}.py`, import.meta.url), "utf8"),
+));
 const routeAcceptanceTrustDigest = `sha256:${"1".repeat(64)}`;
 
 test("CI builds a provenance-bound candidate and executes the real cross-service cost gate", () => {
@@ -59,13 +114,36 @@ test("CI builds a provenance-bound candidate and executes the real cross-service
   assert.match(workflow, /if-no-files-found: error/);
 });
 
-test("release overview names the current migration heads", () => {
-  assert.match(readme, /0040_showcase_management/);
-  assert.match(deploymentRunbook, /0040_showcase_management/);
-  assert.match(releaseReadiness, /0040_showcase_management/);
-  assert.match(readme, /0039_new_api_relay_defaults/);
-  assert.match(deploymentRunbook, /0039_new_api_relay_defaults/);
-  assert.match(releaseReadiness, /0039_new_api_relay_defaults/);
+test("release overview binds the current source head without claiming database qualification", () => {
+  assert.match(platformClosureMigration, /revision: str = "0049_payment_finance_closure"/);
+  assert.match(platformClosureMigration, /down_revision: str \| None = "0048_commercial_billing"/);
+  assert.match(
+    platformPrivilegeFacade,
+    new RegExp(`CURRENT_PLATFORM_DATABASE_PRIVILEGE_POLICY = ${currentPlatformPolicyAlias[1]}`),
+  );
+  assert.match(currentPlatformMigration, new RegExp(`revision: str = "${currentPlatformHead}"`));
+  assert.match(currentPlatformMigration, new RegExp(`down_revision: str \\| None = "${currentPlatformPrevious}"`));
+  for (const policy of unqualifiedPlatformPolicies) {
+    assert.match(policy, /UNQUALIFIED_CATALOG_SHA256 = "0" \* 64/);
+    assert.match(policy, /^CATALOG_SHA256 = UNQUALIFIED_CATALOG_SHA256$/m);
+  }
+  for (const source of [readme, deploymentRunbook, releaseReadiness]) {
+    assert.match(source, new RegExp("当前源码 head (?:是|为)\\s*`" + currentPlatformHead + "`"));
+    assert.match(source, new RegExp("直接前序为\\s*`" + currentPlatformPrevious + "`"));
+    assert.match(source, new RegExp(`数据库权限策略(?:当前)?为 v${currentPlatformPolicyVersion}`));
+    assert.match(source, new RegExp(`v${currentPlatformPolicyVersion}[\\s\\S]{0,64}UNQUALIFIED`));
+    assert.match(source, /v12\/0047[\s\S]{0,40}v13\/0048[\s\S]{0,20}(?:尚未|未)\s*资格化/);
+    assert.match(source, /BLOCKED \/ NO-GO/);
+    assert.match(source, /不能证明当前链或授权生产/);
+    assert.doesNotMatch(source, /当前唯一(?:资格化)?发布值为/);
+  }
+  assert.match(readme, /0045_system_audit_actor/);
+  assert.match(deploymentRunbook, /0045_system_audit_actor/);
+  assert.match(releaseReadiness, /0045_system_audit_actor/);
+  assert.match(readme, /0044_account_product_partition/);
+  assert.match(readme, /0041_model_capability_releases/);
+  assert.match(deploymentRunbook, /0041_model_capability_releases/);
+  assert.match(releaseReadiness, /0041_model_capability_releases/);
   assert.match(readme, /0038_download_evidence_checks/);
   assert.match(readme, /0012_generation_contract_v1/);
   assert.doesNotMatch(readme, /0027_channel_cost_evidence/);
@@ -92,6 +170,32 @@ test("one stable required check aggregates every executable gate", () => {
   assert.match(workflow, /Offline historical Python Relay oracle regression/);
   assert.doesNotMatch(workflow, /^  python-relay:\s*$/m);
   assert.match(sourceControl, /Required CI gates/);
+});
+
+test("frontend CI executes real desktop and extreme-phone browser gates", () => {
+  assert.equal(packageManifest.scripts["test:browser"], "playwright test");
+  assert.equal(packageManifest.devDependencies["@playwright/test"], "1.55.1");
+  assert.match(workflow, /npx playwright install --with-deps chromium/);
+  assert.match(workflow, /npm run test:browser/);
+  assert.match(playwrightConfig, /name: "desktop-1440"/);
+  assert.match(playwrightConfig, /name: "phone-390"/);
+  assert.match(playwrightConfig, /name: "phone-320"/);
+  assert.match(playwrightConfig, /VITE_ENABLE_DEMO: "true"/);
+  assert.match(playwrightConfig, /--strictPort/);
+  assert.match(playwrightConfig, /--enable-webgl/);
+  assert.match(playwrightConfig, /--enable-unsafe-swiftshader/);
+  assert.match(browserGate, /\.generate-button/);
+  assert.match(browserGate, /public login keeps one clear, keyboard-reachable recovery action/);
+  assert.match(browserGate, /auth-entry\.html\?logged_out=1/);
+  assert.match(browserGate, /公司管理导航/);
+  assert.match(browserGate, /平台管理员模块/);
+  assert.match(browserGate, /expectNoHorizontalPageOverflow/);
+  assert.match(mobileWorkbenchGate, /testInfo\.project\.name\.startsWith\("phone-"\)/);
+  assert.match(mobileWorkbenchGate, /\/creation\?workbench=\$\{workbench\.id\}/);
+  assert.match(mobileWorkbenchGate, /data-ui="desktop-workbench-gate"/);
+  assert.match(mobileWorkbenchGate, /data-ui="workbench-editor"/);
+  assert.match(mobileWorkbenchGate, /iframe\[title="StoryAI 3D 导演台"\]/);
+  assert.match(mobileWorkbenchGate, /desktop deep links still mount the advanced workbenches/);
 });
 
 test("candidate image helper emits the complete source-bound label and build argument set", async () => {

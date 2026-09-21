@@ -6,7 +6,9 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/generationprofile"
 	"github.com/QuantumNous/new-api/model"
+	"gorm.io/gorm"
 )
 
 // SyncPlatformGenerationProviderRoutes validates every declared native
@@ -16,17 +18,40 @@ func SyncPlatformGenerationProviderRoutes() error {
 	if snapshot.err != nil {
 		return snapshot.err
 	}
-	modelIDs := make([]string, 0, len(snapshot.routes))
-	for modelID := range snapshot.routes {
+	return syncPlatformGenerationProviderRouteDeclarations(snapshot.routes)
+}
+
+// syncPlatformGenerationProviderRouteDeclarations is shared by normal Relay
+// startup and the credential-late provider onboarding boundary. Callers must
+// pass declarations returned by parsePlatformRelayCapabilities: raw or merely
+// well-shaped JSON is never sufficient for a database route.
+func syncPlatformGenerationProviderRouteDeclarations(
+	routes map[string][]PlatformRelayRouteDeclaration,
+) error {
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		return syncPlatformGenerationProviderRouteDeclarationsWithDB(tx, routes)
+	})
+}
+
+func syncPlatformGenerationProviderRouteDeclarationsWithDB(
+	tx *gorm.DB,
+	routes map[string][]PlatformRelayRouteDeclaration,
+) error {
+	if tx == nil {
+		return fmt.Errorf("Relay route transaction is required")
+	}
+	modelIDs := make([]string, 0, len(routes))
+	for modelID := range routes {
 		modelIDs = append(modelIDs, modelID)
 	}
 	sort.Strings(modelIDs)
 	desired := make([]model.PlatformGenerationProviderRoute, 0)
 	for _, modelID := range modelIDs {
-		declarations := snapshot.routes[modelID]
+		declarations := routes[modelID]
 		for _, declaration := range declarations {
-			channel, err := model.GetChannelById(declaration.ChannelID, true)
-			if err != nil {
+			var channel model.Channel
+			if err := tx.Session(&gorm.Session{NewDB: true}).
+				Where("id = ?", declaration.ChannelID).First(&channel).Error; err != nil {
 				return fmt.Errorf("Relay route %q channel %d is unavailable: %w", declaration.RouteID, declaration.ChannelID, err)
 			}
 			if PlatformRelayProductionSecurityEnabled() &&
@@ -51,6 +76,18 @@ func SyncPlatformGenerationProviderRoutes() error {
 			if fingerprint != declaration.KeyFingerprint {
 				return fmt.Errorf("Relay route %q key fingerprint does not match channel %d key %d", declaration.RouteID, declaration.ChannelID, declaration.KeyIndex)
 			}
+			profileSnapshot := ""
+			if declaration.ResolvedCapabilityProfileID != "" {
+				profile, ok := generationprofile.Get(declaration.ResolvedCapabilityProfileID)
+				if !ok || profile.Revision != declaration.ResolvedCapabilityProfileRevision {
+					return fmt.Errorf("Relay route %q capability profile snapshot is unavailable", declaration.RouteID)
+				}
+				serializedProfile, err := common.Marshal(profile)
+				if err != nil {
+					return fmt.Errorf("Relay route %q capability profile snapshot cannot be serialized: %w", declaration.RouteID, err)
+				}
+				profileSnapshot = string(serializedProfile)
+			}
 			modeNames := make([]string, 0, len(declaration.Capabilities.Modes))
 			for modeName := range declaration.Capabilities.Modes {
 				modeNames = append(modeNames, modeName)
@@ -58,19 +95,25 @@ func SyncPlatformGenerationProviderRoutes() error {
 			sort.Strings(modeNames)
 			for _, modeName := range modeNames {
 				desired = append(desired, model.PlatformGenerationProviderRoute{
-					RouteKey:            declaration.RouteID,
-					Model:               modelID,
-					Mode:                modeName,
-					ProviderName:        declaration.ProviderName,
-					AccountID:           declaration.AccountID,
-					ChannelID:           declaration.ChannelID,
-					AcceptedChannelType: acceptedChannelType,
-					KeyIndex:            declaration.KeyIndex,
-					KeyFingerprint:      declaration.KeyFingerprint,
-					ChannelClass:        declaration.ChannelClass,
-					UpstreamModel:       declaration.UpstreamModel,
-					StagingReady:        declaration.StagingReady,
-					ProductionReady:     declaration.ProductionReady,
+					RouteKey:                       declaration.RouteID,
+					Model:                          modelID,
+					Mode:                           modeName,
+					ProviderName:                   declaration.ProviderName,
+					AccountID:                      declaration.AccountID,
+					ChannelID:                      declaration.ChannelID,
+					AcceptedChannelType:            acceptedChannelType,
+					KeyIndex:                       declaration.KeyIndex,
+					KeyFingerprint:                 declaration.KeyFingerprint,
+					ChannelClass:                   declaration.ChannelClass,
+					UpstreamModel:                  declaration.UpstreamModel,
+					CapabilityProfileID:            declaration.ResolvedCapabilityProfileID,
+					CapabilityProfileRevision:      declaration.ResolvedCapabilityProfileRevision,
+					CapabilityProfileSnapshot:      profileSnapshot,
+					ModelReleaseID:                 declaration.ResolvedModelReleaseID,
+					ModelReleaseRevision:           declaration.ResolvedModelReleaseRevision,
+					ModelReleaseCapabilityRevision: declaration.ResolvedModelCapabilityRevision,
+					StagingReady:                   declaration.StagingReady,
+					ProductionReady:                declaration.ProductionReady,
 					// Enabled means the route declaration is still active. Native
 					// channel/key availability is checked transactionally for every
 					// new admission, so a temporary disable does not require a
@@ -83,7 +126,7 @@ func SyncPlatformGenerationProviderRoutes() error {
 			}
 		}
 	}
-	return model.SyncPlatformGenerationProviderRoutes(desired)
+	return model.SyncPlatformGenerationProviderRoutesWithDB(tx, desired)
 }
 
 // platformGenerationProviderRouteReadiness keeps the staging acceptance gate

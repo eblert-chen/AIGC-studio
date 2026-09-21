@@ -409,13 +409,24 @@ func (channel *Channel) SaveWithoutKey() error {
 	// A loaded Channel carries decrypted runtime material. Blank it while saving
 	// metadata so a metadata-only save cannot implicitly rotate/re-encrypt the
 	// credential set or overwrite the current version with a stale value.
-	key := channel.Key
-	version := channel.CredentialSetVersion
-	channel.Key = ""
-	err := DB.Omit("key", "credential_set_version", "control_revision").Save(channel).Error
-	channel.Key = key
-	channel.CredentialSetVersion = version
-	return err
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var current Channel
+		if err := lockForUpdate(tx.Session(&gorm.Session{NewDB: true, SkipHooks: true}).
+			Select("id", "tag", "other_info", "credential_set_version").
+			Where("id = ?", channel.Id)).First(&current).Error; err != nil {
+			return err
+		}
+		if IsProviderOnboardingManagedChannel(&current) || IsProviderOnboardingManagedChannel(channel) {
+			return ErrProviderOnboardingManagedChannel
+		}
+		key := channel.Key
+		version := channel.CredentialSetVersion
+		channel.Key = ""
+		err := tx.Omit("key", "credential_set_version", "control_revision").Save(channel).Error
+		channel.Key = key
+		channel.CredentialSetVersion = version
+		return err
+	})
 }
 
 func GetAllChannels(startIdx int, num int, selectAll bool, idSort bool, sortOptions ...ChannelSortOptions) ([]*Channel, error) {
@@ -532,11 +543,16 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 	var deletedCount int64
 	for _, chunk := range lo.Chunk(ids, 200) {
 		var channels []Channel
-		if err := lockForUpdate(tx.Where("id IN ?", chunk).Select("id")).Find(&channels).Error; err != nil {
+		if err := lockForUpdate(tx.Where("id IN ?", chunk).
+			Select("id", "tag", "other_info")).Find(&channels).Error; err != nil {
 			tx.Rollback()
 			return 0, err
 		}
 		for index := range channels {
+			if IsProviderOnboardingManagedChannel(&channels[index]) {
+				tx.Rollback()
+				return 0, ErrProviderOnboardingManagedChannel
+			}
 			if err := rejectPlatformGenerationChannelMutationTx(tx, channels[index].Id); err != nil {
 				tx.Rollback()
 				return 0, err
@@ -599,6 +615,9 @@ func (channel *Channel) GetStatusCodeMapping() string {
 }
 
 func (channel *Channel) Insert() error {
+	if IsProviderOnboardingManagedChannel(channel) {
+		return ErrProviderOnboardingManagedChannel
+	}
 	var err error
 	err = DB.Create(channel).Error
 	if err != nil {
@@ -613,6 +632,12 @@ func (channel *Channel) Update() error {
 		var existing Channel
 		if err := lockForUpdate(tx.Where("id = ?", channel.Id)).First(&existing).Error; err != nil {
 			return err
+		}
+		if IsProviderOnboardingManagedChannel(&existing) {
+			return ErrProviderOnboardingManagedChannel
+		}
+		if IsProviderOnboardingManagedChannel(channel) {
+			return ErrProviderOnboardingManagedChannel
 		}
 		if platformGenerationChannelTransportChanged(existing, *channel) {
 			if err := rejectPlatformGenerationChannelMutationTx(tx, channel.Id); err != nil {
@@ -696,6 +721,9 @@ func (channel *Channel) Delete() error {
 		} else if err != nil {
 			return err
 		}
+		if IsProviderOnboardingManagedChannel(&existing) {
+			return ErrProviderOnboardingManagedChannel
+		}
 		if err := rejectPlatformGenerationChannelMutationTx(tx, channel.Id); err != nil {
 			return err
 		}
@@ -715,6 +743,18 @@ var ErrPlatformGenerationChannelInUse = errors.New("channel has active Platform 
 func rejectPlatformGenerationChannelMutationTx(tx *gorm.DB, channelID int) error {
 	if tx == nil || channelID <= 0 {
 		return errors.New("channel mutation guard is invalid")
+	}
+	if tx.Migrator().HasTable(&PlatformChannelControlOperation{}) {
+		var pendingRouteTests int64
+		if err := tx.Model(&PlatformChannelControlOperation{}).
+			Where("channel_id = ? AND kind = ? AND state = ?", channelID,
+				PlatformChannelControlOperationKindTest, PlatformChannelControlOperationPending).
+			Count(&pendingRouteTests).Error; err != nil {
+			return err
+		}
+		if pendingRouteTests > 0 {
+			return ErrPlatformGenerationChannelInUse
+		}
 	}
 	if !tx.Migrator().HasTable(&PlatformGenerationProviderRoute{}) ||
 		!tx.Migrator().HasTable(&PlatformGenerationRouteAdmission{}) {
@@ -874,6 +914,15 @@ func hasEnabledMultiKey(keys []string, statusList map[int]int) bool {
 }
 
 func UpdateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
+	if IsProviderOnboardingReservedChannelID(channelId) {
+		return false
+	}
+	var nativeGuard Channel
+	if err := DB.Session(&gorm.Session{NewDB: true, SkipHooks: true}).
+		Select("id", "tag", "other_info").Where("id = ?", channelId).
+		First(&nativeGuard).Error; err != nil || IsProviderOnboardingManagedChannel(&nativeGuard) {
+		return false
+	}
 	if RelayDatabaseRoleAttestationRequired() && status == common.ChannelStatusEnabled {
 		channel, err := GetChannelById(channelId, false)
 		if err != nil || channel == nil || channel.Type == constant.ChannelTypeCodex {
@@ -955,6 +1004,9 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 }
 
 func EnableChannelByTag(tag string) error {
+	if tag == ProviderOnboardingManagedChannelTag {
+		return ErrProviderOnboardingManagedChannel
+	}
 	if RelayDatabaseRoleAttestationRequired() {
 		var codexChannels int64
 		if err := DB.Model(&Channel{}).Where("tag = ? AND type = ?", tag, constant.ChannelTypeCodex).Count(&codexChannels).Error; err != nil {
@@ -964,24 +1016,43 @@ func EnableChannelByTag(tag string) error {
 			return errors.New("protected Relay rejects enabling Codex channels until credential refresh reconciliation is implemented")
 		}
 	}
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusEnabled).Error
-	if err != nil {
-		return err
-	}
-	err = UpdateAbilityStatusByTag(tag, true)
-	return err
+	return updateNativeChannelStatusByTag(tag, common.ChannelStatusEnabled)
 }
 
 func DisableChannelByTag(tag string) error {
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusManuallyDisabled).Error
-	if err != nil {
-		return err
+	if tag == ProviderOnboardingManagedChannelTag {
+		return ErrProviderOnboardingManagedChannel
 	}
-	err = UpdateAbilityStatusByTag(tag, false)
-	return err
+	return updateNativeChannelStatusByTag(tag, common.ChannelStatusManuallyDisabled)
+}
+
+func updateNativeChannelStatusByTag(tag string, status int) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var channels []Channel
+		if err := lockForUpdate(tx.Where("tag = ?", tag).Select("id", "tag", "other_info")).
+			Order("id ASC").Find(&channels).Error; err != nil {
+			return err
+		}
+		for index := range channels {
+			if IsProviderOnboardingManagedChannel(&channels[index]) {
+				return ErrProviderOnboardingManagedChannel
+			}
+		}
+		if err := tx.Model(&Channel{}).Where("tag = ?", tag).Update("status", status).Error; err != nil {
+			return err
+		}
+		return tx.Model(&Ability{}).Where("tag = ?", tag).
+			Select("enabled").Update("enabled", status == common.ChannelStatusEnabled).Error
+	})
 }
 
 func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string) error {
+	if tag == ProviderOnboardingManagedChannelTag {
+		return ErrProviderOnboardingManagedChannel
+	}
+	if newTag != nil && *newTag == ProviderOnboardingManagedChannelTag {
+		return ErrProviderOnboardingManagedChannel
+	}
 	updateData := Channel{}
 	shouldReCreateAbilities := false
 	updatedTag := tag
@@ -1014,27 +1085,46 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 		updateData.HeaderOverride = headerOverride
 	}
 
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Updates(updateData).Error
-	if err != nil {
-		return err
-	}
-	if shouldReCreateAbilities {
-		channels, err := GetChannelsByTag(updatedTag, false, false)
-		if err == nil {
-			for _, channel := range channels {
-				err = channel.UpdateAbilities(nil)
-				if err != nil {
-					common.SysLog(fmt.Sprintf("failed to update abilities: channel_id=%d, tag=%s, error=%v", channel.Id, channel.GetTag(), err))
-				}
-			}
-		}
-	} else {
-		err := UpdateAbilityByTag(tag, newTag, priority, weight)
-		if err != nil {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var locked []Channel
+		if err := lockForUpdate(tx.Where("tag = ?", tag)).Find(&locked).Error; err != nil {
 			return err
 		}
-	}
-	return nil
+		for index := range locked {
+			if IsProviderOnboardingManagedChannel(&locked[index]) {
+				return ErrProviderOnboardingManagedChannel
+			}
+		}
+		if err := tx.Model(&Channel{}).Where("tag = ?", tag).Updates(updateData).Error; err != nil {
+			return err
+		}
+		if shouldReCreateAbilities {
+			var channels []*Channel
+			if err := tx.Where("tag = ?", updatedTag).Find(&channels).Error; err != nil {
+				return err
+			}
+			for _, channel := range channels {
+				if err := channel.UpdateAbilities(tx); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		abilityUpdates := map[string]any{}
+		if newTag != nil {
+			abilityUpdates["tag"] = *newTag
+		}
+		if priority != nil {
+			abilityUpdates["priority"] = *priority
+		}
+		if weight != nil {
+			abilityUpdates["weight"] = *weight
+		}
+		if len(abilityUpdates) == 0 {
+			return nil
+		}
+		return tx.Model(&Ability{}).Where("tag = ?", tag).Updates(abilityUpdates).Error
+	})
 }
 
 func UpdateChannelUsedQuota(id int, quota int) {
@@ -1242,14 +1332,49 @@ func GetChannelsByIds(ids []int) ([]*Channel, error) {
 }
 
 func BatchSetChannelTag(ids []int, tag *string) error {
+	if tag != nil && *tag == ProviderOnboardingManagedChannelTag {
+		return ErrProviderOnboardingManagedChannel
+	}
+	uniqueIDs := make([]int, 0, len(ids))
+	seenIDs := make(map[int]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return errors.New("channel id is invalid")
+		}
+		if _, duplicate := seenIDs[id]; duplicate {
+			continue
+		}
+		seenIDs[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return nil
+	}
 	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return tx.Error
 	}
+	var locked []Channel
+	if err := lockForUpdate(tx.Where("id IN ?", uniqueIDs).Select("id", "tag", "other_info")).
+		Order("id ASC").Find(&locked).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	if len(locked) != len(uniqueIDs) {
+		tx.Rollback()
+		return gorm.ErrRecordNotFound
+	}
+	for index := range locked {
+		if !IsProviderOnboardingManagedChannel(&locked[index]) {
+			continue
+		}
+		tx.Rollback()
+		return ErrProviderOnboardingManagedChannel
+	}
 
 	// 更新标签
-	err := tx.Model(&Channel{}).Where("id in (?)", ids).Update("tag", tag).Error
+	err := tx.Model(&Channel{}).Where("id in (?)", uniqueIDs).Update("tag", tag).Error
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -1260,7 +1385,7 @@ func BatchSetChannelTag(ids []int, tag *string) error {
 	// package-global DB here can deadlock SQLite and can observe pre-update tags
 	// under PostgreSQL before this transaction commits.
 	var channels []*Channel
-	err = tx.Where("id in (?)", ids).Omit("key", "credential_set_version").Find(&channels).Error
+	err = tx.Where("id in (?)", uniqueIDs).Omit("key", "credential_set_version").Find(&channels).Error
 	if err != nil {
 		tx.Rollback()
 		return err

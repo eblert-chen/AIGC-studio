@@ -9,6 +9,10 @@ import {
   visibleAdminSections,
 } from "../src/admin/adminApiAdapter.js";
 import { buildEntitlementKey } from "../src/admin/adminConsoleUtils.js";
+import {
+  adaptRelayProviderResultReconciliationPage,
+  relayProviderResultReconciliationPresentation,
+} from "../src/admin/relayProviderResultReconciliations.js";
 import { operationsSource } from "./operations-source.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -22,23 +26,44 @@ function liveResponseFixture() {
       start_time: "2026-08-01T00:00:00+00:00",
       end_time: "2026-08-08T00:00:00+00:00",
       granularity: "day",
+      point_bucket_time_basis: "task_updated_at",
       totals: {
         recharge_cents: 120_000,
         settled_revenue_cents: 80_000,
+        settled_points: 0,
+        point_succeeded_task_count: 0,
+        point_settlement_count: 0,
+        unattributed_point_settlement_count: 0,
+        point_settlement_missing_task_count: 0,
+        point_settlement_duplicate_task_count: 0,
         provider_cost_cents: 30_000,
         known_gross_profit_cents: 50_000,
         gross_profit_cents: 50_000,
         gross_margin: 0.625,
         cost_missing_task_count: 0,
         cost_reconciliation_status: "complete",
+        revenue_reconciliation_status: "complete",
+        finance_status: "complete",
       },
       points: [
         {
           bucket_start: "2026-08-07",
           recharge_cents: 12_345,
           settled_revenue_cents: 8_000,
+          settled_points: 0,
+          point_succeeded_task_count: 0,
+          point_settlement_count: 0,
+          unattributed_point_settlement_count: 0,
+          point_settlement_missing_task_count: 0,
+          point_settlement_duplicate_task_count: 0,
           provider_cost_cents: 3_000,
           known_gross_profit_cents: 5_000,
+          gross_profit_cents: 5_000,
+          gross_margin: 0.625,
+          cost_missing_task_count: 0,
+          cost_reconciliation_status: "complete",
+          revenue_reconciliation_status: "complete",
+          finance_status: "complete",
         },
       ],
       comparisons: {
@@ -48,6 +73,8 @@ function liveResponseFixture() {
           metrics: {
             recharge_cents: { current: 120_000, baseline: 100_000, absolute_change: 20_000, change_rate: 0.2 },
             settled_revenue_cents: { current: 80_000, baseline: 64_000, absolute_change: 16_000, change_rate: 0.25 },
+            settled_points: { current: 0, baseline: 0, absolute_change: 0, change_rate: null },
+            point_settlement_count: { current: 0, baseline: 0, absolute_change: 0, change_rate: null },
             provider_cost_cents: { current: 30_000, baseline: 20_000, absolute_change: 10_000, change_rate: 0.5 },
             known_gross_profit_cents: { current: 50_000, baseline: 44_000, absolute_change: 6_000, change_rate: 0.136364 },
             gross_profit_cents: { current: 50_000, baseline: 44_000, absolute_change: 6_000, change_rate: 0.136364 },
@@ -60,6 +87,8 @@ function liveResponseFixture() {
           metrics: {
             recharge_cents: { current: 120_000, baseline: null, absolute_change: null, change_rate: null },
             settled_revenue_cents: { current: 80_000, baseline: null, absolute_change: null, change_rate: null },
+            settled_points: { current: 0, baseline: null, absolute_change: null, change_rate: null },
+            point_settlement_count: { current: 0, baseline: null, absolute_change: null, change_rate: null },
             provider_cost_cents: { current: 30_000, baseline: null, absolute_change: null, change_rate: null },
             known_gross_profit_cents: { current: 50_000, baseline: null, absolute_change: null, change_rate: null },
             gross_profit_cents: { current: 50_000, baseline: null, absolute_change: null, change_rate: null },
@@ -162,6 +191,10 @@ function liveResponseFixture() {
       },
     },
     profitability: {
+      unattributed_provider_cost_cents: 2_500,
+      revenue_unavailable_task_count: 0,
+      revenue_missing_task_count: 0,
+      revenue_reconciliation_status: "complete",
       items: [
         {
           model_id: "model-complete",
@@ -170,7 +203,11 @@ function liveResponseFixture() {
           settled_revenue_cents: 20_000,
           provider_cost_cents: 8_000,
           known_gross_profit_cents: 12_000,
+          gross_profit_cents: 12_000,
           gross_margin: 0.6,
+          revenue_unavailable_task_count: 0,
+          revenue_missing_task_count: 0,
+          revenue_reconciliation_status: "complete",
           cost_missing_task_count: 0,
           cost_reconciliation_status: "complete",
           success_rate: 0.8,
@@ -184,7 +221,11 @@ function liveResponseFixture() {
           settled_revenue_cents: 10_000,
           provider_cost_cents: 3_000,
           known_gross_profit_cents: 7_000,
+          gross_profit_cents: null,
           gross_margin: null,
+          revenue_unavailable_task_count: 0,
+          revenue_missing_task_count: 0,
+          revenue_reconciliation_status: "complete",
           cost_missing_task_count: 2,
           cost_reconciliation_status: "incomplete",
           success_rate: 0.95,
@@ -194,19 +235,28 @@ function liveResponseFixture() {
       ],
     },
     companyHealth: {
+      low_balance_threshold_cents: 500,
+      low_balance_threshold_points: 50,
       items: [
         {
           company_id: "company-risk",
           company_name: "风险企业",
           company_status: "active",
+          billing_unit: "CNY_CENT",
+          billing_version: 1,
           available_cents: 100,
           reserved_cents: 5_000,
+          available_points: null,
+          reserved_points: null,
+          spend_24h_cents: 70_000,
+          spend_24h_points: null,
           last_task_at: new Date(now - 3 * DAY_MS).toISOString(),
+          task_count_30d: 20,
           failure_rate_30d: 0.42,
           alerts: [
-            { code: "LOW_BALANCE", severity: "critical", details: {} },
-            { code: "STALE_RESERVED_BALANCE", severity: "critical", details: { threshold_hours: 72 } },
-            { code: "ABNORMAL_SPEND", severity: "warning", details: { ratio: 3.5 } },
+            { code: "LOW_BALANCE", severity: "critical", details: { available_cents: 100, threshold_cents: 500 } },
+            { code: "STALE_RESERVED_BALANCE", severity: "critical", details: { reserved_cents: 5_000, stale_task_count: 1, threshold_hours: 72 } },
+            { code: "ABNORMAL_SPEND", severity: "warning", details: { spend_24h_cents: 70_000, baseline_daily_cents: 20_000, ratio: 3.5 } },
             { code: "ENTITLEMENT_EXPIRING", severity: "warning", details: { count: 2 } },
           ],
         },
@@ -214,9 +264,16 @@ function liveResponseFixture() {
           company_id: "company-suspended",
           company_name: "已停用企业",
           company_status: "suspended",
-          available_cents: 0,
-          reserved_cents: 0,
+          billing_unit: "POINT",
+          billing_version: 2,
+          available_cents: null,
+          reserved_cents: null,
+          spend_24h_cents: null,
+          available_points: 0,
+          reserved_points: 0,
+          spend_24h_points: 0,
           last_task_at: null,
+          task_count_30d: 0,
           failure_rate_30d: null,
           alerts: [],
         },
@@ -227,8 +284,14 @@ function liveResponseFixture() {
         {
           company_id: "company-risk",
           company_name: "风险企业",
+          billing_unit: "CNY_CENT",
+          billing_version: 1,
           consumption_cents: 70_000,
           available_cents: 100,
+          reserved_cents: 5_000,
+          consumption_points: 0,
+          available_points: 0,
+          reserved_points: 0,
           task_count: 20,
           succeeded_count: 15,
         },
@@ -341,7 +404,23 @@ function liveResponseFixture() {
     },
     relayModels: {
       items: [
-        { model_id: "relay-mapped", status: "mapped" },
+        {
+          relay_model_id: "relay-model-with-a-name-that-remains-readable-at-production-length",
+          candidate_revision: `sha256:${"a".repeat(64)}`,
+          status: "mapped",
+          routes: [{
+            route_id: "volcengine-seedance-primary-01",
+            channel_id: 17,
+            upstream_model: "doubao-seedance-1-5-pro-250528",
+            adapter_profile_id: "volcengine-seedance-v1",
+            adapter_profile_revision: "sha256:profile-revision-001",
+            enabled: true,
+            accepted: true,
+            fresh: true,
+            required_test_modes: ["text_to_video", "image_to_video"],
+            fresh_test_modes: ["text_to_video", "image_to_video"],
+          }],
+        },
         { model_id: "relay-unmapped", status: "unmapped" },
       ],
       platform_only_model_ids: ["platform-only"],
@@ -395,6 +474,8 @@ function liveResponseFixture() {
           company_id: "company-risk",
           company_name: "风险企业",
           company_status: "active",
+          billing_unit: "POINT",
+          billing_version: 2,
           cells: [
             {
               item_kind: "model",
@@ -402,7 +483,11 @@ function liveResponseFixture() {
               state: "enabled",
               configured: true,
               enabled: true,
-              price_per_second_cents: 42,
+              billing_unit: "POINT",
+              billing_version: 2,
+              price_per_second_points: 42,
+              price_per_item_points: null,
+              price_per_second_cents: null,
               price_per_item_cents: null,
               config_override: { limits: { max_images: 4 } },
               call_quota: 1_000,
@@ -433,6 +518,12 @@ function liveResponseFixture() {
               item_id: "model-unconfigured",
               state: "unconfigured",
               configured: false,
+              billing_unit: "POINT",
+              billing_version: 2,
+              price_per_second_points: null,
+              price_per_item_points: null,
+              price_per_second_cents: null,
+              price_per_item_cents: null,
             },
           ],
         },
@@ -468,6 +559,19 @@ function liveResponseFixture() {
           result: "failed",
           before_summary: { enabled: false },
           after_summary: { enabled: true, change_reason: "合同生效" },
+        },
+        {
+          id: "audit-system-1",
+          created_at: "2026-08-07T12:01:00+08:00",
+          actor_user_id: null,
+          actor_kind: "system",
+          actor_key: "relay-catalog-sync",
+          action: "model.relay_catalog.reconcile",
+          target_type: "relay_model_catalog",
+          target_id: "sha256:catalog",
+          outcome: "SUCCEEDED",
+          before_summary: {},
+          after_summary: { trigger: "periodic_worker" },
         },
       ],
     },
@@ -560,9 +664,24 @@ test("real operating, task and model responses map without changing cents or per
     pending: 6,
     alertBacklog: 6,
     unreconciledCosts: 0,
+    unattributedPointSettlements: 0,
     lastRefreshed: "2026-08-07T12:30:00+08:00",
     environment: "staging",
   });
+  assert.deepEqual(data.relayRouteOptions, [{
+    publicModelId: "relay-model-with-a-name-that-remains-readable-at-production-length",
+    capabilityRevision: `sha256:${"a".repeat(64)}`,
+    routeId: "volcengine-seedance-primary-01",
+    channelId: 17,
+    upstreamModel: "doubao-seedance-1-5-pro-250528",
+    adapterProfileId: "volcengine-seedance-v1",
+    adapterProfileRevision: "sha256:profile-revision-001",
+    enabled: true,
+    accepted: true,
+    fresh: true,
+    requiredTestModes: ["text_to_video", "image_to_video"],
+    freshTestModes: ["text_to_video", "image_to_video"],
+  }]);
   assert.deepEqual(
     data.taskFlow.map(({ key, total, dropoff }) => ({ key, total, dropoff })),
     [
@@ -635,18 +754,45 @@ test("real operating, task and model responses map without changing cents or per
     changeRate: 25,
   });
   assert.deepEqual(data.business.trend, [
-    { date: "08-07", recharge: 123.45, revenue: 80, cost: 30, grossProfit: 50 },
+    {
+      date: "08-07",
+      recharge: 123.45,
+      revenue: 80,
+      settledPoints: 0,
+      pointSucceededTaskCount: 0,
+      pointSettlementCount: 0,
+      pointSettlementMissingTaskCount: 0,
+      pointSettlementDuplicateTaskCount: 0,
+      cost: 30,
+      grossProfit: 50,
+      knownGrossProfit: null,
+      revenueReconciliationStatus: "complete",
+      financeStatus: "complete",
+    },
   ]);
+  assert.deepEqual(data.modelProfitabilitySummary, {
+    unattributedProviderCostCents: 2_500,
+    revenueUnavailableTaskCount: 0,
+    revenueMissingTaskCount: 0,
+    revenueReconciliationStatus: "complete",
+  });
   assert.deepEqual(data.modelProfitability[0], {
     id: "model-complete",
     model: "完整成本模型",
     calls: 10,
     revenueCents: 20_000,
     costCents: 8_000,
+    knownGrossProfitCents: 12_000,
     grossProfitCents: 12_000,
+    costReconciliationStatus: "complete",
+    revenueReconciliationStatus: "complete",
+    revenueUnavailableTaskCount: 0,
+    revenueMissingTaskCount: 0,
+    financeStatus: "complete",
     grossMargin: 60,
     successRate: 80,
     avgSeconds: 6.25,
+    missingCostCount: 0,
     missingCostRate: 0,
   });
   assert.deepEqual(data.reliability, [
@@ -684,11 +830,13 @@ test("incomplete provider costs are labelled as known-only profit instead of exa
   raw.operating.totals = {
     ...raw.operating.totals,
     settled_revenue_cents: 100_000,
+    provider_cost_cents: 60_000,
     known_gross_profit_cents: 40_000,
     gross_profit_cents: null,
     gross_margin: null,
     cost_missing_task_count: 2,
     cost_reconciliation_status: "incomplete",
+    finance_status: "incomplete",
   };
   raw.operating.comparisons.period_over_period = {
     ...raw.operating.comparisons.period_over_period,
@@ -718,12 +866,171 @@ test("incomplete provider costs are labelled as known-only profit instead of exa
   assert.equal(grossProfit.valueCents, 40_000);
   assert.equal(grossProfit.comparisonStatus, "partial");
   assert.equal(grossProfit.change, 1 / 9 * 100);
-  assert.equal(grossMargin.label, "已知毛利率");
-  assert.equal(grossMargin.valuePercent, 40);
+  assert.equal(grossMargin.label, "最终毛利率（待成本完整）");
+  assert.equal(grossMargin.valuePercent, null);
   assert.equal(grossMargin.comparisonStatus, "partial");
   assert.equal(grossMargin.change, null);
-  assert.equal(data.modelProfitability[1].grossMargin, 70);
+  assert.equal(data.modelProfitability[1].knownGrossProfitCents, 7_000);
+  assert.equal(data.modelProfitability[1].grossProfitCents, null);
+  assert.equal(data.modelProfitability[1].costReconciliationStatus, "incomplete");
+  assert.equal(data.modelProfitability[1].grossMargin, null);
   assert.equal(data.modelProfitability[1].missingCostRate, 50);
+  assert.match(operationsSource, /已知毛利（成本未完整）/);
+  assert.match(operationsSource, /成本未完整/);
+  assert.match(operationsSource, /未归因渠道成本/);
+});
+
+test("point settlements remain points and make cash profit fail closed", () => {
+  const raw = liveResponseFixture();
+  raw.operating.totals = {
+    ...raw.operating.totals,
+    settled_points: 25,
+    point_succeeded_task_count: 1,
+    point_settlement_count: 1,
+    unattributed_point_settlement_count: 1,
+    point_settlement_missing_task_count: 0,
+    point_settlement_duplicate_task_count: 0,
+    known_gross_profit_cents: null,
+    gross_profit_cents: null,
+    gross_margin: null,
+    revenue_reconciliation_status: "incomplete",
+    finance_status: "incomplete",
+  };
+  raw.operating.points[0] = {
+    ...raw.operating.points[0],
+    settled_points: 25,
+    point_succeeded_task_count: 1,
+    point_settlement_count: 1,
+    unattributed_point_settlement_count: 1,
+    point_settlement_missing_task_count: 0,
+    point_settlement_duplicate_task_count: 0,
+    known_gross_profit_cents: null,
+    gross_profit_cents: null,
+    gross_margin: null,
+    revenue_reconciliation_status: "incomplete",
+    finance_status: "incomplete",
+  };
+  raw.operating.comparisons.period_over_period = {
+    ...raw.operating.comparisons.period_over_period,
+    status: "partial",
+    metrics: {
+      ...raw.operating.comparisons.period_over_period.metrics,
+      settled_points: {
+        current: 25,
+        baseline: 0,
+        absolute_change: 25,
+        change_rate: null,
+      },
+      gross_profit_cents: {
+        current: null,
+        baseline: 44_000,
+        absolute_change: null,
+        change_rate: null,
+      },
+      gross_margin: {
+        current: null,
+        baseline: 0.6875,
+        absolute_change: null,
+        change_rate: null,
+      },
+    },
+  };
+
+  const data = adaptAdminOperationsData(raw);
+  const points = data.business.metrics.find((item) => item.key === "points");
+  const revenue = data.business.metrics.find((item) => item.key === "revenue");
+  const grossProfit = data.business.metrics.find((item) => item.key === "grossProfit");
+  const grossMargin = data.business.metrics.find((item) => item.key === "grossMargin");
+
+  assert.equal(data.sourceStatus.operating, "available");
+  assert.equal(points.valuePoints, 25);
+  assert.equal(points.settlementCount, 1);
+  assert.equal(revenue.valueCents, 80_000);
+  assert.equal(grossProfit.label, "最终毛利（积分收入待归因）");
+  assert.equal(grossProfit.valueCents, null);
+  assert.equal(grossProfit.unavailableLabel, "待积分收入归因");
+  assert.equal(grossMargin.valuePercent, null);
+  assert.equal(grossMargin.unavailableLabel, "待积分收入归因");
+  assert.deepEqual(data.business.financeEvidence, {
+    settledPoints: 25,
+    pointSucceededTaskCount: 1,
+    pointSettlementCount: 1,
+    unattributedPointSettlementCount: 1,
+    pointSettlementMissingTaskCount: 0,
+    pointSettlementDuplicateTaskCount: 0,
+    costReconciliationStatus: "complete",
+    revenueReconciliationStatus: "incomplete",
+    financeStatus: "incomplete",
+  });
+  assert.equal(data.business.trend[0].revenue, 80);
+  assert.equal(data.business.trend[0].settledPoints, 25);
+  assert.equal(data.business.trend[0].grossProfit, null);
+  assert.equal(data.business.trend[0].knownGrossProfit, null);
+  assert.equal(data.summary.unattributedPointSettlements, 1);
+  assert.match(operationsSource, /积分只作为消费权益展示，不按兑换锚点折算为现金收入/);
+  assert.match(operationsSource, /已归因法币收入/);
+});
+
+test("operating evidence rejects point revenue mixed into a final cash profit", () => {
+  const raw = liveResponseFixture();
+  raw.operating.totals = {
+    ...raw.operating.totals,
+    settled_points: 10,
+    point_succeeded_task_count: 1,
+    point_settlement_count: 1,
+    unattributed_point_settlement_count: 1,
+    point_settlement_missing_task_count: 0,
+    point_settlement_duplicate_task_count: 0,
+    revenue_reconciliation_status: "incomplete",
+    finance_status: "incomplete",
+  };
+
+  const data = adaptAdminOperationsData(raw);
+  assert.equal(data.sourceStatus.operating, "unavailable");
+  assert.deepEqual(data.business.metrics, []);
+  assert.deepEqual(data.business.trend, []);
+});
+
+test("malformed successful finance responses fail closed instead of becoming zero evidence", () => {
+  const malformedOperating = liveResponseFixture();
+  malformedOperating.sourceStatuses = { operating: "available", profitability: "available" };
+  delete malformedOperating.operating.totals.provider_cost_cents;
+
+  const operatingData = adaptAdminOperationsData(malformedOperating);
+  assert.equal(operatingData.sourceStatus.operating, "unavailable");
+  assert.match(operatingData.sourceErrors.operating, /完整、可核验/);
+  assert.deepEqual(operatingData.business.metrics, []);
+  assert.deepEqual(operatingData.business.trend, []);
+  assert.equal(operatingData.summary.unreconciledCosts, null);
+
+  const malformedProfitability = liveResponseFixture();
+  malformedProfitability.sourceStatuses = { operating: "available", profitability: "available" };
+  delete malformedProfitability.profitability.items[0].provider_cost_cents;
+
+  const profitabilityData = adaptAdminOperationsData(malformedProfitability);
+  assert.equal(profitabilityData.sourceStatus.profitability, "unavailable");
+  assert.match(profitabilityData.sourceErrors.profitability, /未归因渠道成本证据/);
+  assert.deepEqual(profitabilityData.modelProfitability, []);
+  assert.deepEqual(profitabilityData.modelProfitabilitySummary, {
+    unattributedProviderCostCents: null,
+    revenueUnavailableTaskCount: null,
+    revenueMissingTaskCount: null,
+    revenueReconciliationStatus: "unavailable",
+  });
+});
+
+test("missing model success and latency evidence remains unavailable rather than zero", () => {
+  const raw = liveResponseFixture();
+  delete raw.profitability.items[0].success_rate;
+  delete raw.profitability.items[0].average_terminal_latency_seconds;
+
+  const data = adaptAdminOperationsData(raw);
+  assert.equal(data.sourceStatus.profitability, "available");
+  assert.equal(data.modelProfitability[0].successRate, null);
+  assert.equal(data.modelProfitability[0].avgSeconds, null);
+  assert.match(operationsSource, /row\.successRate == null/);
+  assert.match(operationsSource, /row\.avgSeconds == null/);
+  assert.match(operationsSource, /row\.avgSeconds == null \? "待核验"/);
 });
 
 test("company health preserves server alerts and does not let a suspended company look healthy", () => {
@@ -732,25 +1039,152 @@ test("company health preserves server alerts and does not let a suspended compan
   const suspended = data.companyHealth.find((item) => item.id === "company-suspended");
 
   assert.equal(risk.risk, "critical");
+  assert.equal(risk.billingUnit, "CNY_CENT");
+  assert.equal(risk.balanceCents, 100);
+  assert.equal(risk.balancePoints, null);
+  assert.equal(risk.spend24hCents, 70_000);
+  assert.equal(risk.spend24hPoints, null);
   assert.equal(risk.failureRate, 42);
   assert.equal(risk.consumptionChange, 250);
   assert.equal(risk.reservationAgeHours, 72);
   assert.equal(risk.entitlementsExpiring, 2);
   assert.deepEqual(risk.reasons, ["余额不足", "预留余额长期未释放", "消费异常增长", "权益即将到期"]);
-  assert.equal(risk.dashboard.company_name, "风险企业");
+  assert.equal(risk.dashboard.name, "风险企业");
   assert.equal(suspended.risk, "inactive");
+  assert.equal(suspended.billingUnit, "POINT");
+  assert.equal(suspended.balanceCents, null);
+  assert.equal(suspended.balancePoints, 0);
   assert.equal(suspended.daysInactive, null);
 
   assert.deepEqual(data.business.companyRanking, [
     {
       id: "company-risk",
       name: "风险企业",
-      revenueCents: 70_000,
+      billingUnit: "CNY_CENT",
+      billingVersion: 1,
+      consumptionCents: 70_000,
+      consumptionPoints: null,
       taskCount: 20,
       successRate: 75,
       balanceCents: 100,
+      balancePoints: null,
+      reservedCents: 5_000,
+      reservedPoints: null,
     },
   ]);
+});
+
+test("company health and ranking keep point companies in points without cash conversion", () => {
+  const raw = liveResponseFixture();
+  raw.dashboard.companies.push({
+    company_id: "company-points",
+    company_name: "积分企业",
+    billing_unit: "POINT",
+    billing_version: 2,
+    consumption_cents: 99_999,
+    available_cents: 88_888,
+    reserved_cents: 77_777,
+    consumption_points: 320,
+    available_points: 90,
+    reserved_points: 10,
+    task_count: 30,
+    succeeded_count: 24,
+  });
+
+  const data = adaptAdminOperationsData(raw);
+  assert.equal(data.sourceStatus.dashboard, "available");
+  assert.equal(data.sourceStatus.companyHealth, "available");
+  assert.deepEqual(data.business.companyRanking[0], {
+    id: "company-points",
+    name: "积分企业",
+    billingUnit: "POINT",
+    billingVersion: 2,
+    consumptionCents: null,
+    consumptionPoints: 320,
+    taskCount: 30,
+    successRate: 80,
+    balanceCents: null,
+    balancePoints: 90,
+    reservedCents: null,
+    reservedPoints: 10,
+  });
+  assert.match(operationsSource, /消费权益按企业当前计费单位展示，不把积分换算为现金收入/);
+  assert.match(operationsSource, /积分不折算为现金/);
+});
+
+test("company health and ranking fail closed when billing metadata or unit evidence conflicts", () => {
+  const malformedHealth = liveResponseFixture();
+  malformedHealth.companyHealth.items[1].available_cents = 0;
+  const healthData = adaptAdminOperationsData(malformedHealth);
+  assert.equal(healthData.sourceStatus.companyHealth, "unavailable");
+  assert.deepEqual(healthData.companyHealth, []);
+  assert.match(healthData.sourceErrors.companyHealth, /匹配计费单位/);
+
+  const malformedRanking = liveResponseFixture();
+  malformedRanking.dashboard.companies[0].billing_unit = "POINT";
+  malformedRanking.dashboard.companies[0].billing_version = 1;
+  const rankingData = adaptAdminOperationsData(malformedRanking);
+  assert.equal(rankingData.sourceStatus.dashboard, "unavailable");
+  assert.deepEqual(rankingData.business.companyRanking, []);
+  assert.match(rankingData.sourceErrors.dashboard, /匹配计费单位/);
+});
+
+test("successful point tasks with missing settlement evidence keep operating finance incomplete", () => {
+  const raw = liveResponseFixture();
+  for (const record of [raw.operating.totals, raw.operating.points[0]]) {
+    record.point_succeeded_task_count = 1;
+    record.point_settlement_count = 0;
+    record.unattributed_point_settlement_count = 0;
+    record.point_settlement_missing_task_count = 1;
+    record.point_settlement_duplicate_task_count = 0;
+    record.known_gross_profit_cents = null;
+    record.gross_profit_cents = null;
+    record.gross_margin = null;
+    record.revenue_reconciliation_status = "incomplete";
+    record.finance_status = "incomplete";
+  }
+
+  const data = adaptAdminOperationsData(raw);
+  assert.equal(data.sourceStatus.operating, "available");
+  assert.equal(data.business.financeEvidence.pointSucceededTaskCount, 1);
+  assert.equal(data.business.financeEvidence.pointSettlementCount, 0);
+  assert.equal(data.business.financeEvidence.pointSettlementMissingTaskCount, 1);
+  assert.equal(data.business.financeEvidence.financeStatus, "incomplete");
+  assert.equal(data.business.metrics.find((item) => item.key === "grossProfit").valueCents, null);
+  assert.match(operationsSource, /成功积分任务缺少结算分录/);
+});
+
+test("model profitability keeps point revenue unavailable instead of rendering a zero cash income", () => {
+  const raw = liveResponseFixture();
+  raw.profitability.revenue_unavailable_task_count = 1;
+  raw.profitability.revenue_reconciliation_status = "unavailable";
+  raw.profitability.items[0] = {
+    ...raw.profitability.items[0],
+    settled_revenue_cents: 0,
+    known_gross_profit_cents: null,
+    gross_profit_cents: null,
+    gross_margin: null,
+    revenue_unavailable_task_count: 1,
+    revenue_missing_task_count: 0,
+    revenue_reconciliation_status: "unavailable",
+  };
+
+  const data = adaptAdminOperationsData(raw);
+  const row = data.modelProfitability.find((item) => item.id === "model-complete");
+  assert.equal(data.sourceStatus.profitability, "available");
+  assert.equal(row.revenueCents, null);
+  assert.equal(row.revenueReconciliationStatus, "unavailable");
+  assert.equal(row.revenueUnavailableTaskCount, 1);
+  assert.equal(row.grossProfitCents, null);
+  assert.equal(row.grossMargin, null);
+  assert.equal(row.financeStatus, "incomplete");
+  assert.match(operationsSource, /积分收入待归因/);
+  assert.match(operationsSource, /不会按积分兑换锚点反推收入/);
+
+  raw.profitability.items[0].gross_profit_cents = 0;
+  const malformed = adaptAdminOperationsData(raw);
+  assert.equal(malformed.sourceStatus.profitability, "unavailable");
+  assert.deepEqual(malformed.modelProfitability, []);
 });
 
 test("exception center keeps publishing, assets and operational failures in separate queues", () => {
@@ -803,6 +1237,179 @@ test("Relay unknown submissions remain a separate fenced operations queue", () =
   assert.equal(data.relayUnknownSubmissions[0].providerSubmissionAttempt, 2);
   assert.equal(data.relayUnknownSubmissions[0].reconciliationToken, token);
   assert.deepEqual(data.exceptions, []);
+});
+
+test("provider-result reconciliation is an independent secret-free read-only queue", () => {
+  const providerUrl = "https://provider.example.test/result.mp4?token=must-not-render";
+  const base = {
+    api_version: "v1",
+    schema_version: 1,
+    object: "generation.provider_result_reconciliation",
+    tenant_id: "51bdf7c4-93a6-4b7c-a4a1-03f616a10f30",
+    client_reference_id: "https://campaign.example/reference/42",
+    model: "seedance-2.0",
+    mode: "text_to_video",
+    progress: 95,
+    provider_route_id: 41,
+    provider_channel_id: 7,
+    provider_submission_attempt: 2,
+    upstream_task_id: "provider-task-42",
+    resolution_supported: false,
+    evidence_retained: true,
+    error_code: "PROVIDER_POLL_RECONCILIATION_REQUIRED",
+    error_message: "server-owned summary",
+    created_at: "2026-08-28T01:02:03Z",
+    updated_at: "2026-08-28T01:04:05Z",
+    result_url: providerUrl,
+    temporary_result_json: JSON.stringify({ provider_url: providerUrl }),
+    fail_reason: providerUrl,
+    credential: "must-not-render",
+  };
+  const rawPage = {
+    api_version: "v1",
+    schema_version: 1,
+    object: "list",
+    page: 1,
+    page_size: 100,
+    total: 4,
+    data: [
+      {
+        ...base,
+        job_id: "91c5cd71-bde2-4cf9-b6ed-b264b0841f51",
+        status: "reconciliation_required",
+        reconciliation_kind: "missing_native_task",
+      },
+      {
+        ...base,
+        job_id: "a1c5cd71-bde2-4cf9-b6ed-b264b0841f52",
+        status: "reconciliation_required",
+        reconciliation_kind: "provider_result_proof",
+      },
+      {
+        ...base,
+        job_id: "b1c5cd71-bde2-4cf9-b6ed-b264b0841f53",
+        status: "succeeded",
+        progress: 100,
+        error_code: "",
+        reconciliation_kind: "provider_material",
+      },
+      {
+        ...base,
+        job_id: "c1c5cd71-bde2-4cf9-b6ed-b264b0841f54",
+        status: "reconciliation_required",
+        reconciliation_kind: "provider_material",
+      },
+    ],
+  };
+
+  const page = adaptRelayProviderResultReconciliationPage(rawPage);
+  assert.equal(page.sourceStatus, "available");
+  assert.equal(page.total, 4);
+  assert.deepEqual(
+    Object.keys(page.items[0]).sort(),
+    [
+      "clientReferenceId",
+      "createdAt",
+      "errorCode",
+      "evidenceRetained",
+      "jobId",
+      "mode",
+      "model",
+      "progress",
+      "providerChannelId",
+      "providerRouteId",
+      "providerSubmissionAttempt",
+      "reconciliationKind",
+      "status",
+      "updatedAt",
+      "upstreamTaskId",
+    ].sort(),
+  );
+  const serialized = JSON.stringify(page);
+  assert.equal(serialized.includes(providerUrl), false);
+  assert.equal(serialized.includes("must-not-render"), false);
+  assert.equal(serialized.includes("temporary_result_json"), false);
+  assert.equal(serialized.includes("fail_reason"), false);
+  assert.equal(serialized.includes("tenant_id"), false);
+  assert.equal(serialized.includes("https://campaign.example/reference/42"), true);
+
+  assert.equal(
+    relayProviderResultReconciliationPresentation(page.items[0]).label,
+    "原生任务证据缺失",
+  );
+  assert.equal(
+    relayProviderResultReconciliationPresentation(page.items[1]).label,
+    "终态证明冲突",
+  );
+  const published = relayProviderResultReconciliationPresentation(page.items[2]);
+  assert.equal(published.label, "临时材料待核对");
+  assert.match(published.guidance, /长期作品已发布/);
+  assert.match(published.guidance, /不要重生成或删除作品/);
+  const unpublished = relayProviderResultReconciliationPresentation(page.items[3]);
+  assert.match(unpublished.guidance, /作品尚未发布/);
+  assert.match(unpublished.guidance, /禁止重试或重新生成/);
+
+  const data = adaptAdminOperationsData({ relayProviderResultReconciliations: rawPage });
+  assert.equal(data.relayProviderResultReconciliationSourceStatus, "available");
+  assert.equal(data.relayProviderResultReconciliationTotal, 4);
+  assert.equal(data.relayProviderResultReconciliations.length, 4);
+});
+
+test("provider-result reconciliation rejects an unsafe or actionable facade as unavailable", () => {
+  const item = {
+    api_version: "v1",
+    schema_version: 1,
+    object: "generation.provider_result_reconciliation",
+    job_id: "91c5cd71-bde2-4cf9-b6ed-b264b0841f51",
+    client_reference_id: null,
+    model: "seedance-2.0",
+    mode: "text_to_video",
+    status: "reconciliation_required",
+    progress: 95,
+    provider_route_id: 41,
+    provider_channel_id: 7,
+    provider_submission_attempt: 2,
+    upstream_task_id: "provider-task-42",
+    reconciliation_kind: "provider_result_proof",
+    resolution_supported: true,
+    evidence_retained: true,
+    error_code: "PROVIDER_POLL_RECONCILIATION_REQUIRED",
+    created_at: "2026-08-28T01:02:03Z",
+    updated_at: "2026-08-28T01:04:05Z",
+  };
+  const page = {
+    api_version: "v1",
+    schema_version: 1,
+    object: "list",
+    page: 1,
+    page_size: 100,
+    total: 1,
+  };
+  const actionable = adaptRelayProviderResultReconciliationPage({ ...page, data: [item] });
+  assert.equal(actionable.sourceStatus, "unavailable");
+  assert.equal(actionable.total, null);
+  assert.deepEqual(actionable.items, []);
+
+  const urlBearing = adaptRelayProviderResultReconciliationPage({
+    ...page,
+    data: [{ ...item, resolution_supported: false, upstream_task_id: "https://provider.test/private" }],
+  });
+  assert.equal(urlBearing.sourceStatus, "unavailable");
+  assert.equal(urlBearing.total, null);
+  assert.deepEqual(urlBearing.items, []);
+
+  for (const [label, candidate] of [
+    ["wrong page schema", { ...page, schema_version: 2, data: [{ ...item, resolution_supported: false }] }],
+    ["wrong item object", { ...page, data: [{ ...item, resolution_supported: false, object: "task" }] }],
+    ["timestamp without offset", { ...page, data: [{ ...item, resolution_supported: false, created_at: "2026-08-28T01:02:03" }] }],
+    ["time regression", { ...page, data: [{ ...item, resolution_supported: false, updated_at: "2026-08-28T01:00:00Z" }] }],
+    ["terminal status on proof conflict", { ...page, data: [{ ...item, resolution_supported: false, status: "succeeded" }] }],
+  ]) {
+    const result = adaptRelayProviderResultReconciliationPage(candidate);
+    assert.equal(result.sourceStatus, "unavailable", label);
+    assert.equal(result.total, null, label);
+    assert.deepEqual(result.items, [], label);
+  }
 });
 
 test("Relay channel facade is projected through a strict secret-free UI whitelist", () => {
@@ -868,7 +1475,7 @@ test("Relay channel facade is projected through a strict secret-free UI whitelis
 test("entitlement matrix maps model pricing, schedules, limits and retired catalog states", () => {
   const data = adaptAdminOperationsData(liveResponseFixture());
   assert.deepEqual(data.companies, [
-    { id: "company-risk", name: "风险企业", status: "active", plan: "独立合同" },
+    { id: "company-risk", name: "风险企业", status: "active", plan: "独立合同", billingUnit: "POINT", billingVersion: 2 },
   ]);
   assert.deepEqual(
     data.entitlementProducts.map(({ id, kind, billingMode, status }) => ({ id, kind, billingMode, status })),
@@ -885,7 +1492,10 @@ test("entitlement matrix maps model pricing, schedules, limits and retired catal
   const retiredGrant = data.entitlementGrants[buildEntitlementKey("company-risk", "agent-retired")];
   assert.equal(modelGrant.state, "expiring");
   assert.equal(modelGrant.serverState, "enabled");
-  assert.equal(modelGrant.priceCents, 42);
+  assert.equal(modelGrant.billingUnit, "POINT");
+  assert.equal(modelGrant.billingVersion, 2);
+  assert.equal(modelGrant.pricePoints, 42);
+  assert.equal(modelGrant.priceCents, null);
   assert.equal(modelGrant.quota, 1_000);
   assert.equal(modelGrant.concurrency, 3);
   assert.match(modelGrant.capabilityLimit, /"max_images": 4/);
@@ -934,6 +1544,8 @@ test("channel, audit and administrator responses preserve unavailable evidence a
   assert.equal(data.auditEvents[0].result, "failed");
   assert.deepEqual(data.auditEvents[0].before, { enabled: false });
   assert.deepEqual(data.auditEvents[0].after, { enabled: true, change_reason: "合同生效" });
+  assert.equal(data.auditEvents[1].actorName, "系统任务 · relay-catalog-sync");
+  assert.equal(data.auditEvents[1].actorId, "relay-catalog-sync");
   assert.deepEqual(data.adminPermissionCatalog, [
     { key: "platform.analytics.read", label: "查看经营分析", group: "经营分析" },
   ]);
@@ -972,10 +1584,35 @@ test("missing live datasets stay empty and never become demo-like zero dashboard
   assert.equal(data.sourceErrors.operating, "upstream timeout");
 
   const confirmedEmpty = adaptAdminOperationsData({
-    operating: { totals: {}, points: [], end_time: "2026-08-07T00:00:00Z" },
+    operating: {
+      point_bucket_time_basis: "task_updated_at",
+      totals: {
+        recharge_cents: 0,
+        settled_revenue_cents: 0,
+        settled_points: 0,
+        point_succeeded_task_count: 0,
+        point_settlement_count: 0,
+        unattributed_point_settlement_count: 0,
+        point_settlement_missing_task_count: 0,
+        point_settlement_duplicate_task_count: 0,
+        provider_cost_cents: 0,
+        known_gross_profit_cents: 0,
+        gross_profit_cents: 0,
+        gross_margin: null,
+        cost_missing_task_count: 0,
+        cost_reconciliation_status: "complete",
+        revenue_reconciliation_status: "complete",
+        finance_status: "complete",
+      },
+      points: [],
+      end_time: "2026-08-07T00:00:00Z",
+    },
     taskOps: { status_counts: {}, total_task_count: 0, latency_seconds: {}, failure_reasons: [] },
   });
-  assert.equal(confirmedEmpty.business.metrics.length, 5);
+  assert.equal(confirmedEmpty.business.metrics.length, 6);
+  assert.equal(confirmedEmpty.sourceStatus.operating, "available");
+  assert.equal(confirmedEmpty.business.metrics[0].valueCents, 0);
+  assert.equal(confirmedEmpty.business.metrics[5].valuePercent, null);
   assert.equal(confirmedEmpty.business.metrics[0].change, null);
   assert.equal(confirmedEmpty.business.metrics[0].comparisonStatus, "unavailable");
   assert.equal(confirmedEmpty.business.metrics[0].yearOverYearChange, null);

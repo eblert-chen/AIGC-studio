@@ -16,28 +16,44 @@ const tokens = await readFile(
   new URL("../src/design-system/tokens.css", import.meta.url),
   "utf8",
 );
-const legacyStudio = await readFile(
-  new URL("../src/light-theme.css", import.meta.url),
+const shells = await readFile(
+  new URL("../src/design-system/shells.css", import.meta.url),
   "utf8",
 );
-const legacyCommunity = await readFile(
-  new URL("../src/community.css", import.meta.url),
+const chrome = await readFile(
+  new URL("../src/design-system/chrome.css", import.meta.url),
   "utf8",
 );
-const legacyCreation = await readFile(
-  new URL("../src/creation-hub.css", import.meta.url),
+const managementRoutes = await readFile(
+  new URL("../src/design-system/management-routes.css", import.meta.url),
   "utf8",
 );
-const legacyPublishing = await readFile(
-  new URL("../src/publishing.css", import.meta.url),
+const composerRoutes = await readFile(
+  new URL("../src/design-system/composer.css", import.meta.url),
   "utf8",
 );
-const legacyCompany = await readFile(
-  new URL("../src/styles.css", import.meta.url),
+const homeRoutes = await readFile(
+  new URL("../src/design-system/home.css", import.meta.url),
   "utf8",
 );
-const legacyOperations = await readFile(
-  new URL("../src/admin/operations-console.css", import.meta.url),
+const mobileStudio = await readFile(
+  new URL("../src/design-system/mobile-studio.css", import.meta.url),
+  "utf8",
+);
+const mobileManagement = await readFile(
+  new URL("../src/design-system/mobile-management.css", import.meta.url),
+  "utf8",
+);
+const mobileOperations = await readFile(
+  new URL("../src/design-system/mobile-operations.css", import.meta.url),
+  "utf8",
+);
+const showcaseRoute = await readFile(
+  new URL("../src/design-system/showcase-route.css", import.meta.url),
+  "utf8",
+);
+const branding = await readFile(
+  new URL("../src/design-system/branding.css", import.meta.url),
   "utf8",
 );
 const operationsRoutes = await readFile(
@@ -65,20 +81,79 @@ const indexHtml = await readFile(
   "utf8",
 );
 
-test("one local bilingual font stack owns Studio Company and Operations", () => {
+const authoredCss = [
+  controls,
+  foundation,
+  shells,
+  chrome,
+  authStyles,
+  studioRoutes,
+  managementRoutes,
+  operationsRoutes,
+  composerRoutes,
+  homeRoutes,
+  mobileStudio,
+  mobileManagement,
+  mobileOperations,
+  showcaseRoute,
+  branding,
+].join("\n");
+
+function hexToken(source, name) {
+  const match = source.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})`));
+  assert.ok(match, `missing ${name}`);
+  return match[1];
+}
+
+function relativeLuminance(hex) {
+  const channels = hex.slice(1).match(/../g).map((part) => Number.parseInt(part, 16) / 255);
+  const [red, green, blue] = channels.map((value) => (
+    value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  ));
+  return (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+}
+
+function contrastRatio(foreground, background) {
+  const first = relativeLuminance(foreground);
+  const second = relativeLuminance(background);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
+
+test("one Chinese-first local bilingual font stack owns Studio Company and Operations", () => {
   assert.match(foundation, /@fontsource-variable\/manrope\/wght\.css/);
   assert.match(foundation, /@fontsource-variable\/noto-sans-sc\/wght\.css/);
-  assert.match(tokens, /--font-sans:[\s\S]*?"Manrope Variable"[\s\S]*?"Noto Sans SC Variable"/);
+  assert.match(tokens, /--font-sans:[\s\S]*?"Noto Sans SC Variable"[\s\S]*?"Manrope Variable"/);
   assert.match(foundation, /html,[\s\S]*?\.app-shell,[\s\S]*?\.control-shell,[\s\S]*?\.ops-console[\s\S]*?font-family:\s*var\(--font-sans\)/);
-  assert.doesNotMatch(legacyStudio, /font-family:\s*"Helvetica Neue"/);
-  assert.doesNotMatch(legacyOperations, /font-family:[^;]*(Microsoft YaHei|PingFang SC)/);
-  assert.doesNotMatch(legacyCompany.slice(0, 500), /font-family:/);
-  assert.doesNotMatch(legacyCompany, /font-family:\s*ui-monospace/);
-  assert.match(legacyCompany, /font-family:\s*var\(--font-mono\)/);
+  assert.doesNotMatch(authoredCss, /font-family:[^;]*(?:"Helvetica Neue"|Microsoft YaHei|PingFang SC)/);
+  assert.doesNotMatch(authoredCss, /font-family:\s*ui-monospace/);
+  assert.match(managementRoutes, /\.control-shell \.control-table :is\(code, \.is-mono\)\s*\{[^}]*font-family:\s*var\(--font-mono\)/s);
 });
 
 test("browser chrome follows the locked light foundation", () => {
-  assert.match(indexHtml, /name="theme-color" content="#ffffff"/);
+  assert.match(indexHtml, /name="theme-color" content="#fafaf7"/);
+});
+
+test("shared muted copy and workflow actions meet WCAG AA", () => {
+  const paperStart = tokens.indexOf(':where([data-theme="paper"]');
+  const mistStart = tokens.indexOf(':where([data-theme="mist"]');
+  const warmStart = tokens.indexOf(':where([data-theme="warm"]');
+  const paper = tokens.slice(paperStart, mistStart);
+  const mist = tokens.slice(mistStart, warmStart);
+  const warm = tokens.slice(warmStart, tokens.indexOf("/* Operations keeps domain aliases", warmStart));
+
+  for (const theme of [paper, mist, warm]) {
+    assert.ok(
+      contrastRatio(hexToken(theme, "--text-muted"), hexToken(theme, "--bg")) >= 4.5,
+      "12px muted copy must retain AA contrast on its theme canvas",
+    );
+  }
+
+  const signal = hexToken(tokens, "--workflow-orange");
+  assert.ok(contrastRatio(signal, "#ffffff") >= 4.5, "signal text and buttons must contrast with white");
+  assert.ok(
+    contrastRatio(signal, hexToken(tokens, "--workflow-orange-soft")) >= 4.5,
+    "signal text must contrast with its soft state surface",
+  );
 });
 
 test("one layered stylesheet entry owns the complete application cascade", () => {
@@ -100,25 +175,22 @@ test("one layered stylesheet entry owns the complete application cascade", () =>
   assert.match(designSystemIndex, /@import\s+"\.\/operations-routes\.css"\s+layer\(system\.routes\)/);
   assert.match(designSystemIndex, /@import\s+"\.\/composer\.css"\s+layer\(system\.routes\)/);
   assert.match(designSystemIndex, /@import\s+"\.\/home\.css"\s+layer\(system\.routes\)/);
+  assert.match(designSystemIndex, /@import\s+"\.\/mobile-studio\.css"\s+layer\(system\.routes\)/);
+  assert.match(designSystemIndex, /@import\s+"\.\/mobile-management\.css"\s+layer\(system\.routes\)/);
+  assert.match(designSystemIndex, /@import\s+"\.\/mobile-operations\.css"\s+layer\(system\.routes\)/);
+  assert.match(designSystemIndex, /@import\s+"\.\/showcase-route\.css"\s+layer\(system\.routes\)/);
+  assert.match(designSystemIndex, /@import\s+"\.\/branding\.css"\s+layer\(system\.routes\)/);
+  assert.match(designSystemIndex, /@import\s+"\.\/auth\.css"\s+layer\(system\.routes\)/);
+  assert.doesNotMatch(designSystemIndex, /(?:styles|light-theme|community|creation-hub|publishing|operations-console)\.css/);
   assert.doesNotMatch(operationsSource, /import\s+["']\.\/operations-console\.css["']/);
   assert.doesNotMatch(foundation, /@import\s+["']\.\/tokens\.css["']/);
 });
 
-test("legacy CSS is migrated to tokens instead of hidden behind a selector patch", () => {
-  const legacyCss = [
-    legacyStudio,
-    legacyCompany,
-    legacyCommunity,
-    legacyCreation,
-    legacyPublishing,
-    legacyOperations,
-  ].join("\n");
-  assert.doesNotMatch(legacyCss, /font-size:\s*(?:8|9|10|11)px\s*;/);
-  assert.doesNotMatch(legacyCss, /font-weight:\s*(?:520|540|550|580|610|620|630|640|650|660|680|710|720|730|740|750|760|780|800)\s*;/);
+test("active layered CSS preserves the readable type floor without specificity patches", () => {
+  assert.doesNotMatch(authoredCss, /font-size:\s*(?:8|9|10|11)px\s*;/);
   assert.doesNotMatch(foundation, /Migration guard:/);
   assert.doesNotMatch(foundation, /font-size:[^;]+!important/);
   assert.doesNotMatch(operationsSource, /fontSize:\s*(?:8|9|10|11)\b/);
-  assert.match(legacyOperations, /Retired: Operations styles now live in design-system\/operations-routes\.css/);
   assert.match(operationsRoutes, /\.ops-timing-strip small\s*\{[\s\S]*?font-size:\s*var\(--text-caption, 12px\)/);
   assert.match(operationsRoutes, /\.ops-reason-row small\s*\{[\s\S]*?font-size:\s*var\(--text-caption, 12px\)/);
   assert.match(operationsRoutes, /\.ops-exception-meta small\s*\{[\s\S]*?font-size:\s*var\(--text-caption, 12px\)/);
@@ -126,12 +198,12 @@ test("legacy CSS is migrated to tokens instead of hidden behind a selector patch
   assert.doesNotMatch(operationsRoutes, /!important/);
 });
 
-test("completed auth and settings route slices no longer depend on legacy selectors", () => {
-  assert.match(authStyles, /\.auth-gate\s*\{[\s\S]*?background:\s*var\(--bg\)/);
-  assert.match(studioRoutes, /\.app-shell\.is-secondary-page \.setting-row\s*\{[\s\S]*?display:\s*flex/);
-  assert.doesNotMatch(legacyCompany, /\.auth-gate|\.settings-list|\.setting-row/);
-  assert.doesNotMatch(legacyCommunity, /\.auth-gate|\.settings-list|\.setting-row/);
-  assert.doesNotMatch(legacyStudio, /\.auth-gate|\.settings-list|\.setting-row/);
+test("auth and settings route slices keep one explicit visual owner", () => {
+  assert.match(authStyles, /\.auth-shell,[\s\S]*?\.auth-gate\s*\{[^}]*background:\s*var\(--auth-paper\)/s);
+  assert.match(authStyles, /\.auth-gate\s*\{[^}]*display:\s*grid;[^}]*place-items:\s*center;/s);
+  assert.match(studioRoutes, /\.setting-row\s*\{[^}]*display:\s*flex/s);
+  assert.doesNotMatch(studioRoutes, /(^|\n)\s*\.auth-gate\b/m);
+  assert.doesNotMatch(`${homeRoutes}\n${composerRoutes}\n${managementRoutes}\n${operationsRoutes}`, /(^|\n)\s*\.(?:auth-gate|settings-list|setting-row)\b/m);
 });
 
 test("shared controls stay scoped to the three product shells", () => {
@@ -146,15 +218,17 @@ test("Ops maps its existing semantic palette instead of inheriting Studio colors
   assert.match(controls, /\.ops-console\s*\{[\s\S]*?--control-danger:\s*var\(--ops-red/);
 });
 
-test("control contract exposes only the 32 40 44 scale and six pixel corners", () => {
+test("control contract exposes the 32 40 44 scale and purposeful control corners", () => {
   assert.match(controls, /--control-size-compact:\s*var\(--control-sm, 32px\)/);
   assert.match(controls, /--control-size-default:\s*var\(--control-md, 40px\)/);
   assert.match(controls, /--control-size-touch:\s*var\(--control-lg, 44px\)/);
-  assert.match(controls, /--control-corner:\s*var\(--radius-control, 6px\)/);
+  assert.match(tokens, /--radius-control:\s*0\.625rem;/);
+  assert.match(controls, /--control-corner:\s*var\(--radius-control, 10px\);/);
+  assert.doesNotMatch(controls, /--control-corner:\s*0;/);
   assert.match(controls, /\.control-shell \.control-brand\s*\{[\s\S]*?min-height:\s*var\(--control-size-compact\)/);
   assert.match(controls, /\.control-topbar button,[\s\S]*?min-height:\s*var\(--control-size-compact\)/);
-  assert.match(legacyCompany, /\.control-logout\s*\{[^}]*height:\s*32px/s);
-  assert.match(legacyCompany, /\.control-platform-view-switch\s*\{[^}]*height:\s*32px/s);
+  assert.match(mobileManagement, /\.control-shell \.control-mobile-command-panel \.surface-switch button\s*\{[^}]*min-height:\s*44px/s);
+  assert.match(mobileManagement, /\.control-shell \.control-mobile-command-panel \.skin-switcher-trigger\s*\{[^}]*min-height:\s*44px/s);
   assert.match(controls, /\.generate-button,[\s\S]*?\.publication-center form > footer button\.is-primary[\s\S]*?min-height:\s*var\(--control-size-touch\)/);
 });
 
@@ -164,7 +238,9 @@ test("visible labels and tables cannot fall below the type floor", () => {
   assert.match(controls, /:is\(\.control-table, \.ops-table\)[\s\S]*?font-size:\s*var\(--control-table-size\)/);
   assert.match(controls, /:is\(\.control-table, \.ops-table\) td[\s\S]*?font-size:\s*var\(--control-table-size\)/);
   assert.match(controls, /:is\(\.control-table, \.ops-table\) th[\s\S]*?font-size:\s*var\(--control-table-size\)/);
-  assert.match(controls, /\.skin-switcher select\s*\{[\s\S]*?min-height:\s*var\(--control-size-compact\)/);
+  assert.match(controls, /\.skin-switcher-trigger\s*\{[\s\S]*?min-height:\s*var\(--control-size-default/);
+  assert.match(controls, /\.skin-switcher-trigger\s*\{[\s\S]*?font-size:\s*var\(--control-label-size/);
+  assert.doesNotMatch(controls, /\.skin-switcher[^\n{]*select/);
 });
 
 test("buttons fields tabs and tables share explicit state contracts", () => {
@@ -187,45 +263,36 @@ test("semantic states and icon-only controls remain deliberate exceptions", () =
   assert.match(controls, /button\.is-danger[\s\S]*?var\(--control-danger\)/);
 });
 
-test("composer settings remains a labeled control instead of collapsing to an icon square", () => {
+test("composer disclosures remain labeled touch controls instead of icon-only settings buttons", () => {
   const iconOnlyStart = controls.indexOf("/* Icon-only controls keep a square hit target");
   const compactIconStart = controls.indexOf("/* Compact icon groups preserve dense table/tool layouts", iconOnlyStart);
   assert.ok(iconOnlyStart >= 0 && compactIconStart > iconOnlyStart);
-  assert.doesNotMatch(
-    controls.slice(iconOnlyStart, compactIconStart),
-    /\.composer-settings-button/,
-  );
-  assert.match(
-    controls,
-    /\.composer-settings-button\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?width:\s*auto;[\s\S]*?min-width:\s*max-content;[\s\S]*?white-space:\s*nowrap;/,
-  );
-  assert.match(
-    controls,
-    /@media \(max-width: 620px\)[\s\S]*?\.community-composer-header \.composer-current-mode\s*\{[\s\S]*?display:\s*none;/,
-  );
+  assert.doesNotMatch(controls, /\.composer-settings-button|\.composer-add-media/);
+  assert.match(composerRoutes, /\.director-panel-triggers button\s*\{[^}]*min-height:\s*var\(--control-md\);[^}]*white-space:\s*nowrap;/s);
+  assert.match(composerRoutes, /@media \(max-width: 620px\)[\s\S]*?\.composer-mobile-edit-header > button\s*\{[^}]*min-height:\s*44px;/s);
+  assert.match(composerRoutes, /@media \(max-width: 620px\)[\s\S]*?\.composer-mobile-settings-row > button\s*\{[^}]*min-height:\s*48px;/s);
+  assert.match(composerRoutes, /@media \(max-width: 620px\)[\s\S]*?\.director-panel-triggers\s*\{\s*display:\s*none;/s);
 });
 
-test("collapsed composer reserves space for the shared 40px control contract", () => {
+test("Studio composers participate in shell layout and preserve short-phone reachability", () => {
   assert.match(
-    legacyCommunity,
-    /\.community-composer:not\(\.is-expanded\) \.inspector-scroll\s*\{[\s\S]*?grid-template-rows:\s*minmax\(104px, auto\) auto;/,
-  );
-  assert.match(
-    legacyCommunity,
-    /\.community-composer:not\(\.is-expanded\)\s*\{[\s\S]*?grid-template-rows:\s*42px auto auto;[\s\S]*?height:\s*auto;/,
+    shells,
+    /\.app-shell\.is-community-home\s*\{[^}]*grid-template-rows:\s*var\(--shell-topbar-size\) minmax\(0, 1fr\) auto;/s,
   );
   assert.match(
-    legacyCommunity,
-    /\.community-composer:not\(\.is-expanded\) \.model-section\s*\{[\s\S]*?padding:\s*4px 12px;/,
+    shells,
+    /\.app-shell\.is-community-home > \.main-canvas\s*\{[^}]*grid-row:\s*2;[\s\S]*?\.app-shell\.is-community-home > \.community-composer\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*3;/,
   );
   assert.match(
-    legacyCommunity,
-    /\.community-composer:not\(\.is-expanded\) \.model-section select\s*\{[\s\S]*?height:\s*var\(--control-md, 40px\);/,
+    composerRoutes,
+    /\.community-composer\s*\{[^}]*position:\s*relative;[^}]*display:\s*grid;[^}]*overflow:\s*hidden;/s,
   );
-  assert.doesNotMatch(
-    legacyCommunity,
-    /\.is-community-home \.community-composer\s*\{[^}]*height:\s*(?:212|218|224|252|254)px;/s,
-  );
+  assert.match(composerRoutes, /\.community-composer\.is-expanded\s*\{[^}]*max-height:\s*min\(65dvh, 540px\);/s);
+  assert.match(composerRoutes, /@media \(max-width: 620px\)[\s\S]*?\.community-composer\[data-mobile-open="false"\]\s*\{[^}]*height:\s*72px;/s);
+  assert.match(composerRoutes, /@media \(max-width: 620px\)[\s\S]*?\.community-composer\[data-mobile-open="true"\]\s*\{[^}]*height:\s*100%;[^}]*max-height:\s*none;/s);
+  assert.match(shells, /\.app-shell\.is-community-home\.is-mobile-composer-open > \.main-canvas\s*\{\s*display:\s*none;/);
+  assert.doesNotMatch(composerRoutes, /position:\s*fixed/);
+  assert.doesNotMatch(mobileStudio, /max-height:\s*640px/);
 });
 
 test("compact table and inline actions do not inherit default or primary height", () => {

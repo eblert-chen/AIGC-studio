@@ -58,6 +58,34 @@ func PlatformGenerationNativeAdmission() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid generation fencing tokens"})
 			return
 		}
+		_, assignedRoute, err := model.GetPlatformGenerationProviderRouteAssignment(jobID)
+		if err != nil || assignedRoute == nil || assignedRoute.ID != routeID {
+			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "generation route transport binding is unavailable"})
+			return
+		}
+		runtimeTransport, transportRequired, transportErr := service.ResolvePlatformGenerationRuntimeTransport(*assignedRoute)
+		if transportErr != nil {
+			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "generation route transport is not attested"})
+			return
+		}
+		providedTransport := service.PlatformGenerationRuntimeTransportBinding{
+			Revision: c.GetHeader(constant.HeaderPlatformGenerationTransportRevision),
+			SHA256:   c.GetHeader(constant.HeaderPlatformGenerationTransportSHA256),
+		}
+		if transportRequired {
+			if providedTransport != runtimeTransport {
+				c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "generation route transport fence is stale"})
+				return
+			}
+		} else if providedTransport.Revision != "" || providedTransport.SHA256 != "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "unexpected generation route transport fence"})
+			return
+		}
+		preflightChannel, err := model.GetChannelById(assignedRoute.ChannelID, false)
+		if err != nil || (transportRequired && service.ValidatePlatformGenerationRuntimeTransport(preflightChannel, providedTransport) != nil) {
+			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "generation route transport changed"})
+			return
+		}
 		route, err := model.BeginPlatformGenerationRouteSubmission(
 			jobID,
 			routeID,
@@ -71,6 +99,14 @@ func PlatformGenerationNativeAdmission() gin.HandlerFunc {
 		channel, err := model.GetChannelById(route.ChannelID, true)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "generation route channel no longer exists"})
+			return
+		}
+		// BeginPlatformGenerationRouteSubmission acquires the active route slot and
+		// serializes with supported channel mutations. Recheck the transport from
+		// the post-admission channel snapshot so a BaseURL/proxy change between the
+		// earlier receipt check and slot acquisition cannot reach the provider.
+		if transportRequired && service.ValidatePlatformGenerationRuntimeTransport(channel, providedTransport) != nil {
+			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "generation route transport changed"})
 			return
 		}
 		key, err := channel.GetKeyAt(route.KeyIndex)
@@ -96,6 +132,10 @@ func PlatformGenerationNativeAdmission() gin.HandlerFunc {
 		common.SetContextKey(c, constant.ContextKeyPlatformGenerationUpstreamModel, route.UpstreamModel)
 		common.SetContextKey(c, constant.ContextKeyPlatformGenerationPinnedRoute, true)
 		common.SetContextKey(c, constant.ContextKeyPlatformGenerationWorkerLeaseToken, workerLeaseToken)
+		if transportRequired {
+			common.SetContextKey(c, constant.ContextKeyPlatformGenerationTransportRevision, providedTransport.Revision)
+			common.SetContextKey(c, constant.ContextKeyPlatformGenerationTransportSHA256, providedTransport.SHA256)
+		}
 		service.AuthorizePlatformOwnedBilling(c)
 		common.SetContextKey(c, constant.ContextKeyTokenSpecificChannelId, strconv.Itoa(route.ChannelID))
 		c.Set("specific_channel_id", strconv.Itoa(route.ChannelID))

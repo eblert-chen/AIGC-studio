@@ -35,7 +35,26 @@ function configuredShowcaseMediaOrigin(env) {
   return configuredHttpsOrigin(env, "PLATFORM_SHOWCASE_MEDIA_ORIGIN");
 }
 
+function isDirectorDeskDocument(request) {
+  return new URL(request.url).pathname === "/director-desk/index.html";
+}
+
 function contentSecurityPolicy(request, env) {
+  if (isDirectorDeskDocument(request)) {
+    return [
+      "default-src 'none'",
+      "base-uri 'none'",
+      "object-src 'none'",
+      "frame-ancestors 'self'",
+      "form-action 'none'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "media-src blob:",
+      "connect-src 'none'",
+      "sandbox allow-scripts allow-downloads",
+    ].join("; ");
+  }
   const requestOrigin = new URL(request.url).origin;
   const platformOrigin = configuredPlatformOrigin(env);
   const showcaseMediaOrigin = configuredShowcaseMediaOrigin(env);
@@ -71,6 +90,10 @@ function secure(response, request, env) {
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     headers.set(name, value);
+  }
+  if (isDirectorDeskDocument(request)) {
+    headers.set("X-Frame-Options", "SAMEORIGIN");
+    headers.set("Referrer-Policy", "no-referrer");
   }
   headers.set("Content-Security-Policy", contentSecurityPolicy(request, env));
   if (new URL(request.url).protocol === "https:") {

@@ -323,7 +323,7 @@ func chooseDB(envName string, isLog bool) (*gorm.DB, common.DatabaseType, error)
 						if !RelayRuntimeDatabaseLifecycleHealthy() {
 							return driver.ErrBadConn
 						}
-						if err := verifyRelayRuntimeDatabaseConnectionSession(ctx, connection, expectedRole); err != nil {
+						if err := verifyRelayRuntimeDatabaseResetSession(ctx, connection, expectedRole); err != nil {
 							return driver.ErrBadConn
 						}
 						return nil
@@ -382,7 +382,27 @@ func chooseDB(envName string, isLog bool) (*gorm.DB, common.DatabaseType, error)
 	return db, common.DatabaseTypeSQLite, err
 }
 
+var (
+	verifyRelayRuntimeDatabaseSessionFence             = verifyRelayRuntimeDatabaseConnectionSessionFence
+	verifyRelayInstalledDatabaseReleaseIdentitySession = verifyRelayInstalledDatabaseReleaseIdentityConnection
+)
+
 func verifyRelayRuntimeDatabaseConnectionSession(ctx context.Context, connection *pgx.Conn, expectedRole string) error {
+	if err := verifyRelayRuntimeDatabaseSessionFence(ctx, connection, expectedRole); err != nil {
+		return err
+	}
+	return verifyRelayInstalledDatabaseReleaseIdentitySession(ctx, connection)
+}
+
+// verifyRelayRuntimeDatabaseResetSession is the bounded per-checkout fence.
+// The full installed database release identity includes a PG16 system semantic
+// fingerprint and therefore belongs only to AfterConnect/startup/bounded
+// refresh, not database/sql's ResetSession hot path.
+func verifyRelayRuntimeDatabaseResetSession(ctx context.Context, connection *pgx.Conn, expectedRole string) error {
+	return verifyRelayRuntimeDatabaseSessionFence(ctx, connection, expectedRole)
+}
+
+func verifyRelayRuntimeDatabaseConnectionSessionFence(ctx context.Context, connection *pgx.Conn, expectedRole string) error {
 	var parameterLength string
 	var errorParameterLength string
 	var autoExplainParameterLength sql.NullString
@@ -449,7 +469,7 @@ func verifyRelayRuntimeDatabaseConnectionSession(ctx context.Context, connection
           AND granted) = 2`, expectedRole, relayLifecycleAdvisoryLock, relayLifecycleMutationAdvisoryLock).Scan(&exact); err != nil || !exact {
 		return errors.New("Relay runtime database connection session contract is not exact")
 	}
-	return verifyRelayInstalledDatabaseReleaseIdentityConnection(ctx, connection)
+	return nil
 }
 
 func InitDB() (err error) {

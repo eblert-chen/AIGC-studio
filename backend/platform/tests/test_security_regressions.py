@@ -22,6 +22,7 @@ from platform_api.models import (
     Role,
     TaskStatus,
     User,
+    UserAccountType,
     WalletAccount,
     utcnow,
 )
@@ -453,13 +454,20 @@ def production_client_and_identity():
     Base.metadata.create_all(engine)
     session_factory = build_session_factory(engine)
     with session_factory.begin() as session:
-        company, user, _ = CompanyService.bootstrap_company(
+        company, _, _ = CompanyService.bootstrap_company(
             session,
             company_name="Production JWT",
             owner_email="production-jwt@example.com",
             owner_display_name="Production JWT Owner",
         )
-        user.is_platform_admin = True
+        user = User(
+            email="production-platform-admin@example.com",
+            display_name="Production Platform Admin",
+            is_platform_admin=True,
+            account_type=UserAccountType.PLATFORM_ADMIN,
+        )
+        session.add(user)
+        session.flush()
         company_id = company.id
         user_id = user.id
     settings = Settings(

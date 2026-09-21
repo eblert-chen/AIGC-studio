@@ -43,8 +43,15 @@ services:
   platform-relay-sync:
     <<: *platform-pilot
 
+  platform-relay-catalog-sync:
+    <<: *platform-pilot
+
   platform-timeout-worker:
     <<: *platform-pilot
 
   platform-publishing-worker:
+    <<: *platform-pilot
     profiles: ["publishing-disabled-until-real-adapter"]
+
+  platform-download-gateway-registration-worker:
+    <<: *platform-pilot

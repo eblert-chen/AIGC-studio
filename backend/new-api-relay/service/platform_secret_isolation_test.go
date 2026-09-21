@@ -78,12 +78,13 @@ func platformRelaySecretIsolationTestBindingsValue(t *testing.T) platformRelaySe
 	tenantID := platformRelayRuntimeSecretsTestTenantA
 	clientIDs := map[string]string{
 		"platform-api": "client-platform-api", "dispatcher": "client-platform-dispatcher",
-		"relay-sync": "client-platform-relay-sync", "timeout-worker": "client-platform-timeout",
+		"relay-sync": "client-platform-relay-sync", "relay-catalog-sync": "client-platform-relay-catalog-sync",
+		"timeout-worker": "client-platform-timeout",
 	}
 	apiKeys := map[string]string{}
 	principals := make([]PlatformRelayServicePrincipalProvisionInput, 0, len(clientIDs))
 	clients := make([]PlatformRelayAPIRuntimeClientSecret, 0, len(clientIDs))
-	roles := []string{"platform-api", "dispatcher", "relay-sync", "timeout-worker"}
+	roles := []string{"platform-api", "dispatcher", "relay-sync", "relay-catalog-sync", "timeout-worker"}
 	callbackSecret := platformRelayRuntimeSecretsTestValue("platform-new-api-callback")
 	for _, role := range roles {
 		apiKeys[role] = platformRelayRuntimeSecretsTestValue("platform-new-api-key-" + role)
@@ -148,7 +149,7 @@ func platformRelaySecretIsolationTestBindingsValue(t *testing.T) platformRelaySe
 		switch contract.role {
 		case "migration":
 			secrets = map[string]any{"database_url": platformRelaySecretIsolationTestPlatformDSN(contract.role, contract.databaseUser)}
-		case "relay-sync", "timeout-worker":
+		case "relay-sync", "relay-catalog-sync", "timeout-worker":
 			secrets = relayValues(contract.role)
 		case "dispatcher":
 			secrets = relayValues(contract.role)
@@ -445,13 +446,15 @@ func TestValidateAndCommitPlatformRelaySecretIsolationWritesLeastPrivilegeReceip
 		PlatformRelaySecretIsolationConsumerEdge:      {"edge_dsn", "edge_runtime", "relay_database_ca"},
 		PlatformRelaySecretIsolationConsumerPlatformDBRolePre: {
 			"platform_database_ca", "platform_role_admin_dsn", "platform_migration_password", "platform_api_password",
-			"platform_dispatcher_password", "platform_relay_sync_password", "platform_timeout_worker_password",
+			"platform_dispatcher_password", "platform_relay_sync_password", "platform_relay_catalog_sync_password",
+			"platform_timeout_worker_password",
 			"platform_publishing_worker_password", "platform_download_gateway_worker_password",
 		},
 		PlatformRelaySecretIsolationConsumerPlatformMigration:             {"platform_database_ca", "platform_migration_runtime"},
 		PlatformRelaySecretIsolationConsumerPlatformAPI:                   {"platform_api_runtime", "platform_database_ca"},
 		PlatformRelaySecretIsolationConsumerPlatformDispatcher:            {"platform_database_ca", "platform_dispatcher_runtime"},
 		PlatformRelaySecretIsolationConsumerPlatformRelaySync:             {"platform_database_ca", "platform_relay_sync_runtime"},
+		PlatformRelaySecretIsolationConsumerPlatformRelayCatalogSync:      {"platform_database_ca", "platform_relay_catalog_sync_runtime"},
 		PlatformRelaySecretIsolationConsumerPlatformTimeoutWorker:         {"platform_database_ca", "platform_timeout_worker_runtime"},
 		PlatformRelaySecretIsolationConsumerPlatformPublishingWorker:      {"platform_database_ca", "platform_publishing_worker_runtime"},
 		PlatformRelaySecretIsolationConsumerPlatformDownloadGatewayWorker: {"platform_database_ca", "platform_download_gateway_worker_runtime"},
@@ -505,7 +508,7 @@ func TestPlatformRelaySecretIsolationMarkerV2CrossLanguageGolden(t *testing.T) {
 	raw, err := platformRelaySecretIsolationCanonicalCommitMarker(marker)
 	require.NoError(t, err)
 	digest := sha256.Sum256(raw)
-	require.Equal(t, "80df3044f8b70c36b106ebf3b32c50159e25bc8d7f97e682dcf82d1918729c17",
+	require.Equal(t, "ab35c59a6a9cd5cea210014a985b49b77934ae6a0a80d4fcb9aa81defe3c91a0",
 		hex.EncodeToString(digest[:]), string(raw))
 }
 
@@ -706,7 +709,7 @@ func TestPlatformRelaySecretIsolationDatabaseEndpointAndTargetCanonicalForms(t *
 	)
 
 	// The supported production shape deliberately has four Relay roles sharing
-	// one database and eight Platform roles sharing a different database.
+	// one database and nine Platform roles sharing a different database.
 	require.NoError(t, ValidateAndCommitPlatformRelaySecretIsolation())
 }
 

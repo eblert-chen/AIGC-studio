@@ -37,6 +37,7 @@ class RelayTaskReference:
     task_id: str
     relay_job_id: str
     capability_revision: str | None
+    execution_contract_sha256: str | None
     relay_backend_id: str
     relay_contract_revision: str
 
@@ -62,6 +63,7 @@ class RelayStatusPoller:
                     GenerationTask.id,
                     GenerationTask.relay_job_id,
                     GenerationTask.capability_snapshot,
+                    GenerationTask.pricing_snapshot,
                     GenerationTask.relay_backend_id,
                     GenerationTask.relay_contract_revision,
                 )
@@ -86,6 +88,7 @@ class RelayStatusPoller:
                     capability_revision=(capability_snapshot or {}).get(
                         "relay_capability_revision"
                     ),
+                    execution_contract_sha256=(pricing_snapshot or {}).get("execution_contract_sha256"),
                     relay_backend_id=relay_backend_id,
                     relay_contract_revision=relay_contract_revision,
                 )
@@ -95,6 +98,7 @@ class RelayStatusPoller:
                     task_id,
                     relay_job_id,
                     capability_snapshot,
+                    pricing_snapshot,
                     relay_backend_id,
                     relay_contract_revision,
                 ) in rows
@@ -141,6 +145,9 @@ class RelayStatusPoller:
                     reference.task_id,
                 )
                 continue
+            if snapshot.execution_contract_sha256 != reference.execution_contract_sha256:
+                logger.warning("relay returned a mismatched execution contract for task %s", reference.task_id)
+                continue
             error_message = ""
             error_snapshot = None
             if snapshot.error is not None:
@@ -161,6 +168,7 @@ class RelayStatusPoller:
                     failure_reason=error_message,
                     error_snapshot=error_snapshot,
                     reservation_action=snapshot.reservation_action,
+                    execution_contract_sha256=snapshot.execution_contract_sha256,
                 )
             applied += 1
         return applied

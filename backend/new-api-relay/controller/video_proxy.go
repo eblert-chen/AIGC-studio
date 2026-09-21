@@ -48,6 +48,13 @@ func VideoProxy(c *gin.Context) {
 		videoProxyError(c, http.StatusNotFound, "invalid_request_error", "Task not found")
 		return
 	}
+	if task.IsPlatformExternalBilling() {
+		// Platform-owned artifacts are served only from the customer Platform's
+		// canonical store. The native proxy must never redeem or forward a
+		// provider transfer credential.
+		videoProxyError(c, http.StatusNotFound, "invalid_request_error", "Task not found")
+		return
+	}
 
 	if task.Status != model.TaskStatusSuccess {
 		videoProxyError(c, http.StatusBadRequest, "invalid_request_error",

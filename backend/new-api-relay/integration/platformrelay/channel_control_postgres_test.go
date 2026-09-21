@@ -5,6 +5,7 @@ package platformrelay_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,30 +16,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestPostgresChannelControlGuardConcurrentInstallAndTamperRejection(t *testing.T) {
-	const installers = 8
-	start := make(chan struct{})
-	errorsCh := make(chan error, installers)
-	var wait sync.WaitGroup
-	for range installers {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			<-start
-			if err := model.InstallPlatformChannelControlRevisionGuard(); err != nil {
-				errorsCh <- err
-				return
-			}
-			errorsCh <- model.InstallPlatformChannelControlOperationGuards()
-		}()
-	}
-	close(start)
-	wait.Wait()
-	close(errorsCh)
-	for err := range errorsCh {
-		requireNoError(t, err)
-	}
-
+func TestPostgresChannelControlV6GuardTamperRejection(t *testing.T) {
 	channel := model.Channel{
 		Id:          int(time.Now().UnixNano()%1_000_000_000) + 1,
 		Name:        "channel-control-guard-" + uuid.NewString(),
@@ -51,13 +29,25 @@ func TestPostgresChannelControlGuardConcurrentInstallAndTamperRejection(t *testi
 	operationID := "channel-control-guard-" + uuid.NewString()
 	tenantID := "00000000-0000-4000-8000-000000000001"
 	operation, execute, replay, err := model.BeginPlatformChannelTestOperation(model.PlatformChannelControlIntent{
-		OperationID: operationID,
-		TenantID:    tenantID,
-		ChannelID:   channel.Id,
-		Kind:        model.PlatformChannelControlOperationKindTest,
-		RequestID:   "channel-control-guard-request",
-		Actor:       "platform-owner-1",
-		Reason:      "Verify PostgreSQL receipt guards",
+		OperationID:                 operationID,
+		TenantID:                    tenantID,
+		ChannelID:                   channel.Id,
+		Kind:                        model.PlatformChannelControlOperationKindTest,
+		RequestID:                   "channel-control-guard-request",
+		Actor:                       "platform-owner-1",
+		Reason:                      "Verify PostgreSQL receipt guards",
+		Model:                       "provider-model",
+		PublicModelID:               "public-provider-model",
+		RouteID:                     "route-provider-model-1",
+		UpstreamModel:               "provider-model",
+		CapabilityProfileID:         "test-profile-v1",
+		CapabilityProfileRevision:   "sha256:" + strings.Repeat("a", 64),
+		CapabilityRevision:          "sha256:" + strings.Repeat("b", 64),
+		RoutingReleaseSHA256:        "sha256:" + strings.Repeat("c", 64),
+		RouteBindingSHA256:          "sha256:" + strings.Repeat("d", 64),
+		CredentialFingerprintSHA256: strings.Repeat("e", 64),
+		TransportRevision:           "sha256:" + strings.Repeat("f", 64),
+		TransportSHA256:             "sha256:" + strings.Repeat("1", 64),
 	})
 	requireNoError(t, err)
 	if !execute || replay {
@@ -80,12 +70,12 @@ func TestPostgresChannelControlGuardConcurrentInstallAndTamperRejection(t *testi
 		t.Fatal("PostgreSQL accepted channel-control receipt truncation")
 	}
 
-	completed, err := model.CompletePlatformChannelTestOperation(
+	completed, err := model.CompletePlatformChannelRouteTestFailure(
 		tenantID,
 		operationID,
-		false,
 		17,
 		model.PlatformChannelControlErrorTestFailed,
+		false,
 	)
 	requireNoError(t, err)
 	if completed.State != model.PlatformChannelControlOperationFailed {

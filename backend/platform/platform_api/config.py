@@ -202,7 +202,7 @@ def _validate_publishing_oauth_url(value: str, *, production: bool) -> bool:
 
 
 def _is_loopback_hostname(hostname: str) -> bool:
-    if hostname == "localhost":
+    if hostname in {"localhost", "host.docker.internal"}:
         return True
     try:
         return ipaddress.ip_address(hostname).is_loopback
@@ -585,6 +585,7 @@ class Settings(BaseSettings):
         "platform-api",
         "dispatcher",
         "relay-sync",
+        "relay-catalog-sync",
         "timeout-worker",
         "publishing-worker",
         "download-gateway-registration-worker",
@@ -617,6 +618,16 @@ class Settings(BaseSettings):
     relay_reconciliation_approval_key_id: str | None = None
     relay_reconciliation_approval_secret: str | None = None
     relay_dispatch_max_attempts: int = Field(default=12, ge=1, le=1000)
+    relay_catalog_sync_enabled: bool = True
+    relay_catalog_sync_interval_seconds: float = Field(
+        default=60.0, ge=5.0, le=3600.0
+    )
+    relay_catalog_sync_retry_base_seconds: float = Field(
+        default=5.0, ge=1.0, le=300.0
+    )
+    relay_catalog_sync_retry_cap_seconds: float = Field(
+        default=300.0, ge=5.0, le=3600.0
+    )
     relay_callback_public_url: str | None = None
     relay_callback_signing_secret: str | None = None
     relay_callback_signing_secrets: dict[str, SecretStr] = Field(
@@ -779,6 +790,17 @@ class Settings(BaseSettings):
             "browser authentication booleans accept only true or false"
         )
 
+    @field_validator("relay_catalog_sync_enabled", mode="before")
+    @classmethod
+    def parse_strict_relay_catalog_sync_boolean(cls, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value in {"true", "false"}:
+            return value == "true"
+        raise ValueError(
+            "RELAY_CATALOG_SYNC_ENABLED accepts only true or false"
+        )
+
     def publishing_plugin_secret_manifest(
         self,
         section: str,
@@ -816,7 +838,12 @@ class Settings(BaseSettings):
         if role == "migration":
             return
 
-        relay_roles = {"dispatcher", "relay-sync", "timeout-worker"}
+        relay_roles = {
+            "dispatcher",
+            "relay-sync",
+            "relay-catalog-sync",
+            "timeout-worker",
+        }
         if role in relay_roles:
             if (
                 configured_backend_ids != {NEW_API_RELAY_BACKEND_ID}
@@ -926,6 +953,14 @@ class Settings(BaseSettings):
         protected_runtime = self.environment in {"production", "staging"} or (
             protected_platform_runtime_requested()
         )
+        if (
+            self.relay_catalog_sync_retry_base_seconds
+            > self.relay_catalog_sync_retry_cap_seconds
+        ):
+            raise ValueError(
+                "RELAY_CATALOG_SYNC_RETRY_BASE_SECONDS cannot exceed "
+                "RELAY_CATALOG_SYNC_RETRY_CAP_SECONDS"
+            )
         legacy_relay_identity = (
             self.relay_base_url,
             self.relay_client_id,

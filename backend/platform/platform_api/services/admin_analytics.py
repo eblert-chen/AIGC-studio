@@ -7,13 +7,16 @@ from datetime import date, datetime, time, timedelta, timezone
 from math import ceil
 from typing import Any, Iterable, Literal
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..models import (
+    BillingUnit,
     ChannelCostEntry,
     Company,
     CompanyModelGrant,
+    CompanyPointLedgerEntry,
+    CompanyPointWalletAccount,
     CompanyResourceGrant,
     DownloadGatewayRegistrationAttempt,
     DownloadGatewayRegistrationStatus,
@@ -22,6 +25,7 @@ from ..models import (
     LedgerEntry,
     LedgerKind,
     ModelDefinition,
+    PointLedgerKind,
     PublicationJob,
     PublicationJobStatus,
     PublisherConnection,
@@ -33,13 +37,13 @@ from ..models import (
     RelayRouteOperationsSnapshot,
     RelayTaskStage,
     RelayTaskStageEvent,
-    ResourceDefinition,
     TaskStatus,
     TaskArtifact,
     TaskTimeoutEvent,
     WalletAccount,
 )
 from .errors import ConflictError
+from .point_income import load_point_income, point_income_report, point_income_tasks
 
 
 Granularity = Literal["day", "week", "month"]
@@ -248,12 +252,23 @@ class AdminAnalyticsService:
                 "bucket_end": min(_bucket_end(key, granularity), window.end).isoformat(),
                 "recharge_cents": 0,
                 "settled_revenue_cents": 0,
+                "point_cash_basis_cents": 0,
+                "point_receivable_basis_cents": 0,
+                "point_subsidy_cents": 0,
+                "settled_points": 0,
+                "point_succeeded_task_count": 0,
+                "point_settlement_count": 0,
+                "unattributed_point_settlement_count": 0,
+                "point_settlement_missing_task_count": 0,
+                "point_settlement_duplicate_task_count": 0,
                 "provider_cost_cents": 0,
                 "known_gross_profit_cents": 0,
                 "gross_profit_cents": 0,
                 "gross_margin": None,
                 "cost_missing_task_count": 0,
                 "cost_reconciliation_status": "complete",
+                "revenue_reconciliation_status": "complete",
+                "finance_status": "complete",
             }
             for key in _bucket_sequence(window, granularity)
         }
@@ -272,24 +287,78 @@ class AdminAnalyticsService:
             else:
                 row["settled_revenue_cents"] += int(amount_cents)
 
+        # Financial periods use immutable posting time. A task's updated_at
+        # can change after settlement and must never move earned value into
+        # another period. Missing settlement evidence remains an explicit gap.
+        point_succeeded_tasks = point_income_tasks(
+            session, start=window.start, end=window.end, company_only=True
+        )
+        point_income = load_point_income(session, point_succeeded_tasks)
+        for task in point_succeeded_tasks:
+            income = point_income[task.id]
+            row = buckets.get(_bucket_start(income.settled_at or task.updated_at, granularity))
+            if row is None:  # Duplicate cross-period evidence: still surface the gap.
+                row = next(iter(buckets.values()))
+            row["point_succeeded_task_count"] += 1
+            if not income.settlement_count:
+                row["point_settlement_missing_task_count"] += 1
+                continue
+            if income.settlement_count != 1:
+                row["point_settlement_duplicate_task_count"] += 1
+                continue
+            row["settled_points"] += income.settled_points
+            row["point_settlement_count"] += 1
+            if not income.complete:
+                row["unattributed_point_settlement_count"] += 1
+                continue
+            row["settled_revenue_cents"] += income.revenue_cents
+            row["point_cash_basis_cents"] += income.cash_basis_cents
+            row["point_receivable_basis_cents"] += income.receivable_basis_cents
+            row["point_subsidy_cents"] += income.subsidy_cents
+
         cost_rows = session.execute(
-            select(ChannelCostEntry.amount_cents, ChannelCostEntry.occurred_at).where(
+            select(ChannelCostEntry.amount_cents, ChannelCostEntry.occurred_at, ChannelCostEntry.task_id).where(
                 ChannelCostEntry.company_id.is_not(None),
                 ChannelCostEntry.personal_workspace_id.is_(None),
                 ChannelCostEntry.occurred_at >= window.start,
                 ChannelCostEntry.occurred_at < window.end,
             )
         ).all()
-        for amount_cents, occurred_at in cost_rows:
+        all_posted_point_ids = set(session.scalars(select(CompanyPointLedgerEntry.task_id).where(
+            CompanyPointLedgerEntry.kind == PointLedgerKind.SETTLE,
+            CompanyPointLedgerEntry.task_id.is_not(None),
+        )))
+        for amount_cents, occurred_at, task_id in cost_rows:
+            if task_id in all_posted_point_ids:
+                continue  # Match this direct cost to its immutable consumption period.
             buckets[_bucket_start(occurred_at, granularity)][
                 "provider_cost_cents"
             ] += int(amount_cents)
+
+        point_costs: dict[str, list[int]] = defaultdict(list)
+        if point_income:
+            for task_id, amount in session.execute(select(
+                ChannelCostEntry.task_id, ChannelCostEntry.amount_cents,
+            ).where(ChannelCostEntry.task_id.in_(point_income),
+                    ChannelCostEntry.company_id.is_not(None),
+                    ChannelCostEntry.personal_workspace_id.is_(None))):
+                point_costs[task_id].append(int(amount))
+        for task in point_succeeded_tasks:
+            income = point_income[task.id]
+            row = buckets.get(_bucket_start(income.settled_at or task.updated_at, granularity))
+            if row is None:
+                row = next(iter(buckets.values()))
+            if not point_costs[task.id]:
+                row["cost_missing_task_count"] += 1
+            elif task.id in all_posted_point_ids:
+                row["provider_cost_cents"] += sum(point_costs[task.id])
 
         missing_cost_rows = session.execute(
             select(GenerationTask.updated_at).where(
                 GenerationTask.status == TaskStatus.SUCCEEDED,
                 GenerationTask.company_id.is_not(None),
                 GenerationTask.personal_workspace_id.is_(None),
+                GenerationTask.billing_version == 1,
                 GenerationTask.updated_at >= window.start,
                 GenerationTask.updated_at < window.end,
                 ~select(ChannelCostEntry.id)
@@ -305,59 +374,124 @@ class AdminAnalyticsService:
         totals = {
             "recharge_cents": 0,
             "settled_revenue_cents": 0,
+            "point_cash_basis_cents": 0,
+            "point_receivable_basis_cents": 0,
+            "point_subsidy_cents": 0,
+            "settled_points": 0,
+            "point_succeeded_task_count": 0,
+            "point_settlement_count": 0,
+            "unattributed_point_settlement_count": 0,
+            "point_settlement_missing_task_count": 0,
+            "point_settlement_duplicate_task_count": 0,
             "provider_cost_cents": 0,
-            "known_gross_profit_cents": 0,
+            "known_gross_profit_cents": None,
             "gross_profit_cents": 0,
             "gross_margin": None,
             "cost_missing_task_count": 0,
             "cost_reconciliation_status": "complete",
+            "revenue_reconciliation_status": "complete",
+            "finance_status": "complete",
         }
         for row in buckets.values():
             revenue = int(row["settled_revenue_cents"])
             cost = int(row["provider_cost_cents"])
             known_profit = revenue - cost
             missing = int(row["cost_missing_task_count"])
-            row["known_gross_profit_cents"] = known_profit
-            row["gross_profit_cents"] = known_profit if missing == 0 else None
+            unattributed_points = int(row["unattributed_point_settlement_count"])
+            point_reconciliation_issues = int(
+                row["point_settlement_missing_task_count"]
+            ) + int(row["point_settlement_duplicate_task_count"])
+            cost_complete = missing == 0
+            revenue_complete = (
+                unattributed_points == 0 and point_reconciliation_issues == 0
+            )
+            finance_complete = cost_complete and revenue_complete
+            row["known_gross_profit_cents"] = (
+                known_profit if revenue_complete else None
+            )
+            row["gross_profit_cents"] = known_profit if finance_complete else None
             row["gross_margin"] = (
-                round(known_profit / revenue, 6) if missing == 0 and revenue else None
+                round(known_profit / revenue, 6)
+                if finance_complete and revenue
+                else None
             )
             row["cost_reconciliation_status"] = (
-                "complete" if missing == 0 else "incomplete"
+                "complete" if cost_complete else "incomplete"
+            )
+            row["revenue_reconciliation_status"] = (
+                "complete" if revenue_complete else "incomplete"
+            )
+            row["finance_status"] = (
+                "complete" if finance_complete else "incomplete"
             )
             for key in (
                 "recharge_cents",
                 "settled_revenue_cents",
+                "point_cash_basis_cents",
+                "point_receivable_basis_cents",
+                "point_subsidy_cents",
+                "settled_points",
+                "point_succeeded_task_count",
+                "point_settlement_count",
+                "unattributed_point_settlement_count",
+                "point_settlement_missing_task_count",
+                "point_settlement_duplicate_task_count",
                 "provider_cost_cents",
-                "known_gross_profit_cents",
                 "cost_missing_task_count",
             ):
                 totals[key] += int(row[key])
 
+        total_revenue_complete = (
+            int(totals["unattributed_point_settlement_count"]) == 0
+            and int(totals["point_settlement_missing_task_count"]) == 0
+            and int(totals["point_settlement_duplicate_task_count"]) == 0
+        )
         total_missing = int(totals["cost_missing_task_count"])
+        total_cost_complete = total_missing == 0
+        total_finance_complete = total_cost_complete and total_revenue_complete
+        total_known_profit = (
+            int(totals["settled_revenue_cents"])
+            - int(totals["provider_cost_cents"])
+        )
+        totals["known_gross_profit_cents"] = (
+            total_known_profit if total_revenue_complete else None
+        )
         totals["gross_profit_cents"] = (
-            totals["known_gross_profit_cents"] if total_missing == 0 else None
+            total_known_profit if total_finance_complete else None
         )
         totals["gross_margin"] = (
             round(
-                int(totals["known_gross_profit_cents"])
+                total_known_profit
                 / int(totals["settled_revenue_cents"]),
                 6,
             )
-            if total_missing == 0 and totals["settled_revenue_cents"]
+            if total_finance_complete and totals["settled_revenue_cents"]
             else None
         )
         totals["cost_reconciliation_status"] = (
-            "complete" if total_missing == 0 else "incomplete"
+            "complete" if total_cost_complete else "incomplete"
+        )
+        totals["revenue_reconciliation_status"] = (
+            "complete" if total_revenue_complete else "incomplete"
+        )
+        totals["finance_status"] = (
+            "complete" if total_finance_complete else "incomplete"
         )
         result: dict[str, Any] = {
             "start_time": window.start.isoformat(),
             "end_time": window.end.isoformat(),
             "granularity": granularity,
             "timezone": "UTC",
+            "point_bucket_time_basis": "immutable_settle_ledger_created_at",
+            "billing_scope": "company",
+            "point_revenue_basis": "immutable_consumed_cash_plus_receivable_excluding_subsidy",
+            "point_income": point_income_report(session, start=window.start, end=window.end),
             "data_status": (
                 "available"
-                if ledger_rows or cost_rows or missing_cost_rows
+                if ledger_rows
+                or point_succeeded_tasks
+                or cost_rows
+                or missing_cost_rows
                 else "empty"
             ),
             "totals": totals,
@@ -381,6 +515,11 @@ class AdminAnalyticsService:
         metric_names = (
             "recharge_cents",
             "settled_revenue_cents",
+            "settled_points",
+            "point_succeeded_task_count",
+            "point_settlement_count",
+            "point_settlement_missing_task_count",
+            "point_settlement_duplicate_task_count",
             "provider_cost_cents",
             "known_gross_profit_cents",
             "gross_profit_cents",
@@ -397,17 +536,16 @@ class AdminAnalyticsService:
                 _include_comparisons=False,
             )
             baseline_available = baseline["data_status"] == "available"
-            cost_complete = (
-                totals["cost_reconciliation_status"] == "complete"
-                and baseline["totals"]["cost_reconciliation_status"]
-                == "complete"
+            finance_complete = (
+                totals["finance_status"] == "complete"
+                and baseline["totals"]["finance_status"] == "complete"
             )
             comparisons[comparison_name] = {
                 "status": (
                     "unavailable"
                     if not baseline_available
                     else "available"
-                    if cost_complete
+                    if finance_complete
                     else "partial"
                 ),
                 "baseline_start_time": baseline["start_time"],
@@ -774,9 +912,43 @@ class AdminAnalyticsService:
         for model_id, task_id, amount in settlement_rows:
             revenue_by_model[model_id] += int(amount)
             settled_task_ids_by_model[model_id].add(task_id)
+
+        # Attribute only complete immutable task/ledger/lot/value chains.
+        point_settled_task_ids_by_model: dict[str, set[str]] = defaultdict(set)
+        point_tasks = [
+            task for task in point_income_tasks(
+                session, start=window.start, end=window.end, company_only=True,
+            ) if task.model_id in model_ids
+        ]
+        point_income = load_point_income(session, point_tasks)
+        point_missing_by_model: Counter[str] = Counter()
+        point_unavailable_by_model: Counter[str] = Counter()
+        point_cash_by_model: Counter[str] = Counter()
+        point_receivable_by_model: Counter[str] = Counter()
+        point_subsidy_by_model: Counter[str] = Counter()
+        for task in point_tasks:
+            income = point_income[task.id]
+            if income.settlement_count == 0:
+                point_missing_by_model[task.model_id] += 1
+                continue
+            point_settled_task_ids_by_model[task.model_id].add(task.id)
+            if not income.complete:
+                point_unavailable_by_model[task.model_id] += 1
+                continue
+            revenue_by_model[task.model_id] += income.revenue_cents
+            point_cash_by_model[task.model_id] += income.cash_basis_cents
+            point_receivable_by_model[task.model_id] += income.receivable_basis_cents
+            point_subsidy_by_model[task.model_id] += income.subsidy_cents
+
+        all_settled_task_ids_by_model: dict[str, set[str]] = defaultdict(set)
+        for model_id in model_ids:
+            all_settled_task_ids_by_model[model_id] = (
+                settled_task_ids_by_model.get(model_id, set())
+                | point_settled_task_ids_by_model.get(model_id, set())
+            )
         settled_task_ids = sorted(
             task_id
-            for task_ids in settled_task_ids_by_model.values()
+            for task_ids in all_settled_task_ids_by_model.values()
             for task_id in task_ids
         )
         cost_by_model: Counter[str] = Counter()
@@ -828,11 +1000,32 @@ class AdminAnalyticsService:
             terminal = sum(counts[key] for key in ("succeeded", "failed", "cancelled"))
             missing_count = sum(
                 task_id not in cost_task_ids
-                for task_id in settled_task_ids_by_model.get(model.id, set())
+                for task_id in all_settled_task_ids_by_model.get(model.id, set())
+            )
+            point_revenue_unavailable_count = point_unavailable_by_model[model.id]
+            succeeded_task_ids = {
+                task.id
+                for task in model_tasks
+                if task.status == TaskStatus.SUCCEEDED and task.billing_version == 1
+            }
+            revenue_missing_count = len(
+                succeeded_task_ids
+                - all_settled_task_ids_by_model.get(model.id, set())
+            ) + point_missing_by_model[model.id]
+            revenue_reconciliation_status = (
+                "unavailable"
+                if point_revenue_unavailable_count
+                else "incomplete"
+                if revenue_missing_count
+                else "complete"
             )
             revenue = revenue_by_model.get(model.id, 0)
             cost = cost_by_model.get(model.id, 0)
             known_profit = revenue - cost
+            profit_complete = (
+                missing_count == 0
+                and revenue_reconciliation_status == "complete"
+            )
             terminal_latencies = [
                 _duration_seconds(task.created_at, task.updated_at)
                 for task in model_tasks
@@ -854,13 +1047,27 @@ class AdminAnalyticsService:
                         round(counts["succeeded"] / terminal, 6) if terminal else None
                     ),
                     "settled_revenue_cents": revenue,
+                    "point_cash_basis_cents": point_cash_by_model[model.id],
+                    "point_receivable_basis_cents": point_receivable_by_model[model.id],
+                    "point_subsidy_cents": point_subsidy_by_model[model.id],
                     "provider_cost_cents": cost,
-                    "known_gross_profit_cents": known_profit,
-                    "gross_profit_cents": known_profit if missing_count == 0 else None,
+                    "known_gross_profit_cents": (
+                        known_profit
+                        if revenue_reconciliation_status == "complete"
+                        else None
+                    ),
+                    "gross_profit_cents": known_profit if profit_complete else None,
                     "gross_margin": (
                         round(known_profit / revenue, 6)
-                        if missing_count == 0 and revenue
+                        if profit_complete and revenue
                         else None
+                    ),
+                    "revenue_unavailable_task_count": (
+                        point_revenue_unavailable_count
+                    ),
+                    "revenue_missing_task_count": revenue_missing_count,
+                    "revenue_reconciliation_status": (
+                        revenue_reconciliation_status
                     ),
                     "cost_missing_task_count": missing_count,
                     "cost_reconciliation_status": (
@@ -882,10 +1089,25 @@ class AdminAnalyticsService:
                 str(row["model_id"]),
             )
         )
+        total_revenue_unavailable = sum(
+            int(row["revenue_unavailable_task_count"]) for row in rows
+        )
+        total_revenue_missing = sum(
+            int(row["revenue_missing_task_count"]) for row in rows
+        )
         return {
             "start_time": window.start.isoformat(),
             "end_time": window.end.isoformat(),
             "unattributed_provider_cost_cents": unattributed_cost,
+            "revenue_unavailable_task_count": total_revenue_unavailable,
+            "revenue_missing_task_count": total_revenue_missing,
+            "revenue_reconciliation_status": (
+                "unavailable"
+                if total_revenue_unavailable
+                else "incomplete"
+                if total_revenue_missing
+                else "complete"
+            ),
             "items": rows,
         }
 
@@ -897,6 +1119,7 @@ class AdminAnalyticsService:
         page_size: int,
         now: datetime,
         low_balance_threshold_cents: int = 0,
+        low_balance_threshold_points: int = 0,
         inactivity_days: int = 30,
         stale_reservation_hours: int = 24,
         failure_rate_threshold: float = 0.30,
@@ -905,6 +1128,8 @@ class AdminAnalyticsService:
     ) -> dict[str, Any]:
         if low_balance_threshold_cents < 0:
             raise ConflictError("low balance threshold cannot be negative")
+        if low_balance_threshold_points < 0:
+            raise ConflictError("point balance threshold cannot be negative")
         current = _utc(now)
         total = int(session.scalar(select(func.count(Company.id))) or 0)
         companies = list(
@@ -924,6 +1149,16 @@ class AdminAnalyticsService:
                     WalletAccount.available_cents,
                     WalletAccount.reserved_cents,
                 ).where(WalletAccount.company_id.in_(company_ids))
+            ).all()
+        }
+        point_wallets = {
+            company_id: (int(available), int(reserved))
+            for company_id, available, reserved in session.execute(
+                select(
+                    CompanyPointWalletAccount.company_id,
+                    CompanyPointWalletAccount.available_points,
+                    CompanyPointWalletAccount.reserved_points,
+                ).where(CompanyPointWalletAccount.company_id.in_(company_ids))
             ).all()
         }
         recent_cutoff = current - timedelta(days=30)
@@ -960,11 +1195,13 @@ class AdminAnalyticsService:
             task_stats[company_id]["last"] = _utc(last_created)
 
         stale_cutoff = current - timedelta(hours=stale_reservation_hours)
-        stale_reservations = dict(
+        stale_cent_reservations = dict(
             session.execute(
                 select(GenerationTask.company_id, func.count(GenerationTask.id))
                 .where(
                     GenerationTask.company_id.in_(company_ids),
+                    GenerationTask.billing_unit == BillingUnit.CNY_CENT,
+                    GenerationTask.billing_version == 1,
                     GenerationTask.reserved_cents > 0,
                     GenerationTask.status.in_(
                         (TaskStatus.DRAFT, TaskStatus.QUEUED, TaskStatus.PROCESSING)
@@ -974,9 +1211,25 @@ class AdminAnalyticsService:
                 .group_by(GenerationTask.company_id)
             ).all()
         )
+        stale_point_reservations = dict(
+            session.execute(
+                select(GenerationTask.company_id, func.count(GenerationTask.id))
+                .where(
+                    GenerationTask.company_id.in_(company_ids),
+                    GenerationTask.billing_unit == BillingUnit.POINT,
+                    GenerationTask.billing_version == 2,
+                    GenerationTask.reserved_points > 0,
+                    GenerationTask.status.in_(
+                        (TaskStatus.DRAFT, TaskStatus.QUEUED, TaskStatus.PROCESSING)
+                    ),
+                    GenerationTask.created_at < stale_cutoff,
+                )
+                .group_by(GenerationTask.company_id)
+            ).all()
+        )
 
-        spend_24h = defaultdict(int)
-        baseline_7d = defaultdict(int)
+        spend_24h_cents = defaultdict(int)
+        baseline_7d_cents = defaultdict(int)
         for company_id, amount, occurred_at in session.execute(
             select(
                 LedgerEntry.company_id,
@@ -991,9 +1244,29 @@ class AdminAnalyticsService:
         ).all():
             occurred = _utc(occurred_at)
             if occurred >= current - timedelta(days=1):
-                spend_24h[company_id] += int(amount)
+                spend_24h_cents[company_id] += int(amount)
             elif occurred >= current - timedelta(days=8):
-                baseline_7d[company_id] += int(amount)
+                baseline_7d_cents[company_id] += int(amount)
+
+        spend_24h_points = defaultdict(int)
+        baseline_7d_points = defaultdict(int)
+        for company_id, amount, occurred_at in session.execute(
+            select(
+                CompanyPointLedgerEntry.company_id,
+                CompanyPointLedgerEntry.amount_points,
+                CompanyPointLedgerEntry.created_at,
+            ).where(
+                CompanyPointLedgerEntry.company_id.in_(company_ids),
+                CompanyPointLedgerEntry.kind == PointLedgerKind.SETTLE,
+                CompanyPointLedgerEntry.created_at >= current - timedelta(days=8),
+                CompanyPointLedgerEntry.created_at < current,
+            )
+        ).all():
+            occurred = _utc(occurred_at)
+            if occurred >= current - timedelta(days=1):
+                spend_24h_points[company_id] += int(amount)
+            elif occurred >= current - timedelta(days=8):
+                baseline_7d_points[company_id] += int(amount)
 
         # Expiry fields are intentionally not inferred from capability overrides.
         # Once the dedicated grant metadata columns land, this code automatically
@@ -1023,7 +1296,32 @@ class AdminAnalyticsService:
         alert_totals: Counter[str] = Counter()
         severity_order = {"critical": 0, "warning": 1, "info": 2}
         for company in companies:
-            available, reserved = wallets.get(company.id, (0, 0))
+            if company.billing_version == 1:
+                billing_unit = BillingUnit.CNY_CENT
+                if company.id not in wallets:
+                    raise ConflictError(
+                        f"company {company.id} is missing its CNY_CENT/v1 wallet"
+                    )
+                available, reserved = wallets[company.id]
+                low_balance_threshold = low_balance_threshold_cents
+                stale_count = int(stale_cent_reservations.get(company.id, 0))
+                spend_24h = spend_24h_cents[company.id]
+                baseline_7d = baseline_7d_cents[company.id]
+            elif company.billing_version == 2:
+                billing_unit = BillingUnit.POINT
+                if company.id not in point_wallets:
+                    raise ConflictError(
+                        f"company {company.id} is missing its POINT/v2 wallet"
+                    )
+                available, reserved = point_wallets[company.id]
+                low_balance_threshold = low_balance_threshold_points
+                stale_count = int(stale_point_reservations.get(company.id, 0))
+                spend_24h = spend_24h_points[company.id]
+                baseline_7d = baseline_7d_points[company.id]
+            else:
+                raise ConflictError(
+                    f"company {company.id} has unsupported billing version"
+                )
             stats = task_stats[company.id]
             alerts: list[dict[str, Any]] = []
 
@@ -1031,19 +1329,33 @@ class AdminAnalyticsService:
                 alert_totals[code] += 1
                 alerts.append({"code": code, "severity": severity, "details": details})
 
-            if available <= low_balance_threshold_cents:
+            if available <= low_balance_threshold:
+                balance_details = (
+                    {
+                        "available_points": available,
+                        "threshold_points": low_balance_threshold,
+                    }
+                    if billing_unit == BillingUnit.POINT
+                    else {
+                        "available_cents": available,
+                        "threshold_cents": low_balance_threshold,
+                    }
+                )
                 add_alert(
                     "LOW_BALANCE",
                     "critical" if available == 0 else "warning",
-                    available_cents=available,
-                    threshold_cents=low_balance_threshold_cents,
+                    **balance_details,
                 )
-            stale_count = int(stale_reservations.get(company.id, 0))
             if reserved > 0 and stale_count:
+                reservation_details = (
+                    {"reserved_points": reserved}
+                    if billing_unit == BillingUnit.POINT
+                    else {"reserved_cents": reserved}
+                )
                 add_alert(
                     "STALE_RESERVED_BALANCE",
                     "critical",
-                    reserved_cents=reserved,
+                    **reservation_details,
                     stale_task_count=stale_count,
                     threshold_hours=stale_reservation_hours,
                 )
@@ -1072,17 +1384,27 @@ class AdminAnalyticsService:
                     failed_count=failed,
                     terminal_count=terminal,
                 )
-            baseline_daily = baseline_7d[company.id] / 7
+            baseline_daily = baseline_7d / 7
             if (
                 baseline_daily > 0
-                and spend_24h[company.id] >= baseline_daily * abnormal_spend_ratio
+                and spend_24h >= baseline_daily * abnormal_spend_ratio
             ):
+                spend_details = (
+                    {
+                        "spend_24h_points": spend_24h,
+                        "baseline_daily_points": round(baseline_daily),
+                    }
+                    if billing_unit == BillingUnit.POINT
+                    else {
+                        "spend_24h_cents": spend_24h,
+                        "baseline_daily_cents": round(baseline_daily),
+                    }
+                )
                 add_alert(
                     "ABNORMAL_SPEND",
                     "warning",
-                    spend_24h_cents=spend_24h[company.id],
-                    baseline_daily_cents=round(baseline_daily),
-                    ratio=round(spend_24h[company.id] / baseline_daily, 3),
+                    **spend_details,
+                    ratio=round(spend_24h / baseline_daily, 3),
                 )
             if expired_by_company[company.id]:
                 add_alert(
@@ -1102,14 +1424,31 @@ class AdminAnalyticsService:
                     "company_id": company.id,
                     "company_name": company.name,
                     "company_status": _enum_value(company.status),
-                    "available_cents": available,
-                    "reserved_cents": reserved,
+                    "billing_unit": billing_unit.value,
+                    "billing_version": company.billing_version,
+                    "available_cents": (
+                        available if billing_unit == BillingUnit.CNY_CENT else None
+                    ),
+                    "reserved_cents": (
+                        reserved if billing_unit == BillingUnit.CNY_CENT else None
+                    ),
+                    "available_points": (
+                        available if billing_unit == BillingUnit.POINT else None
+                    ),
+                    "reserved_points": (
+                        reserved if billing_unit == BillingUnit.POINT else None
+                    ),
                     "last_task_at": last_task.isoformat() if last_task else None,
                     "task_count_30d": int(stats["total"]),
                     "failure_rate_30d": (
                         round(failure_rate, 6) if failure_rate is not None else None
                     ),
-                    "spend_24h_cents": spend_24h[company.id],
+                    "spend_24h_cents": (
+                        spend_24h if billing_unit == BillingUnit.CNY_CENT else None
+                    ),
+                    "spend_24h_points": (
+                        spend_24h if billing_unit == BillingUnit.POINT else None
+                    ),
                     "alerts": alerts,
                 }
             )
@@ -1128,6 +1467,8 @@ class AdminAnalyticsService:
             "page": page,
             "page_size": page_size,
             "total_companies": total,
+            "low_balance_threshold_cents": low_balance_threshold_cents,
+            "low_balance_threshold_points": low_balance_threshold_points,
             "entitlement_expiry_data_status": (
                 "available" if expiry_supported else "unavailable"
             ),

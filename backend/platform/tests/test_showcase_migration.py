@@ -4,12 +4,12 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, inspect, text
 
 
 PREVIOUS_HEAD = "0039_new_api_relay_defaults"
-CURRENT_HEAD = "0040_showcase_management"
 TABLES = {
     "showcase_channels",
     "showcase_draft_items",
@@ -38,11 +38,13 @@ def test_sqlite_showcase_migration_round_trip_and_immutable_triggers(
     assert TABLES.isdisjoint(inspect(engine).get_table_names())
     engine.dispose()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0040_showcase_management")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     assert TABLES.issubset(inspect(engine).get_table_names())
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == CURRENT_HEAD
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "0040_showcase_management"
+        )
         assert connection.scalar(
             text("SELECT draft_version FROM showcase_channels WHERE id='home'")
         ) == 0

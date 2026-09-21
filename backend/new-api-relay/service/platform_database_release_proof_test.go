@@ -1,17 +1,30 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func platformRelayDatabaseReleaseTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open("file:"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, err)
+	pool, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pool.Close()) })
+	return db
+}
 
 func platformRelayDatabaseReleaseTestIdentity() model.RelayDatabaseReleaseIdentity {
 	return model.RelayDatabaseReleaseIdentity{
@@ -65,6 +78,183 @@ func platformRelayDatabaseReleaseRejectCompatibleSchema(t *testing.T) {
 	t.Cleanup(func() { requireRelaySchemaCurrentForDatabaseReleaseProof = previous })
 }
 
+func platformRelayDatabaseReleaseBindingTestProof() relayDatabaseReleaseProof {
+	return relayDatabaseReleaseProof{
+		SchemaVersion: relayDatabaseReleaseProofSchemaVersion,
+		Kind:          relayDatabaseReleaseProofKind,
+		RunID:         strings.Repeat("1", 64),
+		Generation:    platformRelaySecretIsolationGenerationRootProofPresent,
+		RootProofID:   strings.Repeat("2", 64),
+		Release: platformRelaySecretIsolationRelease{
+			ImageDigest: "sha256:" + strings.Repeat("3", 64), SourceRevision: strings.Repeat("4", 40),
+			SourceSnapshotSHA256: "sha256:" + strings.Repeat("5", 64), SourceSnapshotFileCount: 123,
+			UpstreamRevision: strings.Repeat("6", 40), RouteAcceptanceTrustKeysSHA256: "sha256:" + strings.Repeat("7", 64),
+			PlatformImage: "platform@example", PlatformSourceRevision: strings.Repeat("8", 40),
+			PlatformSourceSnapshotSHA256: "sha256:" + strings.Repeat("9", 64),
+			PlatformOrigin:               "https://platform.example.test", RelayOrigin: "https://relay.example.test",
+			EdgeOrigin: "https://edge.example.test", RelayContractRevision: "generations.v1",
+		},
+		DatabaseEndpointSHA256: strings.Repeat("a", 64),
+		Database:               platformRelayDatabaseReleaseTestIdentity(),
+	}
+}
+
+func TestPlatformRelayDatabaseReleaseBindingCoversWholeCandidateAndDatabaseTuple(t *testing.T) {
+	db := platformRelayDatabaseReleaseTestDB(t)
+	pool, err := db.DB()
+	require.NoError(t, err)
+	otherDB := platformRelayDatabaseReleaseTestDB(t)
+	otherPool, err := otherDB.DB()
+	require.NoError(t, err)
+	base := platformRelayDatabaseReleaseProofBinding{
+		pool: pool, consumer: PlatformRelaySecretIsolationConsumerEdge,
+		proof: platformRelayDatabaseReleaseBindingTestProof(),
+		schemaStatus: model.RelaySchemaStatus{
+			Classification: model.RelaySchemaStatusCurrent, CurrentVersion: model.RelaySchemaTargetVersion,
+			TargetVersion: model.RelaySchemaTargetVersion, AttemptID: "12345678-1234-4234-9234-123456789abc",
+			Current: true, Compatible: true,
+		},
+	}
+	base.digest[0] = 1
+	require.True(t, samePlatformRelayDatabaseReleaseProofBinding(base, base))
+
+	mutations := []struct {
+		name   string
+		mutate func(*platformRelayDatabaseReleaseProofBinding)
+	}{
+		{name: "pool", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.pool = otherPool }},
+		{name: "consumer", mutate: func(value *platformRelayDatabaseReleaseProofBinding) {
+			value.consumer = PlatformRelaySecretIsolationConsumerAPI
+		}},
+		{name: "run", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.RunID = strings.Repeat("b", 64) }},
+		{name: "generation", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.Generation = "changed" }},
+		{name: "root proof", mutate: func(value *platformRelayDatabaseReleaseProofBinding) {
+			value.proof.RootProofID = strings.Repeat("c", 64)
+		}},
+		{name: "image digest", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.Release.ImageDigest += "x" }},
+		{name: "source revision", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.Release.SourceRevision += "x" }},
+		{name: "source snapshot", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.Release.SourceSnapshotSHA256 += "x" }},
+		{name: "file count", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.Release.SourceSnapshotFileCount++ }},
+		{name: "upstream", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.Release.UpstreamRevision += "x" }},
+		{name: "trust keys", mutate: func(value *platformRelayDatabaseReleaseProofBinding) {
+			value.proof.Release.RouteAcceptanceTrustKeysSHA256 += "x"
+		}},
+		{name: "platform image", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.Release.PlatformImage += "x" }},
+		{name: "platform source revision", mutate: func(value *platformRelayDatabaseReleaseProofBinding) {
+			value.proof.Release.PlatformSourceRevision += "x"
+		}},
+		{name: "platform source snapshot", mutate: func(value *platformRelayDatabaseReleaseProofBinding) {
+			value.proof.Release.PlatformSourceSnapshotSHA256 += "x"
+		}},
+		{name: "platform origin", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.Release.PlatformOrigin += "/x" }},
+		{name: "relay origin", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.Release.RelayOrigin += "/x" }},
+		{name: "edge origin", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.proof.Release.EdgeOrigin += "/x" }},
+		{name: "contract", mutate: func(value *platformRelayDatabaseReleaseProofBinding) {
+			value.proof.Release.RelayContractRevision += ".x"
+		}},
+		{name: "endpoint", mutate: func(value *platformRelayDatabaseReleaseProofBinding) {
+			value.proof.DatabaseEndpointSHA256 = strings.Repeat("d", 64)
+		}},
+		{name: "database identity", mutate: func(value *platformRelayDatabaseReleaseProofBinding) {
+			value.proof.Database.SystemSemanticSHA256 += "x"
+		}},
+		{name: "attempt", mutate: func(value *platformRelayDatabaseReleaseProofBinding) {
+			value.schemaStatus.AttemptID = "87654321-4321-4321-8321-cba987654321"
+		}},
+		{name: "digest", mutate: func(value *platformRelayDatabaseReleaseProofBinding) { value.digest[0] = 2 }},
+	}
+	for _, test := range mutations {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := base
+			test.mutate(&candidate)
+			require.False(t, samePlatformRelayDatabaseReleaseProofBinding(base, candidate))
+		})
+	}
+}
+
+func TestPlatformRelayDatabaseReleaseBoundAttestationReadsOnceAndReusesSchemaProof(t *testing.T) {
+	db := platformRelayDatabaseReleaseTestDB(t).Table("statement_poison")
+	pool, err := db.DB()
+	require.NoError(t, err)
+	proof := platformRelayDatabaseReleaseBindingTestProof()
+	verified := platformRelaySecretIsolationVerifiedContext{
+		receipt: platformRelaySecretIsolationReceipt{Consumer: PlatformRelaySecretIsolationConsumerEdge},
+		marker: platformRelaySecretIsolationCommitMarker{
+			RunID: proof.RunID, Generation: proof.Generation, RootProofID: proof.RootProofID, Release: proof.Release,
+		},
+	}
+	previousCurrent := currentRelayDatabaseReleaseVerifiedContext
+	previousRead := readRelayDatabaseReleaseProofForAttestation
+	previousEndpoint := relayDatabaseReleaseEndpointDigestForAttestation
+	previousRequire := requireRelaySchemaCurrentForDatabaseReleaseProof
+	previousVerify := verifyRelayDatabaseReleaseIdentity
+	var reads atomic.Int32
+	var requires atomic.Int32
+	var identities atomic.Int32
+	currentRelayDatabaseReleaseVerifiedContext = func(string) (platformRelaySecretIsolationVerifiedContext, error) { return verified, nil }
+	readRelayDatabaseReleaseProofForAttestation = func() (relayDatabaseReleaseProof, error) {
+		reads.Add(1)
+		return proof, nil
+	}
+	relayDatabaseReleaseEndpointDigestForAttestation = func(platformRelaySecretIsolationReceipt, string) (string, error) {
+		return proof.DatabaseEndpointSHA256, nil
+	}
+	requireRelaySchemaCurrentForDatabaseReleaseProof = func(*gorm.DB) (model.RelaySchemaStatus, error) {
+		requires.Add(1)
+		return model.RelaySchemaStatus{}, errors.New("bound attestation repeated the schema catalog")
+	}
+	verifyRelayDatabaseReleaseIdentity = func(pinned *gorm.DB, identity model.RelayDatabaseReleaseIdentity) error {
+		identities.Add(1)
+		require.Equal(t, proof.Database, identity)
+		return nil
+	}
+	t.Cleanup(func() {
+		currentRelayDatabaseReleaseVerifiedContext = previousCurrent
+		readRelayDatabaseReleaseProofForAttestation = previousRead
+		relayDatabaseReleaseEndpointDigestForAttestation = previousEndpoint
+		requireRelaySchemaCurrentForDatabaseReleaseProof = previousRequire
+		verifyRelayDatabaseReleaseIdentity = previousVerify
+	})
+	status := model.RelaySchemaStatus{
+		Classification: model.RelaySchemaStatusCurrent, CurrentVersion: model.RelaySchemaTargetVersion,
+		TargetVersion: model.RelaySchemaTargetVersion, AttemptID: "12345678-1234-4234-9234-123456789abc",
+		Current: true, Compatible: true,
+	}
+	binding, err := attestPlatformRelayDatabaseReleaseProofBoundToSchema(
+		context.Background(), db, PlatformRelaySecretIsolationConsumerEdge, status,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), reads.Load())
+	require.Zero(t, requires.Load())
+	require.Equal(t, int32(1), identities.Load())
+	require.Same(t, pool, binding.pool)
+	require.Equal(t, status, binding.schemaStatus)
+	require.True(t, binding.valid())
+
+	var schemaConnection gorm.ConnPool
+	var identityConnection gorm.ConnPool
+	requireRelaySchemaCurrentForDatabaseReleaseProof = func(pinned *gorm.DB) (model.RelaySchemaStatus, error) {
+		requires.Add(1)
+		schemaConnection = pinned.Statement.ConnPool
+		return status, nil
+	}
+	verifyRelayDatabaseReleaseIdentity = func(pinned *gorm.DB, identity model.RelayDatabaseReleaseIdentity) error {
+		identities.Add(1)
+		require.Equal(t, proof.Database, identity)
+		identityConnection = pinned.Statement.ConnPool
+		return nil
+	}
+	_, err = attestPlatformRelayDatabaseReleaseProofWithContext(
+		context.Background(), db, PlatformRelaySecretIsolationConsumerEdge,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int32(2), reads.Load())
+	require.Equal(t, int32(1), requires.Load())
+	require.Equal(t, int32(2), identities.Load())
+	require.NotNil(t, schemaConnection)
+	require.Same(t, schemaConnection, identityConnection)
+}
+
 func TestPlatformRelayDatabaseReleaseProofRoundTripBindsVerifiedRunAndEndpoint(t *testing.T) {
 	fixture := newPlatformRelaySecretIsolationTestFixture(t)
 	require.NoError(t, ValidateAndCommitPlatformRelaySecretIsolation())
@@ -107,7 +297,7 @@ func TestPlatformRelayDatabaseReleaseProofRoundTripBindsVerifiedRunAndEndpoint(t
 	defer clear(proofRaw)
 	fixture.replace(RelayDatabaseReleaseProofFileEnvironment, append([]byte(nil), proofRaw...))
 
-	require.NoError(t, VerifyPlatformRelayDatabaseReleaseProof(nil, PlatformRelaySecretIsolationConsumerPre))
+	require.NoError(t, VerifyPlatformRelayDatabaseReleaseProof(platformRelayDatabaseReleaseTestDB(t), PlatformRelaySecretIsolationConsumerPre))
 	require.True(t, verified)
 }
 
@@ -157,7 +347,7 @@ func TestPlatformRelayDatabaseReleaseProofRejectsCompatibleV1ForProtectedAPI(t *
 	}
 	t.Cleanup(func() { verifyRelayDatabaseReleaseIdentity = previousVerify })
 	require.EqualError(t,
-		VerifyPlatformRelayDatabaseReleaseProof(nil, PlatformRelaySecretIsolationConsumerAPI),
+		VerifyPlatformRelayDatabaseReleaseProof(platformRelayDatabaseReleaseTestDB(t), PlatformRelaySecretIsolationConsumerAPI),
 		"Relay database release proof requires the current schema",
 	)
 	require.False(t, identityVerified)

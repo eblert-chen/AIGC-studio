@@ -18,6 +18,7 @@ from platform_api.models import WalletAccount
 from platform_api.relay_client import RelaySignedDownload
 
 from .conftest import bootstrap
+from .media_fixtures import valid_mp4_bytes
 from .test_relay_boundary import recharge_and_create
 
 
@@ -58,7 +59,7 @@ def _create_another_task(app, client, tenant, tenant_headers, *, id_suffix: str)
 
 RELAY_JOB_ID = "99999999-9999-4999-8999-999999999998"
 RELAY_ASSET_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab"
-CONTENT = b"\x00\x00\x00\x18ftypmp42generated-video"
+CONTENT = valid_mp4_bytes()
 
 
 class _PromotionRelayClient:
@@ -173,6 +174,11 @@ def test_promotes_durable_artifact_idempotently_without_billing_or_relay_outbox(
     assert promoted["source_task_artifact_id"] == artifact.id
     assert promoted["sha256"] == hashlib.sha256(CONTENT).hexdigest()
     assert promoted["size_bytes"] == len(CONTENT)
+    assert promoted["media_metadata_version"] == 1
+    assert promoted["width_px"] == 320
+    assert promoted["height_px"] == 180
+    assert promoted["media_container"] == "mp4"
+    assert promoted["video_codec"] == "h264"
     assert "object_key" not in promoted
     assert "url" not in promoted
 

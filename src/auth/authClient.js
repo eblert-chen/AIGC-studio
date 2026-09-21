@@ -12,6 +12,28 @@ const AUTH_SESSION_UI_KEYS = new Set([
   "ai-video.surface",
 ]);
 const SESSION_UI_PREFIXES = ["ai-video.pending-create:"];
+const PRODUCT_CONTEXTS = new Set(["personal", "company", "platform"]);
+const SWITCHABLE_PRODUCT_CONTEXTS = new Set(["personal", "platform"]);
+
+function normalizeProductContext(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "platform_admin") return "platform";
+  return PRODUCT_CONTEXTS.has(normalized) ? normalized : "";
+}
+
+function normalizeAvailableProductContexts(source) {
+  const declared = Array.isArray(source?.available_product_contexts)
+    ? source.available_product_contexts
+    : Array.isArray(source?.available_account_kinds)
+      ? source.available_account_kinds
+      : [];
+  const active = normalizeProductContext(
+    source?.active_product_context || source?.account_type,
+  );
+  const contexts = new Set(declared.map(normalizeProductContext).filter(Boolean));
+  if (active) contexts.add(active);
+  return [...contexts];
+}
 
 function makeRequestId() {
   return globalThis.crypto?.randomUUID?.() ?? `auth-${Date.now()}-${Math.random()}`;
@@ -65,7 +87,10 @@ function responseError(payload, response, requestId) {
 
 function rememberCsrf(response, payload) {
   const token = String(
-    response.headers?.get?.("x-csrf-token") || payload?.csrf_token || "",
+    response.headers?.get?.("x-csrf-token")
+      || payload?.csrf_token
+      || payload?.session?.csrf_token
+      || "",
   ).trim();
   if (token) setPlatformCsrfToken(token);
 }
@@ -200,9 +225,13 @@ export function normalizeAuthSession(payload) {
     ? { ...payload, ...payload.session }
     : payload;
   const authenticated = source?.authenticated === true && Boolean(source?.user);
+  const activeProductContext = authenticated
+    ? normalizeProductContext(source?.active_product_context || source?.account_type)
+    : "";
   return {
     ...(source && typeof source === "object" ? source : {}),
     authenticated,
+    login_available: source?.login_available === true,
     csrf_token: authenticated ? String(source?.csrf_token || "") : "",
     user: authenticated ? {
       ...source.user,
@@ -214,7 +243,18 @@ export function normalizeAuthSession(payload) {
     } : null,
     account_management_url: String(source?.account_management_url || ""),
     session_expires_at: source?.session_expires_at || null,
+    active_product_context: activeProductContext,
+    available_product_contexts: authenticated
+      ? normalizeAvailableProductContexts(source)
+      : [],
   };
+}
+
+export function isAuthUnavailableError(error) {
+  if (!(error instanceof PlatformApiError)) return false;
+  return ["auth_not_configured", "oidc_unavailable"].includes(
+    String(error.code || "").toLowerCase(),
+  );
 }
 
 export function normalizeInvitation(payload) {
@@ -266,6 +306,7 @@ export function createAuthClient({
     body,
     signal,
     timeoutMs = requestTimeoutMs,
+    idempotencyKey = "",
   } = {}) {
     const requestId = makeRequestId();
     const controller = new AbortController();
@@ -282,6 +323,20 @@ export function createAuthClient({
       "X-Request-Id": requestId,
     };
     if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (idempotencyKey) {
+      const normalizedIdempotencyKey = String(idempotencyKey).trim();
+      if (
+        !normalizedIdempotencyKey
+        || normalizedIdempotencyKey.length > 120
+        || /\s|[\u0000-\u001f\u007f]/u.test(normalizedIdempotencyKey)
+      ) {
+        throw new PlatformApiError("请求幂等标识格式无效", {
+          code: "INVALID_IDEMPOTENCY_KEY",
+          requestId,
+        });
+      }
+      headers["Idempotency-Key"] = normalizedIdempotencyKey;
+    }
     if (!["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase())) {
       const csrf = getPlatformCsrfToken();
       if (csrf) headers["X-CSRF-Token"] = csrf;
@@ -320,6 +375,9 @@ export function createAuthClient({
           ? await response.json()
           : await response.text();
       } catch (error) {
+        // A context switch may already have rotated the HttpOnly session cookie.
+        // Preserve the matching response CSRF token before an idempotent retry.
+        rememberCsrf(response, null);
         throw new PlatformApiError("账号服务返回了无法解析的响应", {
           code: "INVALID_RESPONSE",
           status: response.status,
@@ -341,6 +399,16 @@ export function createAuthClient({
     return normalized;
   };
 
+  const productContext = (value) => {
+    const normalized = normalizeProductContext(value);
+    if (!SWITCHABLE_PRODUCT_CONTEXTS.has(normalized)) {
+      throw new PlatformApiError("目标产品空间无效", {
+        code: "INVALID_PRODUCT_CONTEXT",
+      });
+    }
+    return normalized;
+  };
+
   return {
     baseUrl: normalizedBaseUrl,
     getSession: async ({ signal } = {}) => normalizeAuthSession(
@@ -357,6 +425,27 @@ export function createAuthClient({
       body: { preserve_invitation: preserveInvitation === true },
       signal,
     }),
+    switchProductContext: async ({ targetContext }, { signal } = {}) => {
+      const target = productContext(targetContext);
+      const idempotencyKey = `product-context-${target}-${makeRequestId()}`.slice(0, 120);
+      const submit = () => request("/api/v1/auth/product-context", {
+        method: "POST",
+        body: { target_context: target },
+        idempotencyKey,
+        signal,
+      });
+      const isUncertain = (error) => error instanceof PlatformApiError && (
+        error.status >= 500
+        || error.status === 0
+        || ["NETWORK_ERROR", "REQUEST_TIMEOUT", "INVALID_RESPONSE"].includes(error.code)
+      );
+      try {
+        return normalizeAuthSession(await submit());
+      } catch (error) {
+        if (signal?.aborted || !isUncertain(error)) throw error;
+        return normalizeAuthSession(await submit());
+      }
+    },
     getAccount: ({ signal } = {}) => request("/api/v1/account", { signal }),
     updateAccount: ({ displayName, expectedAuthVersion, expectedUpdatedAt }, { signal } = {}) => request("/api/v1/account", {
       method: "PATCH",

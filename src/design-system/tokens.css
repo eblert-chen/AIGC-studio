@@ -1,14 +1,18 @@
 /*
- * Daylight Conform Desk — shared semantic tokens.
- * Paper is the visual authority. Mist and warm change colour only.
+ * Shared semantic tokens — light authored studio language.
+ * Warm-gray canvas, white panels, violet accent (single selection state),
+ * three-level radii (controls 8–10 / cards 12 / containers 16–20),
+ * selective soft elevation instead of pervasive 1px boxes.
+ * Paper is the visual source of truth; optional skins change material
+ * temperature only and never change hierarchy, meaning or density.
  */
 
 :root {
   color-scheme: light;
 
   --font-sans:
-    "Manrope Variable",
     "Noto Sans SC Variable",
+    "Manrope Variable",
     "PingFang SC",
     "Hiragino Sans GB",
     system-ui,
@@ -30,14 +34,14 @@
   --text-heading-sm: 1.125rem;
   --text-heading-md: 1.375rem;
   --text-heading-lg: 1.75rem;
-  --text-display: 2.25rem;
+  --text-display: clamp(2rem, 2.6vw, 2.75rem);
 
-  --leading-caption: 1.45;
+  --leading-caption: 1.4;
   --leading-control: 1.25;
   --leading-body: 1.55;
-  --leading-heading: 1.2;
-  --leading-tight: 1.1;
-  --tracking-caption: 0.005em;
+  --leading-heading: 1.18;
+  --leading-tight: 1.08;
+  --tracking-caption: 0.01em;
   --tracking-heading: -0.025em;
 
   --weight-regular: 400;
@@ -61,148 +65,179 @@
   --control-md: 2.5rem;
   --control-lg: 2.75rem;
 
-  --radius-xs: 0.25rem;
-  --radius-sm: 0.375rem;
-  --radius-md: 0.625rem;
-  --radius-lg: 0.875rem;
+  --radius-xs: 0.5rem;
+  --radius-sm: 0.625rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
   --radius-pill: 999px;
-  --radius-control: var(--radius-sm);
+  --radius-control: 0.625rem;
 
-  --duration-fast: 120ms;
-  --duration-base: 180ms;
+  --duration-fast: 100ms;
+  --duration-base: 160ms;
   --duration-slow: 220ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 
-  --bg: #ffffff;
-  --canvas: #ffffff;
+  /* Product interaction ramps. Violet owns selection/progress; orange owns
+   * deliberate workflow actions. Brand teal remains isolated in branding.css. */
+  --selection-violet: #5a55d2;
+  --selection-violet-strong: #4a45c2;
+  --selection-violet-soft: #eeedfb;
+  --workflow-orange-vivid: #ef4a16;
+  --workflow-orange: #ce360a;
+  --workflow-orange-strong: #a92a06;
+  --workflow-orange-soft: #fff0e9;
+
+  /* Material samples used by the shared light-skin chooser. Keep these in the
+   * token layer so its previews cannot drift from the actual page palettes. */
+  --skin-paper-bg: #f6f6f2;
+  --skin-paper-surface: #ffffff;
+  --skin-paper-line: #c9cbc7;
+  --skin-mist-bg: #eef0f2;
+  --skin-mist-surface: #fbfcfc;
+  --skin-mist-line: #bac0c6;
+  --skin-warm-bg: #f4f0e8;
+  --skin-warm-surface: #fffdf9;
+  --skin-warm-line: #c8bdad;
+
+  --bg: #f6f6f2;
+  --canvas: #fafaf7;
   --surface: #ffffff;
   --surface-raised: #ffffff;
   --surface-elevated: #ffffff;
-  --surface-soft: #f6f8f7;
-  --surface-hover: #f1f5f3;
-  --stage-surface: #edf1ef;
-  --line: #e1e6e3;
-  --line-strong: #cbd4cf;
-  --line-emphasis: #aebcb5;
+  --surface-soft: #f2f3f1;
+  --surface-hover: #ecefed;
+  --stage-surface: #e8ebe9;
+  --stage-ink: #2d3239;
+  --stage-muted: #656b74;
+  --line: #dedfdc;
+  --line-strong: #c9cbc7;
+  --line-emphasis: #a8aaa7;
 
-  --text: #111713;
-  --ink: #111713;
-  --strong-ink: #202923;
-  --text-soft: #48534c;
-  --secondary-ink: #48534c;
-  --control-ink: #2d3731;
-  --table-ink: #354139;
-  --text-muted: #657169;
-  --muted: #657169;
-  --quiet: #657169;
+  --text: #171a20;
+  --ink: #171a20;
+  --strong-ink: #0e1117;
+  --text-soft: #484d55;
+  --secondary-ink: #484d55;
+  --control-ink: #262b33;
+  --table-ink: #2d3239;
+  --text-muted: #656b74;
+  --muted: #656b74;
+  --quiet: #656b74;
 
-  --accent: #16754c;
-  --accent-strong: #0f603d;
-  --accent-hover: #0f603d;
+  --accent: var(--selection-violet);
+  --accent-strong: var(--selection-violet-strong);
+  --accent-hover: var(--selection-violet-strong);
   --accent-ink: #ffffff;
-  --accent-soft: #eaf4ee;
-  --accent-loading: #557d66;
-  --accent-success: #236d43;
-  --success: #197a4b;
-  --success-soft: #ebf6ef;
-  --info: #2c6eaa;
-  --info-soft: #eef5fb;
-  --warning: #98600d;
-  --warning-soft: #fff6e6;
-  --danger: #bc3f39;
-  --danger-soft: #fff1f0;
+  --accent-soft: var(--selection-violet-soft);
+  --accent-loading: #8b86e0;
+  --accent-success: #177654;
+  --signal: var(--workflow-orange);
+  --signal-strong: var(--workflow-orange-strong);
+  --signal-soft: var(--workflow-orange-soft);
+  --signal-ink: #ffffff;
+  --success: #177654;
+  --success-soft: #edf7f2;
+  --info: var(--selection-violet);
+  --info-soft: var(--selection-violet-soft);
+  --warning: #9a6207;
+  --warning-soft: #fff6de;
+  --danger: #c33630;
+  --danger-soft: #fff0ef;
 
-  --focus-ring: #176f4b;
-  --selection-bg: #d9eee2;
-  --selection-ink: #0d3e29;
-  --progress-track: #e3e8e5;
-  --avatar-surface: #dceee3;
-  --topbar-surface: #ffffff;
-  --toast-surface: #202a24;
+  --focus-ring: var(--selection-violet);
+  --selection-bg: #e4e3f8;
+  --selection-ink: #3a35a8;
+  --progress-track: #e2e3df;
+  --avatar-surface: #e6e9ee;
+  --topbar-surface: rgba(255, 255, 255, 0.97);
+  --toast-surface: #171a20;
   --toast-ink: #ffffff;
-  --menu-shadow: rgba(24, 38, 30, 0.13);
-  --panel-shadow: rgba(24, 38, 30, 0.09);
-  --shadow-soft: rgba(24, 38, 30, 0.1);
-  --drawer-scrim: rgba(18, 28, 22, 0.22);
-  --shadow-menu: 0 14px 36px var(--menu-shadow);
-  --shadow-overlay: 0 28px 72px rgba(20, 31, 25, 0.17);
+  --menu-shadow: rgba(17, 22, 31, 0.14);
+  --panel-shadow: rgba(17, 22, 31, 0.08);
+  --shadow-soft: rgba(17, 22, 31, 0.1);
+  --drawer-scrim: rgba(17, 22, 31, 0.26);
+  --shadow-menu: 0 16px 40px var(--menu-shadow);
+  --shadow-overlay: 0 28px 72px rgba(17, 22, 31, 0.18);
+  --shadow-panel: 0 1px 2px rgba(20, 24, 34, 0.04), 0 6px 24px rgba(20, 24, 34, 0.06);
+  --shadow-dock: 0 -10px 40px rgba(20, 24, 34, 0.1);
 }
 
 :where([data-theme="paper"], [data-skin="paper"]) {
-  --bg: #ffffff;
-  --canvas: #ffffff;
+  --bg: #f6f6f2;
+  --canvas: #fafaf7;
   --surface: #ffffff;
   --surface-raised: #ffffff;
   --surface-elevated: #ffffff;
-  --surface-soft: #f6f8f7;
-  --surface-hover: #f1f5f3;
-  --stage-surface: #edf1ef;
-  --line: #e1e6e3;
-  --line-strong: #cbd4cf;
-  --line-emphasis: #aebcb5;
-  --text: #111713;
-  --ink: #111713;
-  --text-soft: #48534c;
-  --secondary-ink: #48534c;
-  --text-muted: #657169;
-  --quiet: #657169;
-  --accent: #16754c;
-  --accent-strong: #0f603d;
-  --accent-soft: #eaf4ee;
+  --surface-soft: #f2f3f1;
+  --surface-hover: #ecefed;
+  --stage-surface: #e8ebe9;
+  --line: #dedfdc;
+  --line-strong: #c9cbc7;
+  --line-emphasis: #a8aaa7;
+  --text: #171a20;
+  --ink: #171a20;
+  --text-soft: #484d55;
+  --secondary-ink: #484d55;
+  --text-muted: #656b74;
+  --quiet: #656b74;
+  --accent: var(--selection-violet);
+  --accent-strong: var(--selection-violet-strong);
+  --accent-soft: #eeedfb;
 }
 
 :where([data-theme="mist"], [data-skin="mist"]) {
-  --bg: #f2f5f3;
-  --canvas: #f2f5f3;
-  --surface: #fafcfa;
-  --surface-raised: #fafcfa;
-  --surface-elevated: #fafcfa;
-  --surface-soft: #e9eeeb;
-  --surface-hover: #e3eae6;
-  --stage-surface: #e2e9e5;
-  --line: #d5ded9;
-  --line-strong: #becbc4;
-  --line-emphasis: #a2b2a9;
-  --text: #142019;
-  --ink: #142019;
-  --text-soft: #445149;
-  --secondary-ink: #445149;
-  --text-muted: #627068;
-  --quiet: #627068;
-  --accent: #236f4c;
-  --accent-strong: #185b3d;
-  --accent-soft: #e1eee6;
-  --menu-shadow: rgba(25, 45, 34, 0.14);
-  --panel-shadow: rgba(25, 45, 34, 0.09);
+  --bg: #eef0f2;
+  --canvas: #f3f4f5;
+  --surface: #fbfcfc;
+  --surface-raised: #fbfcfc;
+  --surface-elevated: #fbfcfc;
+  --surface-soft: #e8ebed;
+  --surface-hover: #e1e5e8;
+  --stage-surface: #dfe3e6;
+  --line: #d2d6da;
+  --line-strong: #bac0c6;
+  --line-emphasis: #9ea5ad;
+  --text: #171b22;
+  --ink: #171b22;
+  --text-soft: #464d56;
+  --secondary-ink: #464d56;
+  --text-muted: #626a74;
+  --quiet: #626a74;
+  --accent: var(--selection-violet);
+  --accent-strong: var(--selection-violet-strong);
+  --accent-soft: #e7e7f6;
+  --menu-shadow: rgba(17, 26, 38, 0.15);
+  --panel-shadow: rgba(17, 26, 38, 0.09);
 }
 
 :where([data-theme="warm"], [data-skin="warm"]) {
-  --bg: #faf7f1;
-  --canvas: #faf7f1;
+  --bg: #f4f0e8;
+  --canvas: #faf7f0;
   --surface: #fffdf9;
   --surface-raised: #fffdf9;
   --surface-elevated: #fffdf9;
-  --surface-soft: #f3eee5;
-  --surface-hover: #eee8de;
-  --stage-surface: #ebe4d9;
-  --line: #e2dbcf;
-  --line-strong: #cec3b4;
-  --line-emphasis: #b4a694;
-  --text: #231f1a;
-  --ink: #231f1a;
-  --text-soft: #585149;
-  --secondary-ink: #585149;
-  --text-muted: #6f675d;
-  --quiet: #6f675d;
-  --accent: #587343;
-  --accent-strong: #465e35;
-  --accent-soft: #ebf0e5;
-  --menu-shadow: rgba(61, 50, 35, 0.14);
-  --panel-shadow: rgba(61, 50, 35, 0.09);
-  --drawer-scrim: rgba(48, 40, 30, 0.22);
+  --surface-soft: #f1ece3;
+  --surface-hover: #eae4d9;
+  --stage-surface: #e5ddd1;
+  --line: #ddd5c9;
+  --line-strong: #c8bdad;
+  --line-emphasis: #aa9e8c;
+  --text: #211f1d;
+  --ink: #211f1d;
+  --text-soft: #524d47;
+  --secondary-ink: #524d47;
+  --text-muted: #6b6258;
+  --quiet: #6b6258;
+  --accent: var(--selection-violet);
+  --accent-strong: var(--selection-violet-strong);
+  --accent-soft: #eceaf6;
+  --menu-shadow: rgba(58, 47, 34, 0.15);
+  --panel-shadow: rgba(58, 47, 34, 0.09);
+  --drawer-scrim: rgba(46, 38, 29, 0.24);
 }
 
-/* Operations keeps its domain aliases while sharing the same skins. */
+/* Operations keeps domain aliases while sharing product semantics. */
 .ops-console {
   --ops-bg: var(--bg);
   --ops-surface: var(--surface);
@@ -212,17 +247,17 @@
   --ops-muted: var(--text-muted);
   --ops-line: var(--line);
   --ops-line-strong: var(--line-strong);
-  --ops-accent: #087766;
-  --ops-accent-dark: #066456;
-  --ops-accent-soft: #e7f4f1;
-  --ops-blue: var(--info);
-  --ops-blue-soft: var(--info-soft);
+  --ops-accent: var(--selection-violet);
+  --ops-accent-dark: var(--selection-violet-strong);
+  --ops-accent-soft: var(--selection-violet-soft);
+  --ops-blue: var(--selection-violet);
+  --ops-blue-soft: var(--selection-violet-soft);
   --ops-red: var(--danger);
   --ops-red-soft: var(--danger-soft);
-  --ops-orange: var(--warning);
-  --ops-orange-soft: var(--warning-soft);
-  --ops-yellow: #aa7e08;
-  --ops-yellow-soft: #fff8da;
+  --ops-orange: var(--workflow-orange);
+  --ops-orange-soft: var(--workflow-orange-soft);
+  --ops-yellow: #a87906;
+  --ops-yellow-soft: #fff7d9;
   --ops-focus-ring: var(--focus-ring);
-  --ops-radius: var(--radius-sm);
+  --ops-radius: var(--radius-md);
 }

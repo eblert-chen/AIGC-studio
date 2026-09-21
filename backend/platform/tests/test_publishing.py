@@ -145,6 +145,134 @@ def _job_payload(artifact_id: str, connection_id: str, suffix: str) -> dict:
     }
 
 
+@pytest.mark.parametrize(
+    "only_permission",
+    [
+        "publish.accounts.read",
+        "publish.accounts.manage",
+        "publish.jobs.read",
+        "publish.jobs.manage",
+    ],
+)
+def test_publishing_readiness_accepts_each_publish_permission_independently(
+    app, client, tenant, tenant_headers, only_permission
+) -> None:
+    member = client.post(
+        f"/api/v1/companies/{tenant['company_id']}/members",
+        headers=tenant_headers,
+        json={
+            "email": f"readiness-{only_permission.replace('.', '-')}@example.com",
+            "display_name": "Publishing readiness member",
+        },
+    ).json()
+    publish_permissions = {
+        "publish.accounts.read",
+        "publish.accounts.manage",
+        "publish.jobs.read",
+        "publish.jobs.manage",
+    }
+    with app.state.session_factory.begin() as session:
+        session.add_all(
+            [
+                MemberPermissionOverride(
+                    membership_id=member["membership_id"],
+                    permission_code=permission,
+                    effect=(
+                        PermissionEffect.ALLOW
+                        if permission == only_permission
+                        else PermissionEffect.DENY
+                    ),
+                )
+                for permission in publish_permissions
+            ]
+        )
+    headers = {
+        "X-Company-ID": tenant["company_id"],
+        "X-User-ID": member["user_id"],
+    }
+    url = f"/api/v1/companies/{tenant['company_id']}/publishing/readiness"
+    disabled = client.get(url, headers=headers)
+    assert disabled.status_code == 200, disabled.text
+    state = disabled.json()
+    assert state["feature_auto_publish_enabled"] is False
+    assert state["can_read_accounts"] is (
+        only_permission == "publish.accounts.read"
+    )
+    assert state["can_manage_accounts"] is (
+        only_permission == "publish.accounts.manage"
+    )
+    assert state["can_read_jobs"] is (
+        only_permission == "publish.jobs.read"
+    )
+    assert state["can_manage_jobs"] is (
+        only_permission == "publish.jobs.manage"
+    )
+    assert state["side_effects_enabled"] is False
+
+    _enable_auto_publish(app, tenant["company_id"])
+    enabled = client.get(url, headers=headers)
+    assert enabled.status_code == 200, enabled.text
+    enabled_state = enabled.json()
+    expected_manage = only_permission.endswith(".manage")
+    assert enabled_state["feature_auto_publish_enabled"] is True
+    assert enabled_state["side_effects_enabled"] is expected_manage
+    assert enabled_state["historical_safety_actions_enabled"] is expected_manage
+
+    _disable_auto_publish(app, tenant["company_id"])
+    revoked_state = client.get(url, headers=headers).json()
+    assert revoked_state["feature_auto_publish_enabled"] is False
+    assert revoked_state["side_effects_enabled"] is False
+    # Feature removal blocks new external effects, not permission evidence for
+    # historical reads, disable/cancel, or unknown-submission reconciliation.
+    assert revoked_state["can_read_accounts"] == state["can_read_accounts"]
+    assert revoked_state["can_manage_accounts"] == state["can_manage_accounts"]
+    assert revoked_state["can_read_jobs"] == state["can_read_jobs"]
+    assert revoked_state["can_manage_jobs"] == state["can_manage_jobs"]
+    assert revoked_state["historical_read_enabled"] == state[
+        "historical_read_enabled"
+    ]
+    assert revoked_state["historical_safety_actions_enabled"] == state[
+        "historical_safety_actions_enabled"
+    ]
+
+
+def test_publishing_readiness_denies_members_without_any_publish_permission(
+    app, client, tenant, tenant_headers
+) -> None:
+    member = client.post(
+        f"/api/v1/companies/{tenant['company_id']}/members",
+        headers=tenant_headers,
+        json={
+            "email": "readiness-no-publish@example.com",
+            "display_name": "No publishing access",
+        },
+    ).json()
+    with app.state.session_factory.begin() as session:
+        session.add_all(
+            [
+                MemberPermissionOverride(
+                    membership_id=member["membership_id"],
+                    permission_code=permission,
+                    effect=PermissionEffect.DENY,
+                )
+                for permission in (
+                    "publish.accounts.read",
+                    "publish.accounts.manage",
+                    "publish.jobs.read",
+                    "publish.jobs.manage",
+                )
+            ]
+        )
+    denied = client.get(
+        f"/api/v1/companies/{tenant['company_id']}/publishing/readiness",
+        headers={
+            "X-Company-ID": tenant["company_id"],
+            "X-User-ID": member["user_id"],
+        },
+    )
+    assert denied.status_code == 403
+
+
 def test_publishing_requires_entitlement_and_mock_opt_in(
     client, app, tenant, tenant_headers
 ):

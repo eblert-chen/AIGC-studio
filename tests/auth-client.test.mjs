@@ -8,6 +8,8 @@ import {
   captureInvitationToken,
   createAuthClient,
   establishInvitationHandoff,
+  isAuthUnavailableError,
+  normalizeAuthSession,
   safeAccountManagementUrl,
   safeReturnTo,
 } from "../src/auth/authClient.js";
@@ -15,6 +17,7 @@ import { createAuthSessionSync } from "../src/auth/sessionSync.js";
 import {
   clearPlatformCsrfToken,
   getPlatformCsrfToken,
+  PlatformApiError,
   setPlatformCsrfToken,
 } from "../src/api/platformClient.js";
 
@@ -71,6 +74,20 @@ test("login return targets stay same-origin and invitation capabilities never en
   assert.equal(invitation.searchParams.get("return_to"), "/invite");
   assert.equal(invitation.searchParams.get("prompt"), "login");
   assert.doesNotMatch(invitation.href, /query-secret|fragment-secret/);
+});
+
+test("anonymous session preserves the server-owned login availability", () => {
+  assert.equal(normalizeAuthSession({ authenticated: false, login_available: false }).login_available, false);
+  assert.equal(normalizeAuthSession({ authenticated: false, login_available: true }).login_available, true);
+  assert.equal(normalizeAuthSession({ authenticated: false }).login_available, false);
+});
+
+test("auth unavailable errors accept backend and legacy spellings", () => {
+  assert.equal(isAuthUnavailableError(new PlatformApiError("off", { code: "oidc_unavailable" })), true);
+  assert.equal(isAuthUnavailableError(new PlatformApiError("off", { code: "OIDC_UNAVAILABLE" })), true);
+  assert.equal(isAuthUnavailableError(new PlatformApiError("off", { code: "AUTH_NOT_CONFIGURED" })), true);
+  assert.equal(isAuthUnavailableError(new PlatformApiError("network", { code: "NETWORK_ERROR" })), false);
+  assert.equal(isAuthUnavailableError(new Error("network")), false);
 });
 
 test("invitation token stays only in memory until preview establishes the HttpOnly handoff", () => {
@@ -167,6 +184,82 @@ test("account switching is the only logout flow that preserves the HttpOnly invi
   });
   assert.equal(requests[0].options.headers["X-CSRF-Token"], "csrf-switch");
   clearPlatformCsrfToken();
+});
+
+test("product-context switching keeps one idempotency key across an uncertain retry and adopts rotated CSRF", async () => {
+  setPlatformCsrfToken("csrf-before-switch");
+  const requests = [];
+  const client = createAuthClient({
+    baseUrl: "https://platform.example",
+    runtime: runtime(),
+    fetcher: async (url, options) => {
+      requests.push({ url, options });
+      if (requests.length === 1) {
+        return new Response("{", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-csrf-token": "csrf-rotated-after-commit",
+          },
+        });
+      }
+      return Response.json({
+        session: {
+          authenticated: true,
+          csrf_token: "csrf-from-response-body",
+          account_type: "personal",
+          active_product_context: "personal",
+          available_product_contexts: ["personal", "platform"],
+          user: { id: "owner-1", display_name: "周宁" },
+        },
+      });
+    },
+  });
+
+  const session = await client.switchProductContext({ targetContext: "personal" });
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests.map(({ url }) => url), [
+    "https://platform.example/api/v1/auth/product-context",
+    "https://platform.example/api/v1/auth/product-context",
+  ]);
+  assert.deepEqual(JSON.parse(requests[0].options.body), { target_context: "personal" });
+  assert.equal(
+    requests[0].options.headers["Idempotency-Key"],
+    requests[1].options.headers["Idempotency-Key"],
+  );
+  assert.match(requests[0].options.headers["Idempotency-Key"], /^product-context-personal-/);
+  assert.equal(requests[0].options.headers["X-CSRF-Token"], "csrf-before-switch");
+  assert.equal(requests[1].options.headers["X-CSRF-Token"], "csrf-rotated-after-commit");
+  assert.equal(session.active_product_context, "personal");
+  assert.deepEqual(session.available_product_contexts, ["personal", "platform"]);
+  assert.equal(session.user.display_name, "周宁");
+  assert.equal(getPlatformCsrfToken(), "csrf-from-response-body");
+  clearPlatformCsrfToken();
+});
+
+test("session normalization preserves company context while switch targets stay constrained", async () => {
+  const company = normalizeAuthSession({
+    authenticated: true,
+    account_type: "company",
+    available_account_kinds: ["company"],
+    user: { id: "member-1" },
+  });
+  assert.equal(company.active_product_context, "company");
+  assert.deepEqual(company.available_product_contexts, ["company"]);
+
+  const client = createAuthClient({
+    baseUrl: "https://platform.example",
+    runtime: runtime(),
+    fetcher: async () => {
+      throw new Error("invalid targets must fail before fetch");
+    },
+  });
+  await assert.rejects(
+    client.switchProductContext({ targetContext: "company" }),
+    (error) => error instanceof PlatformApiError
+      && error.code === "INVALID_PRODUCT_CONTEXT",
+  );
 });
 
 test("invitation preview exchanges the fragment capability for a cookie handoff", async () => {
@@ -299,6 +392,8 @@ test("cross-tab session events are secret-free, ignore self, and stop after clos
   assert.doesNotMatch(JSON.stringify(event), /token|email|user_id|company_id/i);
 
   syncB.close();
+  syncA.publish("product_context_changed", { fullClear: false });
+  assert.equal(receivedB.length, 1);
   syncA.publish("deactivated", { fullClear: true });
   assert.equal(receivedB.length, 1);
   syncA.close();

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 
-from platform_api.models import AuditOutcome, PlatformAdminActivity
+import platform_api.services.audit as audit_module
+from platform_api.models import AuditLog, AuditOutcome, PlatformAdminActivity
 from platform_api.services.audit import AuditService
 
 from .test_platform_admin import bootstrap_admin
@@ -54,6 +56,45 @@ def test_audit_api_returns_the_durable_execution_outcome(client, app):
         if key not in {"outcome-failed", "outcome-unknown"}
     )
     assert outcomes[default_key] == "succeeded"
+
+
+def test_audit_append_preserves_causal_order_when_clock_does_not_advance(
+    client,
+    app,
+    monkeypatch,
+):
+    admin_id, _ = bootstrap_admin(client, "audit-causal-order")
+    frozen = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(audit_module, "utcnow", lambda: frozen)
+
+    request_id = "audit-causal-order-request"
+    actions = ["fixture.first", "fixture.second", "fixture.third"]
+    with app.state.session_factory.begin() as session:
+        for action in actions:
+            AuditService.append(
+                session,
+                actor_user_id=admin_id,
+                action=action,
+                target_type="audit_order_fixture",
+                target_id="one",
+                before_summary={},
+                after_summary={},
+                request_id=request_id,
+            )
+
+    with app.state.session_factory() as session:
+        entries = session.scalars(
+            select(AuditLog)
+            .where(AuditLog.request_id == request_id)
+            .order_by(AuditLog.created_at, AuditLog.id)
+        ).all()
+
+    assert [entry.action for entry in entries] == actions
+    assert [entry.created_at.replace(tzinfo=timezone.utc) for entry in entries] == [
+        frozen,
+        frozen + timedelta(microseconds=1),
+        frozen + timedelta(microseconds=2),
+    ]
 
 
 def test_platform_admin_directory_exposes_authorized_activity_evidence(client, app):

@@ -306,7 +306,7 @@ func platformRelayRootIsolationReadPermanentProof() (platformRelayRootIsolationP
 // ValidateAndCommitPlatformRelayRootSecretIsolation is the network-free fresh
 // install gate. It proves the one-time root password is globally distinct from
 // every normal Relay/Platform secret without adding that destroyed-after-use
-// password to the fourteen-consumer ordinary rollout DAG.
+// password to the fifteen-consumer ordinary rollout DAG.
 func ValidateAndCommitPlatformRelayRootSecretIsolation() error {
 	proofLock, err := platformRelayRootIsolationAcquireProofStateLock(
 		os.Getenv(PlatformRelayRootProofFileEnvironment),

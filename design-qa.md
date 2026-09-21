@@ -1,77 +1,54 @@
-# XuTian brand integration QA
+# Studio Creation Workbenches — Design QA
 
-- Date: 2026-08-18
-- Reference: `C:\Users\16691\AppData\Local\Temp\codex-clipboard-2e57eb12-7666-4b4f-b7ec-3d2898c86017.png`
-- Reference dimensions: 1536 × 1024 px
-- Working prototype: `http://127.0.0.1:4173/`
-- Desktop comparison viewport: 1440 × 900 CSS px
-- Mobile comparison viewport: 390 × 844 CSS px
-- State: demo owner / platform administrator, `paper`, `mist`, and `warm` light skins
-- Production assets:
-  - `public/brand/xutian-wordmark-light.png` — 1024 × 349 RGBA, tightly cropped for `contain`
-  - `public/brand/xutian-symbol-light.png` — 512 × 512 RGBA
-  - `public/brand/xutian-brand-source.png` — archived supplied source
+- Review completed: 2026-08-29
+- Production route: `http://127.0.0.1:4178/creation`
+- Reviewed surfaces: invitation entry, 3D 导演台, 导演手记, 谱系画布, persistent 极速档, Company navigation
+- Reference set:
+  - invitation launcher: `C:\Users\16691\AppData\Local\Temp\codex-clipboard-dd3c08a3-a2b4-4d18-9be4-264c3b954027.png`
+  - 导演手记: `C:\Users\16691\AppData\Local\Temp\codex-clipboard-36991892-994c-42a7-a89e-3594dfaa23cc.png`
+  - 谱系画布: `C:\Users\16691\AppData\Local\Temp\codex-clipboard-c044615d-e221-47dd-b499-ae5e4192f7a1.png`
 
-## Full-view comparison evidence
+## Combined comparison evidence
 
-- Combined reference and Studio desktop capture: `.brand-qa-20260818/comparison-full.png`
-- Studio desktop: `.brand-qa-20260818/studio-desktop.png`
-- Company desktop: `.brand-qa-20260818/company-desktop.png`
-- Operations desktop: `.brand-qa-20260818/operations-desktop.png`
+- Entry: `.impeccable/review/entry-comparison.png`
+- Notebook: `.impeccable/review/notebook-comparison.png`
+- Canvas: `.impeccable/review/canvas-comparison.png`
+- 3D console: `.impeccable/review/console-desktop.png` and `.impeccable/review/console-desk-desktop.png`
+- Responsive: `.impeccable/review/mobile-390.png`, `.impeccable/review/mobile-320.png`, and `.impeccable/review/notebook-mobile-fixed.png`
+- Management selected state: `.impeccable/review/management-nav-desktop.png`
 
-The desktop wordmark preserves the supplied X silhouette, violet-to-cyan centre signal, Chinese name, and AI VIDEO descriptor. The metallic silver treatment was intentionally adapted to graphite for the product's approved white and near-white chrome; the original black presentation board is not embedded in the application.
+The implementation was judged from the side-by-side comparison inputs, not from isolated screenshots.
 
-## Focused-region comparison evidence
+## Findings and fixes
 
-- Normalized logo comparison: `.brand-qa-20260818/comparison-logo-focus.png`
-- Studio mobile: `.brand-qa-20260818/studio-mobile-390.png`
-- Studio short-phone: `.brand-qa-20260818/studio-mobile-320.png`
-- Company mobile: `.brand-qa-20260818/company-mobile-390.png`
-- Company short-phone: `.brand-qa-20260818/company-mobile-320.png`
-- Operations mobile, paper: `.brand-qa-20260818/operations-mobile-390.png`
-- Operations short-phone: `.brand-qa-20260818/operations-mobile-320.png`
-- Operations mobile, mist: `.brand-qa-20260818/operations-mobile-mist-390.png`
-- Operations mobile, warm: `.brand-qa-20260818/operations-mobile-warm-390.png`
+- [fixed] The production route no longer opens on an empty-report pattern. Its empty/default state is a usable invitation with three distinct workbench paths and the in-flow quick composer.
+- [fixed] 3D 导演台, 导演手记, and 谱系画布 are URL-addressable production states with real task, artifact, continuation, and publishing callbacks. They do not manufacture local success or accounting state.
+- [fixed] The desktop invitation heading was wrapping after five Chinese characters. It now remains one line at desktop widths and balances naturally on phones.
+- [fixed] Notebook task media occupied only half of its preview at 320px because the grid item resolved to an intrinsic track. Media is now pinned to the full preview bounds.
+- [fixed] Company navigation and the nested enterprise-detail tabs each have exactly one selected affordance. Computed browser evidence shows a soft-violet fill, 8px radius, no selected border, and no before/after indicator.
+- [fixed] Shared command controls and management actions now use the purposeful 8–10px control scale; desktop drawers use a 16px leading edge and phone drawers use 16px top corners. Tables and structural dividers remain square.
+- [fixed] Static task imagery no longer carries a fake play glyph. A successful video exposes native playback controls only after its real preview URL is available.
+- [fixed] The composer has one prioritized submit message, one valid price surface, and one disabled-action reason. Readiness details remain progressive disclosure.
+- [fixed] Active tasks show an exact remaining time only when the server supplies a valid numeric ETA or timezone-qualified completion timestamp.
+- [P3, intentional] The entry emphasizes the equipped 3D workbench instead of copying the reference's three equal inspiration cards. This follows the later approved hierarchy while retaining the reference's invitation rhythm and light material.
+- [P3, intentional] Canvas renders verified task nodes and a selected-node action inspector rather than decorative mock branches. The dotted spatial field, variable node placement, selection treatment, and continuation actions preserve the approved canvas metaphor without inventing lineage data.
 
-At phone width the full lockup deliberately switches to the compact X symbol. This preserves legibility, a 44 px interaction target where the mark is actionable, and enough room for account and workspace controls.
+## Responsive and accessibility evidence
 
-## Comparison history
-
-1. Initial source review:
-   - The supplied 1536 × 1024 image is a dark presentation board without a transparent production-ready logo layer.
-   - Its silver wordmark loses contrast on the product's `paper`, `mist`, and `warm` light skins.
-   - Existing product chrome still used the retired “影创 Verse” name and unrelated sparkle/shield/letter marks.
-2. Implementation:
-   - Generated transparent graphite light-surface adaptations of the complete wordmark and compact X symbol while retaining the violet-cyan centre signal.
-   - Tight-cropped the transparent bounds and used `contain`, preventing authentication and narrow-topbar clipping without stretching the mark.
-   - Added one reusable `BrandLogo` component and one final design-system brand layer.
-   - Replaced visible Studio, authentication, Company, legacy Platform, Operations, favicon, apple-touch-icon, and document-title branding.
-   - Desktop uses the complete wordmark; phone chrome uses the compact symbol.
-3. Post-fix inspection:
-   - Reference and implementation were viewed side by side in full-page and focused comparison inputs.
-   - Fresh 1440 × 900, 390 × 844, and 320 × 568 captures show no clipping, overlap, horizontal overflow, or low-contrast logo state.
-   - Browser console error log is empty.
-
-## Fidelity surfaces
-
-- Mark geometry: passed. The X silhouette, centre bar, Chinese name, and spaced AI VIDEO line remain recognizable and proportionally consistent.
-- Color: passed. Graphite provides strong light-surface contrast; violet-cyan remains the sole brand chroma.
-- Typography and hierarchy: passed. The wordmark is treated as one raster asset, avoiding system-font substitution in the trademark.
-- Responsive behavior: passed. Complete wordmark is used at desktop widths; symbol-only treatment is used at the tested phone breakpoints.
-- Surface consistency: passed across Studio, authentication gates, Company, legacy Platform, Operations, browser favicon, and title.
-- Accessibility: passed. Static marks expose the “旭天 AI VIDEO” alternative name; actionable marks inherit the containing button's explicit destination label.
-
-## Findings
-
-- No P0–P2 visual or accessibility defect remains in the brand integration.
-- P3: production assets are intentionally raster files rather than vector masters because the supplied artwork was raster-only. The responsive `picture` selects one size-appropriate source instead of downloading two hidden marks; a future official vector master can replace them behind the same component without changing layout.
+- Browser viewports: 1440×1000, 390×844, and 320×760.
+- The 390px and 320px entry keep one horizontal route rail, a readable invitation, all three workbench paths, and the compact in-flow quick-creation launcher.
+- Notebook uses a single scroll owner and preserves 44px actions on narrow phones.
+- 3D monitor cards become a horizontal viewing sequence on phones; its control desk and handoff remain reachable.
+- The canvas and record filters remain reachable through progressive disclosure.
+- Runtime browser console warnings/errors: none.
+- Impeccable detector: no findings.
 
 ## Verification
 
-- Brand contract tests: passed.
-- Production build: passed; Sites artifacts prepared.
-- Sites packaging tests: 6 / 6 passed.
-- Real-browser desktop/mobile and three-light-skin smoke: passed.
-- Browser console errors: 0.
+- Targeted creation, composer, permissions, preview lease, mobile, management, and accessibility contracts: passed.
+- Frontend release-closure guard: 2 / 2 passed.
+- Production build: passed; 888 modules transformed.
+- Full root suite: all frontend failures resolved; one Relay provenance failure remains outside this frontend candidate and was not changed.
+- Prototype build: passed.
 
 final result: passed

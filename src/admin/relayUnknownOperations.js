@@ -4,6 +4,7 @@ const OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/;
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
+const CANONICAL_UTC_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const APPROVAL_SIGNATURE_PATTERN = /^hmac-sha256:[0-9a-f]{64}$/;
 const RELAY_JOB_STATUSES = new Set([
   "queued",
@@ -33,6 +34,70 @@ function positiveInteger(value, label) {
     throw new Error(`${label}无效，请刷新详情后重新核实。`);
   }
   return normalized;
+}
+
+function boundedInteger(value, label, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const normalized = Number(value);
+  if (!Number.isSafeInteger(normalized) || normalized < min || normalized > max) {
+    throw new Error(`${label}必须是 ${min} 到 ${max} 之间的整数。`);
+  }
+  return normalized;
+}
+
+function canonicalUtc(value) {
+  const normalized = String(value || "").trim();
+  if (!CANONICAL_UTC_PATTERN.test(normalized) || Number.isNaN(Date.parse(normalized))) {
+    throw new Error("Provider 创建时间必须使用 UTC 格式 YYYY-MM-DDTHH:mm:ssZ。");
+  }
+  return normalized;
+}
+
+function safeTemporaryArtifactUrl(value) {
+  const normalized = String(value || "").trim();
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error("临时 Artifact URL 必须是完整的 HTTPS 地址。");
+  }
+  if (
+    normalized.length > 8192
+    || parsed.protocol !== "https:"
+    || !parsed.hostname
+    || parsed.username
+    || parsed.password
+    || parsed.hash
+  ) {
+    throw new Error("临时 Artifact URL 必须是无账号、密码和片段的完整 HTTPS 地址。");
+  }
+  return normalized;
+}
+
+function buildSynchronousResultEvidence(values = {}) {
+  const providerModelId = requiredText(values.providerModelId, "Provider 模型", {
+    maxLength: 128,
+  });
+  const providerResponseSha256 = String(values.providerResponseSha256 || "").trim();
+  if (!SHA256_HEX_PATTERN.test(providerResponseSha256)) {
+    throw new Error("Provider 响应 SHA-256 必须是 64 位小写十六进制值。");
+  }
+  const outputTokens = boundedInteger(values.outputTokens, "输出 token 数");
+  const totalTokens = boundedInteger(values.totalTokens, "总 token 数");
+  if (totalTokens < outputTokens) {
+    throw new Error("总 token 数不能小于输出 token 数。");
+  }
+  return {
+    provider_model_id: providerModelId,
+    provider_response_sha256: providerResponseSha256,
+    artifact_url: safeTemporaryArtifactUrl(values.artifactUrl),
+    provider_created_at: canonicalUtc(values.providerCreatedAt),
+    generated_images: boundedInteger(values.generatedImages, "生成图片数", {
+      min: 1,
+      max: 16,
+    }),
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+  };
 }
 
 export function adaptRelayUnknownSubmission(item = {}) {
@@ -90,6 +155,7 @@ export function buildRelayUnknownResolution(
     verificationReference,
     reason,
     approved = false,
+    synchronousResult,
   } = {},
 ) {
   if (!approved) {
@@ -111,7 +177,13 @@ export function buildRelayUnknownResolution(
     throw new Error("对账 token fencing 证明无效，请刷新详情后重新核实。");
   }
 
-  const normalizedUpstreamTaskId = String(upstreamTaskId || "").trim();
+  const requiresSynchronousResult = item.mode === "text_to_image" && outcome === "created";
+  const evidence = requiresSynchronousResult
+    ? buildSynchronousResultEvidence(synchronousResult)
+    : null;
+  const normalizedUpstreamTaskId = requiresSynchronousResult
+    ? `seedream:${evidence.provider_response_sha256}`
+    : String(upstreamTaskId || "").trim();
   if (outcome === "created" && !normalizedUpstreamTaskId) {
     throw new Error("确认已创建时必须填写 Provider 上游任务 ID。");
   }
@@ -129,6 +201,23 @@ export function buildRelayUnknownResolution(
       maxLength: 191,
     }),
     reason: requiredText(reason, "审批原因", { minLength: 3, maxLength: 240 }),
+    ...(evidence ? { synchronous_result: evidence } : {}),
+  };
+}
+
+function adaptSynchronousResultReceipt(result) {
+  if (!result || typeof result !== "object") return null;
+  return {
+    providerModelId: result.provider_model_id ?? result.providerModelId ?? "",
+    providerResponseSha256:
+      result.provider_response_sha256 ?? result.providerResponseSha256 ?? "",
+    artifactUrlSha256: result.artifact_url_sha256 ?? result.artifactUrlSha256 ?? "",
+    providerCreatedAt: result.provider_created_at ?? result.providerCreatedAt ?? "",
+    generatedImages: result.generated_images ?? result.generatedImages ?? null,
+    outputTokens: result.output_tokens ?? result.outputTokens ?? null,
+    totalTokens: result.total_tokens ?? result.totalTokens ?? null,
+    exposedArtifactUrl: Object.hasOwn(result, "artifact_url")
+      || Object.hasOwn(result, "artifactUrl"),
   };
 }
 
@@ -155,18 +244,26 @@ export function adaptRelayUnknownResult(result = {}) {
     approvalReason: result.approval_reason ?? result.approvalReason ?? "",
     approvalKeyId: result.approval_key_id || result.approvalKeyId || "",
     approvalSignature: result.approval_signature || result.approvalSignature || "",
+    synchronousResult: adaptSynchronousResultReceipt(
+      result.synchronous_result ?? result.synchronousResult,
+    ),
     resolvedStatus: result.resolved_status || result.resolvedStatus || "",
     currentStatus: result.current_status || result.currentStatus || "",
     payloadSha256: result.payload_sha256 || result.payloadSha256 || "",
     resolvedAt: result.resolved_at || result.resolvedAt || "",
-    raw: result.raw || result,
   };
 }
 
-function receiptError(message, { cause, code = "RELAY_RECEIPT_INVALID", proofRequired = false } = {}) {
+function receiptError(message, {
+  cause,
+  code = "RELAY_RECEIPT_INVALID",
+  proofRequired = false,
+  fieldErrors = {},
+} = {}) {
   const error = new Error(message, { cause });
   error.code = code;
   error.relayResultProofRequired = proofRequired;
+  error.fieldErrors = fieldErrors;
   return error;
 }
 
@@ -181,6 +278,24 @@ function assertRelayUnknownReceiptEnvelope(rawResult, item) {
   const resolvedAt = String(result.resolvedAt || "");
   const validResolvedAt = /(?:Z|[+-]\d{2}:\d{2})$/i.test(resolvedAt)
     && !Number.isNaN(Date.parse(resolvedAt));
+  const synchronousResult = result.synchronousResult;
+  const validSynchronousResult = !synchronousResult || (
+    !synchronousResult.exposedArtifactUrl
+    && String(synchronousResult.providerModelId).trim() === synchronousResult.providerModelId
+    && String(synchronousResult.providerModelId).length >= 1
+    && String(synchronousResult.providerModelId).length <= 128
+    && SHA256_HEX_PATTERN.test(String(synchronousResult.providerResponseSha256))
+    && SHA256_HEX_PATTERN.test(String(synchronousResult.artifactUrlSha256))
+    && CANONICAL_UTC_PATTERN.test(String(synchronousResult.providerCreatedAt))
+    && !Number.isNaN(Date.parse(synchronousResult.providerCreatedAt))
+    && Number.isInteger(synchronousResult.generatedImages)
+    && synchronousResult.generatedImages >= 1
+    && synchronousResult.generatedImages <= 16
+    && Number.isSafeInteger(synchronousResult.outputTokens)
+    && synchronousResult.outputTokens >= 0
+    && Number.isSafeInteger(synchronousResult.totalTokens)
+    && synchronousResult.totalTokens >= synchronousResult.outputTokens
+  );
   const structurallyValid = result.apiVersion === "v1"
     && result.schemaVersion === 1
     && result.object === "generation.reconciliation_result"
@@ -206,11 +321,19 @@ function assertRelayUnknownReceiptEnvelope(rawResult, item) {
     && SHA256_HEX_PATTERN.test(String(result.payloadSha256))
     && RELAY_JOB_STATUSES.has(result.currentStatus)
     && validResolvedAt
+    && validSynchronousResult
     && edgeWhitespaceFields.every((value) => String(value) === String(value).trim())
     && (
       result.outcome === "created"
-        ? Boolean(result.upstreamTaskId) && result.resolvedStatus === "processing"
-        : !result.upstreamTaskId && result.resolvedStatus === "failed"
+        ? Boolean(result.upstreamTaskId)
+          && result.resolvedStatus === "processing"
+          && (
+            !synchronousResult
+            || result.upstreamTaskId === `seedream:${synchronousResult.providerResponseSha256}`
+          )
+        : !result.upstreamTaskId
+          && result.resolvedStatus === "failed"
+          && !synchronousResult
     );
 
   if (!structurallyValid) {
@@ -230,6 +353,15 @@ function assertRelayUnknownReceiptEnvelope(rawResult, item) {
       { code: "RELAY_RECEIPT_MISMATCH" },
     );
   }
+  if (
+    (item?.mode === "text_to_image" && result.outcome === "created" && !synchronousResult)
+    || (item?.mode !== "text_to_image" && synchronousResult)
+  ) {
+    throw receiptError(
+      "Relay receipt 的同步图片证据与当前任务模式不一致，已保持锁定；禁止再次 resolve。",
+      { code: "RELAY_RECEIPT_MISMATCH" },
+    );
+  }
   return result;
 }
 
@@ -243,6 +375,17 @@ export function assertRelayUnknownResultMatchesResolution(
   const expectedUpstreamTaskId = resolution?.outcome === "created"
     ? String(resolution?.upstream_task_id || "")
     : "";
+  const expectedSynchronousResult = resolution?.synchronous_result ?? null;
+  const receivedSynchronousResult = result.synchronousResult;
+  const synchronousEvidenceMatches = expectedSynchronousResult
+    ? receivedSynchronousResult
+      && receivedSynchronousResult.providerModelId === expectedSynchronousResult.provider_model_id
+      && receivedSynchronousResult.providerResponseSha256 === expectedSynchronousResult.provider_response_sha256
+      && receivedSynchronousResult.providerCreatedAt === expectedSynchronousResult.provider_created_at
+      && receivedSynchronousResult.generatedImages === expectedSynchronousResult.generated_images
+      && receivedSynchronousResult.outputTokens === expectedSynchronousResult.output_tokens
+      && receivedSynchronousResult.totalTokens === expectedSynchronousResult.total_tokens
+    : !receivedSynchronousResult;
   const matches = [
     result.outcome === resolution?.outcome,
     result.upstreamTaskId === expectedUpstreamTaskId,
@@ -251,6 +394,7 @@ export function assertRelayUnknownResultMatchesResolution(
     result.expectedReconciliationToken === resolution?.expected_reconciliation_token,
     result.verificationReference === resolution?.verification_reference,
     result.approvalReason === resolution?.reason,
+    synchronousEvidenceMatches,
     !expectedOperationId || result.operationId === expectedOperationId,
     !expectedApprovedBy || result.approvedBy === expectedApprovedBy,
   ];
@@ -261,6 +405,41 @@ export function assertRelayUnknownResultMatchesResolution(
     );
   }
   return result;
+}
+
+const RELAY_UNKNOWN_FIELD_NAMES = {
+  upstream_task_id: "upstream_task_id",
+  verification_reference: "verification_reference",
+  reason: "reason",
+  provider_model_id: "provider_model_id",
+  provider_response_sha256: "provider_response_sha256",
+  artifact_url: "artifact_url",
+  provider_created_at: "provider_created_at",
+  generated_images: "generated_images",
+  output_tokens: "output_tokens",
+  total_tokens: "total_tokens",
+};
+
+export function relayUnknownResolveFieldErrors(error) {
+  const source = error?.cause ?? error;
+  const direct = source?.details?.field_errors ?? source?.details?.fieldErrors;
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+    return Object.fromEntries(
+      Object.entries(direct)
+        .map(([key, value]) => [RELAY_UNKNOWN_FIELD_NAMES[key] || key, String(value || "")])
+        .filter(([, value]) => value),
+    );
+  }
+  const issues = source?.details?.validationErrors;
+  if (!Array.isArray(issues)) return {};
+  const fieldErrors = {};
+  for (const issue of issues) {
+    const location = Array.isArray(issue?.loc) ? issue.loc.map(String) : [];
+    const field = [...location].reverse().find((part) => RELAY_UNKNOWN_FIELD_NAMES[part]);
+    if (!field || fieldErrors[field]) continue;
+    fieldErrors[field] = String(issue?.msg || "该字段未通过 Platform 校验。");
+  }
+  return fieldErrors;
 }
 
 export function isRelayUnknownResolveOutcomeUnknown(error) {
@@ -318,6 +497,7 @@ export async function resolveRelayUnknownWithReadback({
       throw receiptError(relayUnknownResolveErrorMessage(resolveError), {
         cause: resolveError,
         code: "RELAY_RESOLVE_REJECTED",
+        fieldErrors: relayUnknownResolveFieldErrors(resolveError),
       });
     }
     const receipt = await readRelayUnknownResolutionResult({

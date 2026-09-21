@@ -6,10 +6,7 @@ import {
   showcaseManifestsEqual,
   showcaseMutationPayload,
 } from "./showcaseModel.js";
-import {
-  createShowcaseDemoSnapshot,
-  SHOWCASE_DEMO_ARTWORKS,
-} from "./showcaseDemoData.js";
+import { createShowcaseDemoSnapshot } from "./showcaseDemoData.js";
 
 function actionMessage(error) {
   if (error?.status === 409) return "草稿或线上发布状态已被其他页面更新，请刷新后重新操作。";
@@ -60,12 +57,8 @@ export function ShowcaseOperationsContainer({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busyAction, setBusyAction] = useState("");
-  const [ownedArtworks, setOwnedArtworks] = useState([]);
-  const [ownedArtworksLoading, setOwnedArtworksLoading] = useState(false);
-  const [ownedArtworksError, setOwnedArtworksError] = useState("");
   const requestSequence = useRef(0);
   const activeController = useRef(null);
-  const artworksController = useRef(null);
   const mediaOperation = useRef(null);
   const publishOperation = useRef(null);
   const unpublishOperation = useRef(null);
@@ -96,53 +89,6 @@ export function ShowcaseOperationsContainer({
     }
   }, [client, demoMode, onAuthenticationError]);
 
-  const loadOwnedArtworks = useCallback(async ({ signal } = {}) => {
-    if (demoMode) {
-      setOwnedArtworks(SHOWCASE_DEMO_ARTWORKS);
-      setOwnedArtworksError("");
-      return SHOWCASE_DEMO_ARTWORKS;
-    }
-    if (!client?.listPersonalArtworks) {
-      setOwnedArtworksError("作品清单暂不可用，可直接粘贴本人作品的 Artifact ID。");
-      return [];
-    }
-    setOwnedArtworksLoading(true);
-    setOwnedArtworksError("");
-    try {
-      const payload = await client.listPersonalArtworks(
-        { page: 1, page_size: 50 },
-        { signal },
-      );
-      if (signal?.aborted) return [];
-      const items = (Array.isArray(payload) ? payload : payload?.items || [])
-        .filter((item) => (
-          typeof item?.artifact_id === "string"
-          && ["image", "video"].includes(item?.media_type)
-        ));
-      setOwnedArtworks(items);
-      return items;
-    } catch (artworkError) {
-      if (signal?.aborted) return [];
-      if (onAuthenticationError?.(artworkError)) return [];
-      setOwnedArtworksError("本人作品清单读取失败，可直接粘贴已验证作品的 Artifact ID。");
-      return [];
-    } finally {
-      if (!signal?.aborted) setOwnedArtworksLoading(false);
-    }
-  }, [client, demoMode, onAuthenticationError]);
-
-  const reloadOwnedArtworks = useCallback(() => {
-    if (demoMode) {
-      setOwnedArtworks(SHOWCASE_DEMO_ARTWORKS);
-      setOwnedArtworksError("");
-      return Promise.resolve(SHOWCASE_DEMO_ARTWORKS);
-    }
-    artworksController.current?.abort();
-    const controller = new AbortController();
-    artworksController.current = controller;
-    return loadOwnedArtworks({ signal: controller.signal });
-  }, [demoMode, loadOwnedArtworks]);
-
   useEffect(() => () => {
     for (const url of demoObjectUrls.current) URL.revokeObjectURL?.(url);
     demoObjectUrls.current.clear();
@@ -152,8 +98,6 @@ export function ShowcaseOperationsContainer({
     if (!active) return undefined;
     if (demoMode) {
       setSnapshot((current) => current || createShowcaseDemoSnapshot());
-      setOwnedArtworks(SHOWCASE_DEMO_ARTWORKS);
-      setOwnedArtworksError("");
       return undefined;
     }
     if (!client?.getAdminShowcase) return undefined;
@@ -161,14 +105,8 @@ export function ShowcaseOperationsContainer({
     const controller = new AbortController();
     activeController.current = controller;
     load({ signal: controller.signal }).catch(() => {});
-    const ownedController = new AbortController();
-    artworksController.current = ownedController;
-    loadOwnedArtworks({ signal: ownedController.signal });
-    return () => {
-      controller.abort();
-      ownedController.abort();
-    };
-  }, [active, client, demoMode, load, loadOwnedArtworks]);
+    return () => controller.abort();
+  }, [active, client, demoMode, load]);
 
   const reload = useCallback(() => {
     if (demoMode) {
@@ -221,11 +159,7 @@ export function ShowcaseOperationsContainer({
   }, [load, onAuthenticationError]);
 
   const save = useCallback(async (values, editingItem) => {
-    const artifactId = String(values.sourceTaskArtifactId || "").trim();
     if (demoMode) {
-      const artwork = SHOWCASE_DEMO_ARTWORKS.find((entry) => (
-        entry.artifact_id === artifactId
-      ));
       const existingMedia = snapshot?.media?.find((entry) => (
         entry.id === values.mediaId
       ));
@@ -234,14 +168,13 @@ export function ShowcaseOperationsContainer({
         : "";
       if (localUrl) demoObjectUrls.current.add(localUrl);
       const mediaUrl = localUrl
-        || artwork?.preview_url
         || existingMedia?.mediaUrl
         || editingItem?.mediaUrl
         || "/community/miniature-fashion.png";
       const mediaType = values.file?.type?.startsWith("video/")
         ? "video"
-        : artwork?.media_type || existingMedia?.mediaType || editingItem?.mediaType || "image";
-      const mediaId = values.file || artifactId
+        : existingMedia?.mediaType || editingItem?.mediaType || "image";
+      const mediaId = values.file
         ? demoId()
         : values.mediaId || editingItem?.mediaId || demoId();
       return performDemo("save", (current) => {
@@ -263,11 +196,9 @@ export function ShowcaseOperationsContainer({
           isHero: values.isHero === true,
           sortOrder: editingItem?.sortOrder ?? currentItems.length,
           status: "draft",
-          sourceLabel: artifactId
-            ? "本人作品导入（演示）"
-            : values.mediaSource === "existing"
-              ? "已上传媒体复用（演示）"
-              : "本地上传（演示）",
+          sourceLabel: values.mediaSource === "existing"
+            ? "已上传媒体复用（演示）"
+            : "本地上传（演示）",
           updatedAt: new Date().toISOString(),
         };
         const replaced = editingItem
@@ -282,8 +213,8 @@ export function ShowcaseOperationsContainer({
           ? current.media
           : [{
               id: mediaId,
-              sourceTaskArtifactId: artifactId,
-              filename: values.file?.name || artwork?.model_display_name || `${nextItem.title}.${mediaType === "video" ? "mp4" : "png"}`,
+              sourceTaskArtifactId: "",
+              filename: values.file?.name || `${nextItem.title}.${mediaType === "video" ? "mp4" : "png"}`,
               mediaType,
               contentType: values.file?.type || (mediaType === "video" ? "video/mp4" : "image/png"),
               sizeBytes: values.file?.size || 0,
@@ -307,9 +238,8 @@ export function ShowcaseOperationsContainer({
     const fileSignature = values.file
       ? `${values.file.name}:${values.file.size}:${values.file.type}:${values.file.lastModified}`
       : "";
-    const sourceSignature = artifactId ? `artifact:${artifactId}` : `file:${fileSignature}`;
-    const mediaKey = values.file || artifactId
-      ? stableOperationKey(mediaOperation, "showcase-media", sourceSignature)
+    const mediaKey = values.file
+      ? stableOperationKey(mediaOperation, "showcase-media", `file:${fileSignature}`)
       : "";
     const saved = await perform("save", async () => {
       const media = values.file
@@ -317,12 +247,7 @@ export function ShowcaseOperationsContainer({
             { file: values.file },
             { idempotencyKey: mediaKey },
           )
-        : artifactId
-          ? await client.uploadAdminShowcaseMedia(
-              { sourceTaskArtifactId: artifactId },
-              { idempotencyKey: mediaKey },
-            )
-          : { id: values.mediaId || editingItem?.mediaId };
+        : { id: values.mediaId || editingItem?.mediaId };
       const payload = showcaseMutationPayload(
         { ...values, sortOrder: editingItem?.sortOrder ?? snapshot.draft.items.length },
         media,
@@ -529,11 +454,7 @@ export function ShowcaseOperationsContainer({
       notice={notice}
       busyAction={busyAction}
       demoMode={demoMode}
-      ownedArtworks={ownedArtworks}
-      ownedArtworksLoading={ownedArtworksLoading}
-      ownedArtworksError={ownedArtworksError}
       onReload={reload}
-      onReloadOwnedArtworks={reloadOwnedArtworks}
       onSave={save}
       onMove={move}
       onRetire={retire}

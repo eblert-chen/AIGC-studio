@@ -65,8 +65,9 @@ test("formal login and logout navigation comes only from controlled runtime conf
 });
 
 test("application session mode is restored by the cookie-backed auth gateway", async () => {
-  const [source, main, gateway] = await Promise.all([
+  const [source, draftSource, main, gateway] = await Promise.all([
     readFile(new URL("../src/App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/app/useGenerationDraft.js", import.meta.url), "utf8"),
     readFile(new URL("../src/main.jsx", import.meta.url), "utf8"),
     readFile(new URL("../src/auth/AuthGateway.jsx", import.meta.url), "utf8"),
   ]);
@@ -75,7 +76,7 @@ test("application session mode is restored by the cookie-backed auth gateway", a
   assert.match(source, /const LIVE_MODE = !DEMO_MODE && API_CONFIGURED/);
   assert.doesNotMatch(source, /const DEMO_MODE = !API_CONFIGURED/);
   assert.doesNotMatch(source, /AUTH_REQUIRED|HAS_AUTHENTICATED_SESSION/);
-  assert.match(source, /DEMO_MODE \? DEMO_MODELS\[0\]\.id : initialPendingCreate\?\.modelId \?\? ""/);
+  assert.match(draftSource, /demoMode \? demoModels\[0\]\.id : initialPendingCreate\?\.modelId \?\? ""/);
   assert.doesNotMatch(source, /LIVE_MODE \?[^\n]+: DEMO_MODELS\[0\]\.id/);
   assert.match(source, /页面不会使用演示数据代替生产数据/);
   assert.match(main, /<AuthGateway[\s\S]*?<App\s*\/>[\s\S]*?<\/AuthGateway>/);

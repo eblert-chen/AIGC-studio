@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 from datetime import timedelta
-from threading import Barrier, Event, Lock, Thread
+from threading import Barrier, Event, Lock, Thread, current_thread
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 
 from platform_api.database import Base
@@ -17,6 +18,7 @@ from platform_api.models import (
     ChannelCostSource,
     ChannelType,
     Company,
+    CompanyEntitlementBatchJournal,
     CompanyMembership,
     CompanyModelGrant,
     CompanyResourceGrant,
@@ -29,6 +31,10 @@ from platform_api.models import (
     MembershipStatus,
     ModelCapability,
     ModelDefinition,
+    PersonalLedgerEntry,
+    PersonalRetailModelGrant,
+    PersonalWalletAccount,
+    PersonalWorkspace,
     ResourceDefinition,
     ResourceKind,
     RelayOutboxStatus,
@@ -41,6 +47,7 @@ from platform_api.models import (
     utcnow,
 )
 from platform_api.services.billing import WalletService
+from platform_api.services.admin_entitlements import AdminEntitlementService
 from platform_api.services.channel_costs import ChannelCostService
 from platform_api.services.errors import (
     ConflictError,
@@ -54,12 +61,39 @@ from platform_api.services.relay_channel_operations import (
     RelayChannelOperationConflict,
     RelayChannelOperationJournalService,
 )
+from platform_api.services.company_points_billing import CompanyPointBillingService
+from platform_api.services.personal_billing import PersonalWalletService
+from platform_api.services.personal import PersonalTaskService
+from platform_api.services.relay_status import RelayStatusService
 from platform_api.services.tasks import TaskService
 from platform_api.services.task_cancellation import GenerationCancellationService
 
 from .test_model_capability_v1_contract import _mode, canonical_capability
+from .test_billing_recovery_safety import seed_reserved_submission
+from . import test_relay_crash_idempotent_recovery as recovery_contract
 
 DATABASE_URL = os.getenv("PLATFORM_TEST_DATABASE_URL") or os.getenv("DATABASE_URL", "")
+
+
+@pytest.mark.parametrize("scope", recovery_contract.SCOPES)
+@pytest.mark.parametrize("relay_created", [False, True])
+def test_postgres_crash_recovery_uses_exact_durable_relay_identity(
+    postgres_session_factory, tmp_path, scope, relay_created,
+):
+    app = SimpleNamespace(state=SimpleNamespace(session_factory=postgres_session_factory))
+    recovery_contract.test_process_crash_replays_exact_request_into_one_durable_job_and_submit_outbox(
+        app, tmp_path, scope, relay_created,
+    )
+
+
+@pytest.mark.parametrize("scope", recovery_contract.SCOPES)
+def test_postgres_old_unknown_then_401_keeps_each_scope_reservation(
+    postgres_session_factory, tmp_path, scope,
+):
+    app = SimpleNamespace(state=SimpleNamespace(session_factory=postgres_session_factory))
+    recovery_contract.test_created_crash_then_later_rejection_never_releases_old_unknown(
+        app, tmp_path, scope, 401,
+    )
 
 
 @pytest.fixture
@@ -89,6 +123,147 @@ def postgres_session_factory():
         with administration_engine.begin() as connection:
             connection.exec_driver_sql(f'DROP SCHEMA "{schema_name}" CASCADE')
         administration_engine.dispose()
+
+
+def _personal_admission_fixture(factory):
+    identity = seed_reserved_submission(factory, "personal_points")
+    with factory.begin() as session:
+        task = session.get(GenerationTask, identity[0])
+        model = session.get(ModelDefinition, task.model_id)
+        model.active = True
+        model.published_at = utcnow()
+        # A local-only model exercises the actual admission/quote/wallet code;
+        # no fake Relay publication or commercial guard override is installed.
+        session.add(ModelCapability(model_id=model.id, capability_key="generation", config=canonical_capability(
+            modes={"text_to_video": _mode(max_images=0, max_videos=0, max_audio=0,
+                supports_face=False, input_media_types=[], durations=[5], output_counts=[1])},
+        )))
+        session.add(PersonalRetailModelGrant(model_id=model.id, enabled=True, price_per_item_points=20))
+        return identity, task.user_id, task.model_id
+
+
+def _create_personal_admission(session, identity, user_id, model_id):
+    task, created = PersonalTaskService.create(
+        session, workspace_id=identity[3], user_id=user_id, model_id=model_id,
+        request_payload={"mode": "text_to_video", "prompt": "new admission",
+                         "duration_seconds": 5, "output_count": 1, "aspect_ratio": "16:9", "resolution": "720p"},
+        idempotency_key="concurrent-new-admission", expected_capability_version=None,
+        expected_quote_revision=None, require_quote_revision=False,
+        require_relay_capability_revision=False,
+    )
+    assert created and task.quote_points == 20
+    PersonalWalletService.reserve(
+        session, workspace_id=identity[3], task_id=task.id,
+        amount_points=task.quote_points, idempotency_key="concurrent-new-reserve",
+    )
+    return task.id
+
+
+def test_personal_admission_and_terminal_ledger_fk_do_not_deadlock_on_postgres(postgres_session_factory):
+    factory = postgres_session_factory
+    identity, user_id, model_id = _personal_admission_fixture(factory)
+    before_task = recovery_contract.frozen_task(factory, identity[0])
+    workspace_locked, wallet_locked = Event(), Event()
+    engine = factory.kw["bind"]
+    outcomes = {}
+    admission_name = "personal-admission-regression"
+
+    def pause_after_workspace_lock(connection, cursor, statement, parameters, context, executemany):
+        sql = statement.lower()
+        if current_thread().name == admission_name and "from personal_workspaces" in sql and "for " in sql:
+            workspace_locked.set()
+            assert wallet_locked.wait(10), "terminal never acquired the wallet"
+
+    def admission():
+        try:
+            with factory.begin() as session:
+                outcomes["new_task"] = _create_personal_admission(session, identity, user_id, model_id)
+            outcomes["admission"] = "ok"
+        except Exception as exc:
+            outcomes["admission"] = exc
+
+    def terminal():
+        try:
+            assert workspace_locked.wait(10), "admission never acquired workspace lock"
+            with factory.begin() as session:
+                RelayStatusService.lock_wallet_and_task_for_scope(
+                    session, company_id=None, personal_workspace_id=identity[3], task_id=identity[0],
+                )
+                wallet_locked.set()
+                PersonalWalletService.settle_success(
+                    session, workspace_id=identity[3], task_id=identity[0], actual_cost_points=40,
+                    idempotency_key="concurrent-terminal-settle",
+                )
+            outcomes["terminal"] = "ok"
+        except Exception as exc:
+            outcomes["terminal"] = exc
+            wallet_locked.set()
+
+    threads = [Thread(target=admission, name=admission_name), Thread(target=terminal)]
+    event.listen(engine, "after_cursor_execute", pause_after_workspace_lock)
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+            assert not thread.is_alive(), "personal admission/terminal lock cycle"
+    finally:
+        event.remove(engine, "after_cursor_execute", pause_after_workspace_lock)
+    assert outcomes.get("admission") == outcomes.get("terminal") == "ok", outcomes
+    assert recovery_contract.frozen_task(factory, identity[0]) == before_task
+    with factory() as session:
+        wallet = session.get(PersonalWalletAccount, identity[3])
+        assert (wallet.available_points, wallet.reserved_points) == (40, 20)
+        assert session.get(GenerationTask, identity[0]).actual_cost_points == 40
+        assert session.get(GenerationTask, outcomes["new_task"]).quote_points == 20
+        assert session.scalar(select(func.count()).select_from(PersonalLedgerEntry).where(
+            PersonalLedgerEntry.task_id == identity[0], PersonalLedgerEntry.kind == LedgerKind.SETTLE,
+        )) == 1
+
+
+def test_concurrent_personal_workspace_disable_still_blocks_new_admission_on_postgres(postgres_session_factory):
+    factory = postgres_session_factory
+    identity, user_id, model_id = _personal_admission_fixture(factory)
+    before_task = recovery_contract.frozen_task(factory, identity[0])
+    reached_workspace, completed = Event(), Event()
+    engine = factory.kw["bind"]
+    outcome = []
+
+    def before_workspace_query(connection, cursor, statement, parameters, context, executemany):
+        if current_thread().name == "disabled-personal-admission" and "from personal_workspaces" in statement.lower():
+            reached_workspace.set()
+
+    def admission():
+        try:
+            with factory.begin() as session:
+                _create_personal_admission(session, identity, user_id, model_id)
+            outcome.append("unexpected admission")
+        except Exception as exc:
+            outcome.append(exc)
+        finally:
+            completed.set()
+
+    event.listen(engine, "before_cursor_execute", before_workspace_query)
+    thread = Thread(target=admission, name="disabled-personal-admission")
+    try:
+        with factory.begin() as disabling:
+            workspace = disabling.scalar(select(PersonalWorkspace).where(
+                PersonalWorkspace.id == identity[3],
+            ).with_for_update())
+            workspace.active = False
+            disabling.flush()
+            thread.start()
+            assert reached_workspace.wait(10)
+            assert not completed.wait(0.1), "admission bypassed an uncommitted workspace disable"
+        thread.join(timeout=15)
+        assert not thread.is_alive()
+    finally:
+        event.remove(engine, "before_cursor_execute", before_workspace_query)
+    assert len(outcome) == 1 and isinstance(outcome[0], PermissionDeniedError), outcome
+    assert recovery_contract.frozen_task(factory, identity[0]) == before_task
+    recovery_contract.assert_reservation(factory, identity, "personal_points", held=True)
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(GenerationTask)) == 1
 
 
 def _seed_company(factory, suffix: str, *, balance_cents: int):
@@ -175,6 +350,166 @@ def _run_concurrently(*operations):
     return results
 
 
+def _seed_entitlement_journal_race(factory, suffix: str):
+    with factory.begin() as session:
+        actor = User(
+            email=f"entitlement-journal-{suffix}-{uuid.uuid4()}@example.com",
+            display_name="Entitlement Journal Admin",
+            is_platform_admin=True,
+        )
+        first = Company(name=f"Entitlement target A {suffix}")
+        second = Company(name=f"Entitlement target B {suffix}")
+        resource = ResourceDefinition(
+            key=f"feature.entitlement-journal.{suffix}",
+            kind=ResourceKind.FEATURE,
+            display_name=f"Entitlement feature {suffix}",
+            active=True,
+        )
+        session.add_all([actor, first, second, resource])
+        session.flush()
+        return actor.id, first.id, second.id, resource.id
+
+
+def _resource_entitlement_change(company_id: str, resource_id: str) -> dict:
+    return {
+        "company_id": company_id,
+        "item_kind": "resource",
+        "item_id": resource_id,
+        "enabled": True,
+        "config_override": {},
+        "call_quota": 50,
+        "concurrency_limit": 2,
+    }
+
+
+def test_company_entitlement_same_intent_claims_once_and_replays_on_postgres(
+    postgres_session_factory,
+):
+    factory = postgres_session_factory
+    actor_id, company_id, _, resource_id = _seed_entitlement_journal_race(
+        factory, "same-intent"
+    )
+    key = f"entitlement-same-{uuid.uuid4()}"
+    changes = [_resource_entitlement_change(company_id, resource_id)]
+    intent = {"operation": "matrix_batch", "cells": changes}
+    previews_ready = Barrier(2)
+
+    def execute(request_id: str):
+        with factory.begin() as session:
+            preview = AdminEntitlementService.preview_changes(
+                session,
+                changes=changes,
+            )
+            previews_ready.wait(timeout=10)
+            return AdminEntitlementService.execute_changes(
+                session,
+                changes=changes,
+                expected_snapshot=preview["snapshot"],
+                actor_user_id=actor_id,
+                reason="Concurrent identical entitlement request",
+                request_id=request_id,
+                idempotency_key=key,
+                request_intent=intent,
+            )
+
+    results = _run_concurrently(
+        lambda: execute("entitlement-same-a"),
+        lambda: execute("entitlement-same-b"),
+    )
+    assert len(results) == 2
+    assert all(kind == "ok" for kind, _ in results)
+    payloads = [value for _, value in results]
+    assert sorted(payload["idempotent_replay"] for payload in payloads) == [False, True]
+    assert {payload["batch_id"] for payload in payloads} == {key}
+
+    with factory() as session:
+        journals = session.scalars(
+            select(CompanyEntitlementBatchJournal).where(
+                CompanyEntitlementBatchJournal.idempotency_key == key
+            )
+        ).all()
+        assert len(journals) == 1
+        assert journals[0].state == "completed"
+        assert journals[0].result_payload["batch_id"] == key
+        assert session.scalar(
+            select(func.count())
+            .select_from(CompanyResourceGrant)
+            .where(CompanyResourceGrant.resource_id == resource_id)
+        ) == 1
+        assert session.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.action == "company.entitlements.batch",
+                AuditLog.target_id == key,
+            )
+        ) == 1
+
+
+def test_company_entitlement_same_key_different_payload_is_globally_rejected_on_postgres(
+    postgres_session_factory,
+):
+    factory = postgres_session_factory
+    actor_id, first_company_id, second_company_id, resource_id = (
+        _seed_entitlement_journal_race(factory, "different-intent")
+    )
+    key = f"entitlement-conflict-{uuid.uuid4()}"
+    first_changes = [_resource_entitlement_change(first_company_id, resource_id)]
+    second_changes = [_resource_entitlement_change(second_company_id, resource_id)]
+    previews_ready = Barrier(2)
+
+    def execute(changes: list[dict], request_id: str):
+        with factory.begin() as session:
+            preview = AdminEntitlementService.preview_changes(
+                session,
+                changes=changes,
+            )
+            previews_ready.wait(timeout=10)
+            return AdminEntitlementService.execute_changes(
+                session,
+                changes=changes,
+                expected_snapshot=preview["snapshot"],
+                actor_user_id=actor_id,
+                reason="Concurrent conflicting entitlement request",
+                request_id=request_id,
+                idempotency_key=key,
+                request_intent={"operation": "matrix_batch", "cells": changes},
+            )
+
+    results = _run_concurrently(
+        lambda: execute(first_changes, "entitlement-conflict-a"),
+        lambda: execute(second_changes, "entitlement-conflict-b"),
+    )
+    assert len(results) == 2
+    assert sum(kind == "ok" for kind, _ in results) == 1
+    errors = [value for kind, value in results if kind == "error"]
+    assert len(errors) == 1
+    assert isinstance(errors[0], ConflictError)
+    assert "already used" in str(errors[0])
+
+    with factory() as session:
+        journals = session.scalars(
+            select(CompanyEntitlementBatchJournal).where(
+                CompanyEntitlementBatchJournal.idempotency_key == key
+            )
+        ).all()
+        assert len(journals) == 1
+        assert journals[0].state == "completed"
+        assert session.scalar(
+            select(func.count())
+            .select_from(CompanyResourceGrant)
+            .where(CompanyResourceGrant.resource_id == resource_id)
+        ) == 1
+        assert session.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.action == "company.entitlements.batch",
+                AuditLog.target_id == key,
+            )
+        ) == 1
+
+
 def test_relay_channel_operation_claim_is_tenant_global_and_atomic_on_postgres(
     postgres_session_factory,
 ):
@@ -199,6 +534,8 @@ def test_relay_channel_operation_claim_is_tenant_global_and_atomic_on_postgres(
                 operation_id=operation_id,
                 channel_id=channel_id,
                 kind="test",
+                public_model_id="pg-journal-model",
+                route_id=f"pg-journal-route-{channel_id}",
                 actor_user_id=actor_id,
                 reason=reason,
                 expected_revision=None,
@@ -263,6 +600,8 @@ def test_relay_channel_operation_same_intent_replays_once_on_postgres(
                 operation_id=operation_id,
                 channel_id=17,
                 kind="test",
+                public_model_id="pg-journal-model",
+                route_id="pg-journal-route-17",
                 actor_user_id=actor_id,
                 reason="Verify the same channel once",
                 expected_revision=None,
@@ -752,6 +1091,135 @@ def test_postgres_terminal_race_and_recharge_replay_are_single_effect(
             )
             == 1
         )
+
+
+@pytest.mark.parametrize("scope", ["company_cents", "company_points", "personal_points"])
+def test_postgres_terminal_refreshes_prelock_wallet_and_task_projection(
+    postgres_session_factory, scope,
+):
+    from platform_api.models import CompanyPointWalletAccount, PersonalWalletAccount
+
+    factory = sessionmaker(bind=postgres_session_factory.kw["bind"],
+                           expire_on_commit=False, autoflush=False)
+    task_id, _, company_id, workspace_id = seed_reserved_submission(factory, scope)
+    with factory.begin() as stale_session:
+        cached_task = stale_session.get(GenerationTask, task_id)
+        wallet_type, wallet_id = (
+            (WalletAccount, company_id) if scope == "company_cents"
+            else (CompanyPointWalletAccount, company_id) if scope == "company_points"
+            else (PersonalWalletAccount, workspace_id)
+        )
+        cached_wallet = stale_session.get(wallet_type, wallet_id)
+        with factory.begin() as winner:
+            if company_id is not None:
+                WalletService.settle_success(
+                    winner, company_id=company_id, task_id=task_id,
+                    actual_cost_cents=40 if scope == "company_cents" else None,
+                    actual_cost_points=None if scope == "company_cents" else 40,
+                    idempotency_key="winning-settlement",
+                )
+            else:
+                PersonalWalletService.settle_success(
+                    winner, workspace_id=workspace_id, task_id=task_id,
+                    actual_cost_points=40, idempotency_key="winning-settlement",
+                )
+        assert cached_task.status == TaskStatus.QUEUED
+        with pytest.raises(ConflictError):
+            if company_id is not None:
+                WalletService.release_failure(
+                    stale_session, company_id=company_id, task_id=task_id,
+                    idempotency_key="losing-release", failure_reason="late failure",
+                )
+            else:
+                PersonalWalletService.release_failure(
+                    stale_session, workspace_id=workspace_id, task_id=task_id,
+                    idempotency_key="losing-release", failure_reason="late failure",
+                )
+        assert cached_task.status == TaskStatus.SUCCEEDED
+        assert (cached_wallet.reserved_cents if scope == "company_cents"
+                else cached_wallet.reserved_points) == 0
+
+
+def test_postgres_point_terminal_parent_locks_precede_wallet_during_admission(
+    postgres_session_factory, monkeypatch,
+):
+    """Force the former wallet/company cycle instead of relying on race luck."""
+    from platform_api.models import CompanyPointWalletAccount
+
+    factory = sessionmaker(bind=postgres_session_factory.kw["bind"],
+                           expire_on_commit=False, autoflush=False)
+    task_id, _, company_id, _ = seed_reserved_submission(factory, "company_points")
+    with factory.begin() as session:
+        existing_task = session.get(GenerationTask, task_id)
+        new_task = GenerationTask(
+            company_id=company_id, user_id=existing_task.user_id,
+            model_id=existing_task.model_id, idempotency_key="second-admission",
+            request_fingerprint="b" * 64, status=TaskStatus.DRAFT,
+            billing_unit=existing_task.billing_unit, billing_version=2,
+            quote_points=20, quote_cents=None,
+            request_payload={"output_count": 1},
+            pricing_snapshot=existing_task.pricing_snapshot,
+            capability_snapshot=existing_task.capability_snapshot,
+        )
+        session.add(new_task)
+        session.flush()
+        new_task_id = new_task.id
+    company_held, terminal_reached_company = Event(), Event()
+    original_lock = CompanyPointBillingService._locked_company
+
+    def observed_company_lock(session, locked_company_id):
+        if current_thread().name == "terminal-point-settlement":
+            terminal_reached_company.set()
+        return original_lock(session, locked_company_id)
+
+    monkeypatch.setattr(CompanyPointBillingService, "_locked_company",
+                        staticmethod(observed_company_lock))
+    results = []
+
+    def admission():
+        try:
+            with factory.begin() as session:
+                original_lock(session, company_id)
+                company_held.set()
+                assert terminal_reached_company.wait(10)
+                CompanyPointBillingService.reserve(
+                    session, company_id=company_id, task_id=new_task_id,
+                    amount_points=20, idempotency_key="second-reserve",
+                )
+            results.append("admitted")
+        except Exception as exc:
+            results.append(exc)
+
+    def terminal():
+        try:
+            assert company_held.wait(10)
+            with factory.begin() as session:
+                # This is the shared terminal entry used by callbacks, polling,
+                # timeout reconciliation and outbox failure handling.
+                RelayStatusService.lock_wallet_and_task_for_update(
+                    session, company_id=company_id, task_id=task_id,
+                )
+                CompanyPointBillingService.settle_success(
+                    session, company_id=company_id, task_id=task_id,
+                    actual_cost_points=40, idempotency_key="terminal-settle",
+                )
+            results.append("settled")
+        except Exception as exc:
+            results.append(exc)
+
+    threads = [Thread(target=admission),
+               Thread(target=terminal, name="terminal-point-settlement")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(20)
+        assert not thread.is_alive(), "admission and settlement deadlocked"
+    assert sorted(str(result) for result in results) == ["admitted", "settled"], results
+    with factory() as session:
+        wallet = session.get(CompanyPointWalletAccount, company_id)
+        assert (wallet.available_points, wallet.reserved_points) == (40, 20)
+        assert session.get(GenerationTask, task_id).status == TaskStatus.SUCCEEDED
+        assert session.get(GenerationTask, new_task_id).status == TaskStatus.QUEUED
 
 
 def test_postgres_concurrent_download_completion_replays_one_winner(

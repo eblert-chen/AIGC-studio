@@ -57,7 +57,7 @@ export function formatDurationSeconds(value) {
 }
 
 export function formatTime(value) {
-  if (!value) return "—";
+  if (!value) return "未提供";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return String(value);
   return new Intl.DateTimeFormat("zh-CN", {
@@ -70,7 +70,7 @@ export function formatTime(value) {
 }
 
 export function formatDateTime(value) {
-  if (!value) return "—";
+  if (!value) return "未提供";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return String(value);
   return new Intl.DateTimeFormat("zh-CN", {
@@ -224,6 +224,7 @@ export function createEmptyOperationsData() {
     companyHealth: [],
     channels: [],
     relayChannels: [],
+    relayRouteOptions: [],
     relayChannelSourceStatus: "unavailable",
     relayChannelTotal: null,
     channelSummary: null,
@@ -232,6 +233,11 @@ export function createEmptyOperationsData() {
     relayUnknownSubmissionPage: 1,
     relayUnknownSubmissionPageSize: 0,
     relayUnknownSubmissionTotal: null,
+    relayProviderResultReconciliations: [],
+    relayProviderResultReconciliationSourceStatus: "unavailable",
+    relayProviderResultReconciliationPage: 1,
+    relayProviderResultReconciliationPageSize: 0,
+    relayProviderResultReconciliationTotal: null,
     relayCallbackDeadLetters: [],
     relayCallbackDeadLetterSourceStatus: "unavailable",
     relayCallbackDeadLetterTotal: null,
@@ -270,7 +276,9 @@ export function mergeOperationsData(data) {
     "companyHealth",
     "channels",
     "relayChannels",
+    "relayRouteOptions",
     "relayUnknownSubmissions",
+    "relayProviderResultReconciliations",
     "relayCallbackDeadLetters",
     "publishingExceptions",
     "assetExceptions",

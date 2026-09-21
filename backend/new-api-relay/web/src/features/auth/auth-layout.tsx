@@ -20,6 +20,7 @@ import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
 import { Skeleton } from '@/components/ui/skeleton'
+import { SystemBrandLockup } from '@/components/layout/components/system-brand-lockup'
 import { useSystemConfig } from '@/hooks/use-system-config'
 
 type AuthLayoutProps = {
@@ -34,23 +35,19 @@ export function AuthLayout({ children }: AuthLayoutProps) {
     <div className='relative grid h-svh max-w-none'>
       <Link
         to='/'
-        className='absolute top-4 left-4 z-10 flex items-center gap-2 transition-opacity hover:opacity-80 sm:top-8 sm:left-8'
+        aria-label={t('Go to home')}
+        className='absolute top-4 left-4 z-10 flex min-h-11 items-center transition-opacity hover:opacity-80 sm:top-8 sm:left-8'
       >
-        <div className='relative h-8 w-8'>
-          {loading ? (
-            <Skeleton className='absolute inset-0 rounded-full' />
-          ) : (
-            <img
-              src={logo}
-              alt={t('Logo')}
-              className='h-8 w-8 rounded-full object-cover'
-            />
-          )}
-        </div>
         {loading ? (
-          <Skeleton className='h-6 w-24' />
+          <Skeleton className='h-11 w-40 rounded-lg' />
         ) : (
-          <h1 className='text-xl font-medium'>{systemName}</h1>
+          <SystemBrandLockup
+            systemName={systemName}
+            logo={logo}
+            variant='wordmark'
+            imageClassName='h-11 max-w-[10rem] sm:h-12 sm:max-w-[11rem]'
+            nameClassName='text-lg font-semibold'
+          />
         )}
       </Link>
       <div className='container flex items-center pt-16 sm:pt-0'>

@@ -24,6 +24,7 @@ from platform_api.models import (
     ExternalIdentity,
     GenerationTask,
     ModelDefinition,
+    PersonalWorkspace,
     ShowcaseChannel,
     ShowcaseMedia,
     ShowcasePublicationEvent,
@@ -33,8 +34,6 @@ from platform_api.models import (
     utcnow,
 )
 from platform_api.platform_owner_identity import is_platform_owner_identity
-from platform_api.relay_client import RelaySignedDownload
-from platform_api.services.personal import PersonalWorkspaceService
 from platform_api.services.authentication import CSRF_HEADER_NAME
 from platform_api.services.errors import DomainError
 from platform_api.services.showcase_media import sanitize_showcase_media
@@ -991,20 +990,9 @@ def _seed_scoped_artifact(
         return artifact.id
 
 
-def test_artifact_import_hides_company_other_user_non_success_and_unbound_rows(
-    app, client
-) -> None:
+def test_platform_owner_artifact_import_fails_before_scope_lookup(app, client) -> None:
     owner_id, headers = bootstrap_admin(client, "showcase-artifact-owner")
-    other_user_id, _ = bootstrap_admin(client, "showcase-artifact-other")
     company = bootstrap(client, "showcase-artifact-company")
-    with app.state.session_factory.begin() as session:
-        owner_workspace = PersonalWorkspaceService.ensure(session, user_id=owner_id)
-        other_workspace = PersonalWorkspaceService.ensure(
-            session,
-            user_id=other_user_id,
-        )
-        owner_workspace_id = owner_workspace.id
-        other_workspace_id = other_workspace.id
     forbidden_ids = [
         _seed_scoped_artifact(
             app,
@@ -1015,33 +1003,7 @@ def test_artifact_import_hides_company_other_user_non_success_and_unbound_rows(
             relay_job=True,
             suffix="company",
         ),
-        _seed_scoped_artifact(
-            app,
-            user_id=other_user_id,
-            scope_id=other_workspace_id,
-            personal=True,
-            status=TaskStatus.SUCCEEDED,
-            relay_job=True,
-            suffix="other-user",
-        ),
-        _seed_scoped_artifact(
-            app,
-            user_id=owner_id,
-            scope_id=owner_workspace_id,
-            personal=True,
-            status=TaskStatus.FAILED,
-            relay_job=True,
-            suffix="failed",
-        ),
-        _seed_scoped_artifact(
-            app,
-            user_id=owner_id,
-            scope_id=owner_workspace_id,
-            personal=True,
-            status=TaskStatus.SUCCEEDED,
-            relay_job=False,
-            suffix="no-relay-job",
-        ),
+        str(uuid.uuid4()),
     ]
     bodies = []
     for index, artifact_id in enumerate(forbidden_ids):
@@ -1053,17 +1015,20 @@ def test_artifact_import_hides_company_other_user_non_success_and_unbound_rows(
             },
             data={"source_task_artifact_id": artifact_id},
         )
-        assert response.status_code == 404
+        assert response.status_code == 403
+        assert response.json()["code"] == "account_type_mismatch"
         bodies.append(response.json())
     assert bodies == [bodies[0]] * len(bodies)
 
 
-def test_verified_personal_artifact_is_sanitized_and_replays_without_relay_copy(
-    app, client, monkeypatch
+def test_platform_owner_cannot_import_a_historical_personal_artifact(
+    app, client
 ) -> None:
     owner_id, headers = bootstrap_admin(client, "showcase-artifact-valid")
     with app.state.session_factory.begin() as session:
-        workspace = PersonalWorkspaceService.ensure(session, user_id=owner_id)
+        workspace = PersonalWorkspace(user_id=owner_id, active=False)
+        session.add(workspace)
+        session.flush()
         workspace_id = workspace.id
     artifact_id = _seed_scoped_artifact(
         app,
@@ -1078,33 +1043,6 @@ def test_verified_personal_artifact_is_sanitized_and_replays_without_relay_copy(
         media_type="image",
     )
 
-    class Relay:
-        def __init__(self):
-            self.calls = 0
-
-        def get_artifact_download(self, *_, **__):
-            self.calls += 1
-            return RelaySignedDownload.model_validate(
-                {
-                    "api_version": "v1",
-                    "schema_version": 1,
-                    "url": "http://127.0.0.1:8100/private-artifact",
-                    "expires_seconds": 300,
-                }
-            )
-
-    class Source:
-        def copy_to(self, target, *, max_bytes):
-            assert len(PNG_ONE) <= max_bytes
-            target.write(PNG_ONE)
-            return len(PNG_ONE), hashlib.sha256(PNG_ONE).hexdigest()
-
-    relay = Relay()
-    app.state.relay_client = relay
-    monkeypatch.setattr(
-        "platform_api.routers.showcase.HttpArtifactContentSource",
-        lambda *_, **__: Source(),
-    )
     request_headers = {
         **headers,
         "Idempotency-Key": "showcase-valid-artifact-import",
@@ -1114,14 +1052,11 @@ def test_verified_personal_artifact_is_sanitized_and_replays_without_relay_copy(
         headers=request_headers,
         data={"source_task_artifact_id": artifact_id},
     )
-    assert first.status_code == 201, first.text
-    assert first.json()["source_task_artifact_id"] == artifact_id
-    assert first.json()["sha256"] != hashlib.sha256(PNG_ONE).hexdigest()
-    second = client.post(
-        "/api/v1/platform-admin/showcase/media",
-        headers=request_headers,
-        data={"source_task_artifact_id": artifact_id},
-    )
-    assert second.status_code == 201, second.text
-    assert second.json()["id"] == first.json()["id"]
-    assert relay.calls == 1
+    assert first.status_code == 403
+    assert first.json()["code"] == "account_type_mismatch"
+    with app.state.session_factory() as session:
+        assert session.scalar(
+            select(ShowcaseMedia).where(
+                ShowcaseMedia.source_task_artifact_id == artifact_id
+            )
+        ) is None

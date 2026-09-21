@@ -5,6 +5,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import create_engine, inspect, text
@@ -103,9 +104,11 @@ def test_0015_channel_cost_upgrade_guards_and_signed_amounts(
     database_path = tmp_path / "channel-cost-0015.db"
     config = _config(project_root, database_path)
 
-    command.upgrade(config, "head")
+    # This historical chain also checks the later personal/provider guards.
+    # Stop before the intentionally irreversible billing-integrity migration.
+    command.upgrade(config, "0055_commercial_plan_revisions")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == "0040_showcase_management"
+    assert _revision(engine) == "0055_commercial_plan_revisions"
     assert "channel_cost_entries" in inspect(engine).get_table_names()
     amount_column = next(
         column
@@ -117,6 +120,8 @@ def test_0015_channel_cost_upgrade_guards_and_signed_amounts(
         "trg_channel_cost_entries_no_update",
         "trg_channel_cost_entries_no_delete",
         "trg_channel_cost_personal_workspace_fk",
+        "trg_channel_cost_entries_provider_identity_insert",
+        "trg_channel_cost_entries_provider_identity_update",
     }
 
     _insert_cost(engine, entry_id="positive-cost", amount_cents=125)
@@ -148,13 +153,16 @@ def test_0015_channel_cost_upgrade_guards_and_signed_amounts(
 
     command.upgrade(config, "head")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == "0040_showcase_management"
+    assert _revision(engine) == ScriptDirectory.from_config(config).get_current_head()
     assert _cost_trigger_names(engine) == {
         "trg_channel_cost_entries_no_update",
         "trg_channel_cost_entries_no_delete",
         "trg_channel_cost_personal_workspace_fk",
+        "trg_channel_cost_entries_provider_identity_insert",
+        "trg_channel_cost_entries_provider_identity_update",
     }
     engine.dispose()
+    command.check(config)
 
 
 def test_0019_preserves_historical_costs_and_rolls_back_without_data_loss(
@@ -261,7 +269,7 @@ def test_0019_preserves_historical_costs_and_rolls_back_without_data_loss(
 
     command.upgrade(config, "head")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert _revision(engine) == "0040_showcase_management"
+    assert _revision(engine) == ScriptDirectory.from_config(config).get_current_head()
     with engine.connect() as connection:
         assert connection.scalar(
             text(

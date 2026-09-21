@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -28,6 +29,13 @@ const (
 )
 
 func setupPlatformChannelControlControllerTest(t *testing.T) (*gin.Engine, model.Channel) {
+	return setupPlatformChannelControlControllerTestWithV5Seed(t, nil)
+}
+
+func setupPlatformChannelControlControllerTestWithV5Seed(
+	t *testing.T,
+	seed func(database *gorm.DB, channel model.Channel),
+) (*gin.Engine, model.Channel) {
 	t.Helper()
 	originalDB := model.DB
 	originalDatabaseType := common.MainDatabaseType()
@@ -44,7 +52,7 @@ func setupPlatformChannelControlControllerTest(t *testing.T) (*gin.Engine, model
 	})
 	require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.ProviderChannelCredentialSetVersion{}))
 	require.NoError(t, model.MigrateProviderChannelCredentialVaultStorage())
-	require.NoError(t, model.MigratePlatformChannelControlStorage())
+	require.NoError(t, model.MigratePlatformChannelControlStorageV5WithDB(database))
 	require.NoError(t, database.AutoMigrate(&model.Ability{}, &model.User{}))
 
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(platformChannelControlTestToken)))
@@ -95,6 +103,10 @@ func setupPlatformChannelControlControllerTest(t *testing.T) (*gin.Engine, model
 	}
 	require.NoError(t, database.Create(&channel).Error)
 	require.NoError(t, database.Create(&model.User{Username: "channel-control-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled}).Error)
+	if seed != nil {
+		seed(database, channel)
+	}
+	require.NoError(t, model.MigratePlatformChannelControlStorageV6WithDB(database))
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -104,6 +116,7 @@ func setupPlatformChannelControlControllerTest(t *testing.T) (*gin.Engine, model
 	router.POST("/channels/:channel_id/test", TestPlatformChannelControlChannel)
 	router.POST("/channels/:channel_id/status", UpdatePlatformChannelControlStatus)
 	router.GET("/channels/:channel_id/operations/:operation_id", GetPlatformChannelControlOperation)
+	router.POST("/channels/:channel_id/operations/:operation_id/reconcile-no-creation", ReconcilePlatformChannelControlTestNoCreation)
 	return router, channel
 }
 
@@ -137,6 +150,37 @@ func assertPlatformChannelControlResponseHasNoSecrets(t *testing.T, body string)
 	}
 }
 
+func seedPlatformChannelControlUnknownSubmission(t *testing.T, channelID int, operationID string) {
+	t.Helper()
+	intent := model.PlatformChannelControlIntent{
+		OperationID:                 operationID,
+		TenantID:                    platformChannelControlTestTenant,
+		ChannelID:                   channelID,
+		Kind:                        model.PlatformChannelControlOperationKindTest,
+		RequestID:                   "channel-control-reconciliation-seed",
+		Actor:                       "platform-owner-1",
+		Reason:                      "Seed an ambiguous provider submission",
+		Model:                       "provider-video-model",
+		PublicModelID:               "video.seedance.reconciliation",
+		RouteID:                     "route-reconciliation-1",
+		UpstreamModel:               "provider-video-model",
+		CapabilityProfileID:         "volcengine-ark-video-generation-v1",
+		CapabilityProfileRevision:   "sha256:" + strings.Repeat("a", 64),
+		CapabilityRevision:          "sha256:" + strings.Repeat("b", 64),
+		RoutingReleaseSHA256:        "sha256:" + strings.Repeat("c", 64),
+		RouteBindingSHA256:          "sha256:" + strings.Repeat("d", 64),
+		CredentialFingerprintSHA256: strings.Repeat("e", 64),
+		TransportRevision:           "sha256:" + strings.Repeat("f", 64),
+		TransportSHA256:             "sha256:" + strings.Repeat("1", 64),
+	}
+	_, execute, _, err := model.BeginPlatformChannelTestOperation(intent)
+	require.NoError(t, err)
+	require.True(t, execute)
+	_, claimed, err := model.ClaimPlatformChannelTestSubmission(intent.TenantID, intent.OperationID)
+	require.NoError(t, err)
+	require.True(t, claimed)
+}
+
 func TestPlatformChannelControlListAndDetailAreSecretFreeWhiteLists(t *testing.T) {
 	router, channel := setupPlatformChannelControlControllerTest(t)
 	query := "?tenant_id=" + platformChannelControlTestTenant
@@ -158,28 +202,114 @@ func TestPlatformChannelControlListAndDetailAreSecretFreeWhiteLists(t *testing.T
 	assertPlatformChannelControlResponseHasNoSecrets(t, detail.Body.String())
 }
 
-func TestPlatformChannelControlTestRejectsCallerSelectedModelAndNeverLeaksProviderError(t *testing.T) {
+func TestPlatformChannelControlTestRequiresExactRouteAndRejectsCallerSelectedModel(t *testing.T) {
 	router, channel := setupPlatformChannelControlControllerTest(t)
 	body := fmt.Sprintf(`{"operation_id":"channel-test-extra-field-0001","tenant_id":%q,"actor":"platform-owner-1","reason":"Verify channel health","model":"caller-selected-model"}`, platformChannelControlTestTenant)
 	rejected := performPlatformChannelControlRequest(router, http.MethodPost, fmt.Sprintf("/channels/%d/test", channel.Id), body, "channel-control-extra-field-request")
 	assert.Equal(t, http.StatusUnprocessableEntity, rejected.Code, rejected.Body.String())
 
-	validBody := fmt.Sprintf(`{"operation_id":"channel-test-operation-0001","tenant_id":%q,"actor":"platform-owner-1","reason":"Verify channel health"}`, platformChannelControlTestTenant)
-	result := performPlatformChannelControlRequest(router, http.MethodPost, fmt.Sprintf("/channels/%d/test", channel.Id), validBody, "channel-control-test-request")
+	cases := []string{
+		fmt.Sprintf(`{"operation_id":"channel-test-binding-missing-0001","tenant_id":%q,"actor":"platform-owner-1","reason":"Verify channel health"}`, platformChannelControlTestTenant),
+		fmt.Sprintf(`{"operation_id":"channel-test-binding-missing-0002","tenant_id":%q,"actor":"platform-owner-1","reason":"Verify channel health","public_model_id":"video.seedance.2"}`, platformChannelControlTestTenant),
+		fmt.Sprintf(`{"operation_id":"channel-test-binding-missing-0003","tenant_id":%q,"actor":"platform-owner-1","reason":"Verify channel health","route_id":"route-1"}`, platformChannelControlTestTenant),
+		fmt.Sprintf(`{"operation_id":"channel-test-binding-missing-0004","tenant_id":%q,"actor":"platform-owner-1","reason":"Verify channel health","public_model_id":" ","route_id":"route-1"}`, platformChannelControlTestTenant),
+		fmt.Sprintf(`{"operation_id":"channel-test-binding-missing-0005","tenant_id":%q,"actor":"platform-owner-1","reason":"Verify channel health","public_model_id":"video.seedance.2","route_id":7}`, platformChannelControlTestTenant),
+		fmt.Sprintf(`{"operation_id":"channel-test-binding-mode-0001","tenant_id":%q,"actor":"platform-owner-1","reason":"Verify channel health","public_model_id":"video.seedance.2","route_id":"route-1","mode":"audio_to_video"}`, platformChannelControlTestTenant),
+		fmt.Sprintf(`{"operation_id":"channel-test-binding-mode-0002","tenant_id":%q,"actor":"platform-owner-1","reason":"Verify channel health","public_model_id":"video.seedance.2","route_id":"route-1","mode":7}`, platformChannelControlTestTenant),
+	}
+	for index, requestBody := range cases {
+		result := performPlatformChannelControlRequest(router, http.MethodPost, fmt.Sprintf("/channels/%d/test", channel.Id), requestBody, fmt.Sprintf("channel-control-binding-required-%d", index))
+		assert.Equal(t, http.StatusUnprocessableEntity, result.Code, result.Body.String())
+		assertPlatformChannelControlResponseHasNoSecrets(t, result.Body.String())
+	}
+
+	var operationCount int64
+	require.NoError(t, model.DB.Model(&model.PlatformChannelControlOperation{}).Count(&operationCount).Error)
+	assert.Zero(t, operationCount, "invalid Platform requests must not create a durable intent or reach native generic testing")
+}
+
+func TestPlatformChannelControlReplayStatusKeepsUnresolvedWorkPending(t *testing.T) {
+	assert.Equal(t, http.StatusAccepted, platformChannelControlReplayStatus(dto.PlatformChannelControlOperation{
+		State:                   model.PlatformChannelControlOperationPending,
+		ProviderSubmissionState: model.PlatformChannelTestSubmissionUnknown,
+	}))
+	assert.Equal(t, http.StatusAccepted, platformChannelControlReplayStatus(dto.PlatformChannelControlOperation{
+		State:                   model.PlatformChannelControlOperationPending,
+		ProviderSubmissionState: model.PlatformChannelTestSubmissionSubmitted,
+	}))
+	assert.Equal(t, http.StatusOK, platformChannelControlReplayStatus(dto.PlatformChannelControlOperation{
+		State: model.PlatformChannelControlOperationFailed,
+	}))
+	assert.Equal(t, http.StatusOK, platformChannelControlReplayStatus(dto.PlatformChannelControlOperation{
+		State: model.PlatformChannelControlOperationSucceeded,
+	}))
+}
+
+func TestPlatformChannelControlReconcileNoCreationExactContractAndSafeText(t *testing.T) {
+	router, channel := setupPlatformChannelControlControllerTest(t)
+	operationID := "channel-test-reconcile-no-creation-0001"
+	seedPlatformChannelControlUnknownSubmission(t, channel.Id, operationID)
+
+	body := fmt.Sprintf(`{"tenant_id":%q,"actor":"platform-owner-1","reason":"已在供应商控制台确认没有创建任务","confirmed_no_provider_creation":true}`, platformChannelControlTestTenant)
+	result := performPlatformChannelControlRequest(
+		router,
+		http.MethodPost,
+		fmt.Sprintf("/channels/%d/operations/%s/reconcile-no-creation", channel.Id, operationID),
+		body,
+		"channel-control-reconcile-no-creation",
+	)
 	require.Equal(t, http.StatusOK, result.Code, result.Body.String())
+	assert.Equal(t, "no-store", result.Header().Get("Cache-Control"))
 	assertPlatformChannelControlResponseHasNoSecrets(t, result.Body.String())
+	assert.NotContains(t, result.Body.String(), "provider_task_id")
 	var receipt dto.PlatformChannelControlOperation
 	require.NoError(t, json.Unmarshal(result.Body.Bytes(), &receipt))
-	assert.Equal(t, "test", receipt.Kind)
-	assert.Equal(t, "failed", receipt.State)
+	assert.Equal(t, model.PlatformChannelControlOperationFailed, receipt.State)
+	assert.Equal(t, model.PlatformChannelTestSubmissionReconciledNoCreation, receipt.ProviderSubmissionState)
+	assert.Equal(t, "platform-owner-1", receipt.ReconciliationActor)
+	assert.Equal(t, "已在供应商控制台确认没有创建任务", receipt.ReconciliationReason)
+	require.NotNil(t, receipt.ReconciledAt)
 	require.NotNil(t, receipt.Result)
-	assert.Equal(t, model.PlatformChannelControlErrorTestUnavailable, receipt.Result.ErrorCode)
-	assert.Empty(t, receipt.ExpectedRevision)
-	assert.Empty(t, receipt.TargetStatus)
+	assert.Equal(t, model.PlatformChannelControlErrorTestReconciled, receipt.Result.ErrorCode)
 
-	replay := performPlatformChannelControlRequest(router, http.MethodPost, fmt.Sprintf("/channels/%d/test", channel.Id), validBody, "channel-control-test-replay")
-	require.Equal(t, http.StatusOK, replay.Code, replay.Body.String())
-	assert.Equal(t, "true", replay.Header().Get("X-Idempotent-Replay"))
+	replayed := performPlatformChannelControlRequest(
+		router,
+		http.MethodPost,
+		fmt.Sprintf("/channels/%d/operations/%s/reconcile-no-creation", channel.Id, operationID),
+		body,
+		"channel-control-reconcile-no-creation-replay",
+	)
+	assert.Equal(t, http.StatusConflict, replayed.Code, replayed.Body.String())
+
+	unsafe := []map[string]any{
+		{"tenant_id": platformChannelControlTestTenant, "actor": "platform-owner-1", "reason": "provider body\nraw", "confirmed_no_provider_creation": true},
+		{"tenant_id": platformChannelControlTestTenant, "actor": "platform-owner-1", "reason": "https://provider.invalid/task?token=secret", "confirmed_no_provider_creation": true},
+		{"tenant_id": platformChannelControlTestTenant, "actor": "Bearer provider-secret", "reason": "provider console checked", "confirmed_no_provider_creation": true},
+		{"tenant_id": platformChannelControlTestTenant, "actor": "platform-owner-1", "reason": "signature = provider-secret", "confirmed_no_provider_creation": true},
+	}
+	for index, requestBody := range unsafe {
+		encoded, err := json.Marshal(requestBody)
+		require.NoError(t, err)
+		rejected := performPlatformChannelControlRequest(
+			router,
+			http.MethodPost,
+			fmt.Sprintf("/channels/%d/operations/channel-test-reconcile-unsafe-%04d/reconcile-no-creation", channel.Id, index+1),
+			string(encoded),
+			fmt.Sprintf("channel-control-reconcile-unsafe-%d", index+1),
+		)
+		assert.Equal(t, http.StatusUnprocessableEntity, rejected.Code, rejected.Body.String())
+		assertPlatformChannelControlResponseHasNoSecrets(t, rejected.Body.String())
+	}
+
+	extraField := fmt.Sprintf(`{"tenant_id":%q,"actor":"platform-owner-1","reason":"provider console checked","confirmed_no_provider_creation":true,"provider_body":"secret"}`, platformChannelControlTestTenant)
+	rejected := performPlatformChannelControlRequest(
+		router,
+		http.MethodPost,
+		fmt.Sprintf("/channels/%d/operations/channel-test-reconcile-extra-0001/reconcile-no-creation", channel.Id),
+		extraField,
+		"channel-control-reconcile-extra",
+	)
+	assert.Equal(t, http.StatusUnprocessableEntity, rejected.Code, rejected.Body.String())
 }
 
 func TestPlatformChannelControlSoraDTOAndTestFailClosed(t *testing.T) {
@@ -198,12 +328,7 @@ func TestPlatformChannelControlSoraDTOAndTestFailClosed(t *testing.T) {
 
 	body := fmt.Sprintf(`{"operation_id":"channel-test-sora-0001","tenant_id":%q,"actor":"platform-owner-1","reason":"Verify Sora test fails closed"}`, platformChannelControlTestTenant)
 	result := performPlatformChannelControlRequest(router, http.MethodPost, fmt.Sprintf("/channels/%d/test", channel.Id), body, "channel-control-sora-test")
-	require.Equal(t, http.StatusOK, result.Code, result.Body.String())
-	var receipt dto.PlatformChannelControlOperation
-	require.NoError(t, json.Unmarshal(result.Body.Bytes(), &receipt))
-	assert.Equal(t, model.PlatformChannelControlOperationFailed, receipt.State)
-	require.NotNil(t, receipt.Result)
-	assert.Equal(t, model.PlatformChannelControlErrorTestUnavailable, receipt.Result.ErrorCode)
+	require.Equal(t, http.StatusUnprocessableEntity, result.Code, result.Body.String())
 	assertPlatformChannelControlResponseHasNoSecrets(t, result.Body.String())
 }
 
@@ -246,6 +371,47 @@ func TestPlatformChannelControlStatusCASAndLostResponseReceipt(t *testing.T) {
 	require.NotNil(t, failedReceipt.Result.Changed)
 	assert.False(t, *failedReceipt.Result.Changed)
 	assertPlatformChannelControlResponseHasNoSecrets(t, readback.Body.String())
+}
+
+func TestPlatformChannelControlOperationReadbackCanonicalizesDatabaseTimestampsToUTC(t *testing.T) {
+	nonUTC := time.FixedZone("UTC+8", 8*60*60)
+	createdAt := time.Date(2026, 8, 28, 15, 30, 0, 0, nonUTC)
+	completedAt := time.Date(2026, 8, 28, 15, 31, 2, 0, nonUTC)
+	operationID := "channel-test-non-utc-readback-0001"
+	router, channel := setupPlatformChannelControlControllerTestWithV5Seed(t, func(database *gorm.DB, channel model.Channel) {
+		require.NoError(t, database.Table("platform_channel_control_operations").Create(map[string]any{
+			"id":                 uuid.NewString(),
+			"tenant_id":          platformChannelControlTestTenant,
+			"operation_id":       operationID,
+			"channel_id":         channel.Id,
+			"kind":               model.PlatformChannelControlOperationKindTest,
+			"state":              model.PlatformChannelControlOperationSucceeded,
+			"request_id":         "channel-control-non-utc-readback",
+			"actor":              "platform-owner-1",
+			"reason":             "Verify canonical UTC receipt timestamps",
+			"intent_sha256":      strings.Repeat("a", sha256.Size*2),
+			"intent_json":        `{}`,
+			"result_success":     true,
+			"result_response_ms": int64(62_000),
+			"created_at":         createdAt,
+			"completed_at":       completedAt,
+		}).Error)
+	})
+
+	query := "?tenant_id=" + platformChannelControlTestTenant
+	readback := performPlatformChannelControlRequest(
+		router,
+		http.MethodGet,
+		fmt.Sprintf("/channels/%d/operations/%s%s", channel.Id, operationID, query),
+		"",
+		"",
+	)
+	require.Equal(t, http.StatusOK, readback.Code, readback.Body.String())
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(readback.Body.Bytes(), &payload))
+	assert.Equal(t, "2026-08-28T07:30:00Z", payload["created_at"])
+	assert.Equal(t, "2026-08-28T07:31:02Z", payload["completed_at"])
 }
 
 func TestPlatformChannelControlRejectsValidOperationsTenantThatIsNotGlobalController(t *testing.T) {

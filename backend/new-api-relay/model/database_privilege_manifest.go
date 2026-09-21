@@ -116,6 +116,93 @@ const relayRuntimeDatabasePrivilegeManifestV2SHA256 = "sha256:b10950f53737ba40ed
 const relayRuntimeDatabasePrivilegeManifestV3Artifact = relayRuntimeDatabasePrivilegeManifestV2Artifact
 const relayRuntimeDatabasePrivilegeManifestV3SHA256 = "sha256:b10950f53737ba40edf7c7548c5e9afecd75ec017da21bd8e8975861a8310709"
 
+// v4 adds columns to an existing runtime-owned table and therefore has no
+// table-level ACL delta. It still receives an explicit frozen registry entry.
+const relayRuntimeDatabasePrivilegeManifestV4Artifact = relayRuntimeDatabasePrivilegeManifestV3Artifact
+const relayRuntimeDatabasePrivilegeManifestV4SHA256 = "sha256:b10950f53737ba40edf7c7548c5e9afecd75ec017da21bd8e8975861a8310709"
+
+// v5 changes only a guard function and has no table-level ACL delta.
+const relayRuntimeDatabasePrivilegeManifestV5Artifact = relayRuntimeDatabasePrivilegeManifestV4Artifact
+const relayRuntimeDatabasePrivilegeManifestV5SHA256 = "sha256:b10950f53737ba40edf7c7548c5e9afecd75ec017da21bd8e8975861a8310709"
+
+// v6 adds columns and guards to an existing runtime-owned table, so its
+// table-level DML surface is exactly the frozen v5 surface.
+const relayRuntimeDatabasePrivilegeManifestV6Artifact = relayRuntimeDatabasePrivilegeManifestV5Artifact
+const relayRuntimeDatabasePrivilegeManifestV6SHA256 = "sha256:b10950f53737ba40edf7c7548c5e9afecd75ec017da21bd8e8975861a8310709"
+
+// v7 replaces only constraints and guards on an existing table.
+const relayRuntimeDatabasePrivilegeManifestV7Artifact = relayRuntimeDatabasePrivilegeManifestV6Artifact
+const relayRuntimeDatabasePrivilegeManifestV7SHA256 = "sha256:b10950f53737ba40edf7c7548c5e9afecd75ec017da21bd8e8975861a8310709"
+
+// V8 grants the runtime role append-only SELECT/INSERT access to the new
+// provider-cost allocation evidence ledger. Historical manifests stay exact.
+const relayRuntimeDatabasePrivilegeManifestV8Artifact = `abilities|SIUD
+auth_flows|SIUD
+authz_roles|SIUD
+casbin_rule|SIUD
+channels|SIUD
+checkins|SIUD
+custom_oauth_providers|SIUD
+external_identity_claims|SIUD
+logs|SIUD
+midjourneys|SIUD
+models|SIUD
+options|SIUD
+passkey_credentials|SIUD
+perf_metrics|SIUD
+platform_artifact_upload_intents|SIUD
+platform_channel_control_operations|SIU-
+platform_channel_cost_events|SI--
+platform_channel_cost_reconciliations|SIUD
+platform_download_completion_events|SI--
+platform_download_completion_proofs|SI--
+platform_download_edge_tickets|SIUD
+platform_generation_callback_deliveries|SIUD
+platform_generation_callback_redrive_events|SI--
+platform_generation_jobs|SIUD
+platform_generation_outboxes|SIUD
+platform_generation_provider_account_states|SIUD
+platform_generation_provider_routes|SIUD
+platform_generation_reconciliation_events|SI--
+platform_generation_route_admissions|SIUD
+platform_operations_snapshot_events|SI--
+platform_provider_alert_events|SI--
+platform_provider_contract_rates|SI--
+platform_provider_cost_allocation_evidence|SI--
+platform_provider_incidents|SIUD
+platform_provider_monitor_leases|SIUD
+platform_provider_retirement_acknowledgements|SI--
+platform_provider_route_health|SIUD
+platform_provider_terminal_outcomes|SI--
+platform_relay_external_deliveries|SIUD
+platform_task_stage_events|SI--
+prefill_groups|SIUD
+provider_channel_credential_set_versions|SI--
+provider_credential_versions|SI--
+quota_data|SIUD
+redemptions|SIUD
+relay_schema_migrations|S---
+relay_schema_state|S---
+setups|SI--
+subscription_orders|SIUD
+subscription_plans|SIUD
+subscription_pre_consume_records|SIUD
+system_instances|SIUD
+system_task_locks|SIUD
+system_tasks|SIUD
+tasks|SIUD
+tokens|SIUD
+top_ups|SIUD
+two_fa_backup_codes|SIUD
+two_fas|SIUD
+user_oauth_bindings|SIUD
+user_sessions|SIUD
+user_subscriptions|SIUD
+users|SIUD
+vendors|SIUD
+`
+const relayRuntimeDatabasePrivilegeManifestV8SHA256 = "sha256:0f13d6df10bf9d4446148e5c85e57f790f0ba8a99d753ddf6bc8512690a82693"
+
 func relayRuntimeDatabasePrivilegeManifestLiveV1(db *gorm.DB) (map[string]relayTablePrivilegeSet, error) {
 	manifest := make(map[string]relayTablePrivilegeSet)
 	for _, value := range relaySchemaV1ArtifactModels() {
@@ -143,6 +230,16 @@ func relayRuntimeDatabasePrivilegeManifestForVersion(version int64) (map[string]
 		artifact = relayRuntimeDatabasePrivilegeManifestV2Artifact
 	case 3:
 		artifact = relayRuntimeDatabasePrivilegeManifestV3Artifact
+	case 4:
+		artifact = relayRuntimeDatabasePrivilegeManifestV4Artifact
+	case 5:
+		artifact = relayRuntimeDatabasePrivilegeManifestV5Artifact
+	case 6:
+		artifact = relayRuntimeDatabasePrivilegeManifestV6Artifact
+	case 7:
+		artifact = relayRuntimeDatabasePrivilegeManifestV7Artifact
+	case 8:
+		artifact = relayRuntimeDatabasePrivilegeManifestV8Artifact
 	default:
 		return nil, errors.New("Relay runtime database privilege manifest version is unavailable")
 	}

@@ -74,16 +74,28 @@ type SystemInstanceStorageMetrics struct {
 
 func StartSystemInstanceReporter() {
 	systemInstanceReporterOnce.Do(func() {
-		gopool.Go(func() {
-			reportSystemInstanceWithLog()
-
-			ticker := time.NewTicker(systemInstanceReportInterval)
-			defer ticker.Stop()
-			for range ticker.C {
-				reportSystemInstanceWithLog()
-			}
-		})
+		gopool.Go(func() { RunSystemInstanceReporter(context.Background()) })
 	})
+}
+
+// RunSystemInstanceReporter binds the periodic database reporter to the
+// caller's shutdown lifecycle. An in-flight report is allowed to finish and is
+// joined before the database pool may close.
+func RunSystemInstanceReporter(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	reportSystemInstanceWithLog()
+	ticker := time.NewTicker(systemInstanceReportInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reportSystemInstanceWithLog()
+		}
+	}
 }
 
 func ReportCurrentSystemInstance() error {

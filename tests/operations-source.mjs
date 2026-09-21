@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 
 const OPERATIONS_SOURCE_FILES = [
   "../src/admin/OperationsConsole.jsx",
+  "../src/admin/OperationsWorkspaceActions.jsx",
   "../src/admin/operations/operationsShared.jsx",
   "../src/admin/operations/TaskOperationsViews.jsx",
   "../src/admin/operations/BusinessEntitlementViews.jsx",

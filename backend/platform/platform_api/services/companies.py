@@ -13,10 +13,12 @@ from ..models import (
     Role,
     RolePermission,
     User,
+    UserAccountType,
     UserStatus,
     WalletAccount,
 )
 from .errors import ConflictError, NotFoundError
+from .account_partition import AccountPartitionService
 from ..auth import JwtAuthenticationError, normalize_email_address
 from .permission_catalog import PERMISSION_CATALOG
 from .access_lifecycle import (
@@ -57,11 +59,16 @@ class CompanyService:
             .where(func.lower(User.email) == normalized_email.lower())
             .with_for_update()
         )
-        if user is not None and user.status in {
-            UserStatus.SUSPENDED,
-            UserStatus.DEACTIVATED,
-        }:
-            raise ConflictError("公司所有者账号不可用")
+        if user is not None:
+            if user.status in {
+                UserStatus.SUSPENDED,
+                UserStatus.DEACTIVATED,
+            }:
+                raise ConflictError("公司所有者账号不可用")
+            AccountPartitionService.require_company_provisioning_eligible(
+                session,
+                user=user,
+            )
 
         company = Company(name=company_name.strip(), status=CompanyStatus.ACTIVE)
         if user is None:
@@ -73,6 +80,7 @@ class CompanyService:
                     if owner_activation_required
                     else UserStatus.ACTIVE
                 ),
+                account_type=UserAccountType.COMPANY,
             )
             session.add(user)
         session.add(company)
@@ -151,12 +159,28 @@ class CompanyService:
         if not company or company.status != CompanyStatus.ACTIVE:
             raise NotFoundError("公司不存在或不可用")
 
-        normalized_email = email.strip().lower()
-        user = session.scalar(select(User).where(User.email == normalized_email))
+        try:
+            normalized_email = normalize_email_address(email)
+        except JwtAuthenticationError as exc:
+            raise ConflictError("成员邮箱无效") from exc
+        user = session.scalar(
+            select(User)
+            .where(func.lower(User.email) == normalized_email.lower())
+            .with_for_update()
+        )
         if user is None:
-            user = User(email=normalized_email, display_name=display_name.strip())
+            user = User(
+                email=normalized_email,
+                display_name=display_name.strip(),
+                account_type=UserAccountType.COMPANY,
+            )
             session.add(user)
             session.flush()
+        else:
+            AccountPartitionService.require_company_provisioning_eligible(
+                session,
+                user=user,
+            )
 
         existing = session.scalar(
             select(CompanyMembership).where(

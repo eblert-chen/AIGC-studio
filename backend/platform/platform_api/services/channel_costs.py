@@ -21,6 +21,14 @@ from ..models import (
     utcnow,
 )
 from .errors import ConflictError, NotFoundError
+from .execution_contracts import require_execution_cost
+from .provider_route_identity import (
+    IDENTITY_BOUND,
+    IDENTITY_LEGACY_UNKNOWN,
+    IDENTITY_UNASSIGNED,
+    bind_task_provider_route_identity,
+    validate_provider_route_identity,
+)
 
 
 MAX_MONEY_CENTS = 9_000_000_000_000_000
@@ -55,9 +63,11 @@ class ChannelCostService:
         cls,
         entry: ChannelCostEntry,
         *,
+        schema_version: int,
         amount_cents: int,
         channel_key: str,
         channel_type: ChannelType,
+        route_id: int | None,
         occurred_at: datetime,
         external_reference: str,
         company_id: str | None,
@@ -70,6 +80,15 @@ class ChannelCostService:
         source_document_sha256: str | None,
         relay_event_id: str | None,
         relay_payload_sha256: str | None,
+        provider_identity_status: str,
+        provider_name: str | None,
+        provider_account_id: str | None,
+        provider_channel_id: int | None,
+        provider_route_id: int | None,
+        provider_key_index: int | None,
+        provider_key_fingerprint: str | None,
+        provider_credential_version: str | None,
+        routing_release_sha256: str | None,
     ) -> ChannelCostEntry:
         # A signed Relay delivery must never acknowledge an operator-created
         # row. Report that trust-boundary collision before comparing the newer
@@ -79,9 +98,11 @@ class ChannelCostService:
                 "signed Relay event collides with an unsigned channel cost entry"
             )
         if (
-            entry.amount_cents != amount_cents
+            entry.schema_version != schema_version
+            or entry.amount_cents != amount_cents
             or entry.channel_key != channel_key
             or entry.channel_type != channel_type
+            or entry.route_id != route_id
             or cls._stored_utc_timestamp(entry.occurred_at) != occurred_at
             or entry.external_reference != external_reference
             or entry.company_id != company_id
@@ -92,6 +113,15 @@ class ChannelCostService:
             or entry.evidence_source != evidence_source
             or entry.evidence_reference != evidence_reference
             or entry.source_document_sha256 != source_document_sha256
+            or entry.provider_identity_status != provider_identity_status
+            or entry.provider_name != provider_name
+            or entry.provider_account_id != provider_account_id
+            or entry.provider_channel_id != provider_channel_id
+            or entry.provider_route_id != provider_route_id
+            or entry.provider_key_index != provider_key_index
+            or entry.provider_key_fingerprint != provider_key_fingerprint
+            or entry.provider_credential_version != provider_credential_version
+            or entry.routing_release_sha256 != routing_release_sha256
         ):
             raise ConflictError(
                 "idempotency_key is already used by a different channel cost entry"
@@ -115,10 +145,12 @@ class ChannelCostService:
         cls,
         session: Session,
         *,
+        schema_version: int = 1,
         amount_cents: int,
         idempotency_key: str,
         channel_key: str,
         channel_type: ChannelType,
+        route_id: int | None = None,
         occurred_at: datetime,
         external_reference: str,
         company_id: str | None = None,
@@ -132,9 +164,26 @@ class ChannelCostService:
         relay_event_id: str | None = None,
         relay_event_timestamp: datetime | None = None,
         relay_payload_sha256: str | None = None,
+        identity_status: str | None = None,
+        provider_name: str | None = None,
+        provider_account_id: str | None = None,
+        provider_channel_id: int | None = None,
+        provider_route_id: int | None = None,
+        provider_key_index: int | None = None,
+        provider_key_fingerprint: str | None = None,
+        provider_credential_version: str | None = None,
+        route_key: str | None = None,
+        routing_release_sha256: str | None = None,
+        execution_contract_sha256: str | None = None,
+        provider_cost_revision_sha256: str | None = None,
         source: ChannelCostSource,
         recorded_by_user_id: str | None,
     ) -> tuple[ChannelCostEntry, bool]:
+        if ((execution_contract_sha256 is None) != (provider_cost_revision_sha256 is None)
+                or (execution_contract_sha256 is not None and (
+                    source != ChannelCostSource.RELAY or schema_version != 2
+                    or task_id is None or relay_event_id is None))):
+            raise ConflictError("执行成本版本必须来自完整签名的 Relay 任务事件")
         if (
             isinstance(amount_cents, bool)
             or amount_cents < -MAX_MONEY_CENTS
@@ -156,6 +205,55 @@ class ChannelCostService:
         if len(normalized_note) > 240:
             raise ConflictError("note is too long")
         normalized_occurred_at = cls._utc_timestamp(occurred_at)
+
+        raw_identity = {
+            "identity_status": identity_status,
+            "provider_name": provider_name,
+            "provider_account_id": provider_account_id,
+            "provider_channel_id": provider_channel_id,
+            "provider_route_id": provider_route_id,
+            "provider_key_index": provider_key_index,
+            "provider_key_fingerprint": provider_key_fingerprint,
+            "provider_credential_version": provider_credential_version,
+            "route_key": route_key,
+            "routing_release_sha256": routing_release_sha256,
+        }
+        if source != ChannelCostSource.RELAY:
+            if schema_version != 1 or route_id is not None or any(
+                value is not None for value in raw_identity.values()
+            ):
+                raise ConflictError(
+                    "Only Relay may bind a channel cost to provider account evidence"
+                )
+            normalized_identity = {
+                **raw_identity,
+                "identity_status": IDENTITY_UNASSIGNED,
+            }
+        elif schema_version == 1:
+            if route_id is not None or any(
+                value is not None for value in raw_identity.values()
+            ):
+                raise ConflictError(
+                    "legacy Relay channel cost cannot carry provider route identity"
+                )
+            normalized_identity = {
+                **raw_identity,
+                "identity_status": (
+                    IDENTITY_LEGACY_UNKNOWN if task_id is not None else IDENTITY_UNASSIGNED
+                ),
+            }
+        elif schema_version == 2:
+            try:
+                normalized_identity = validate_provider_route_identity(
+                    raw_identity,
+                    route_assigned=task_id is not None,
+                    route_id=route_id,
+                    route_key=normalized_channel_key,
+                )
+            except ValueError as exc:
+                raise ConflictError(str(exc)) from exc
+        else:
+            raise ConflictError("channel cost schema_version is invalid")
 
         evidence_fields = (
             evidence_source,
@@ -270,6 +368,17 @@ class ChannelCostService:
             company_id = task.company_id
             personal_workspace_id = task.personal_workspace_id
             relay_job_id = task.relay_job_id
+            require_execution_cost(
+                session, task=task, identity=normalized_identity,
+                execution_digest=execution_contract_sha256,
+                cost_digest=provider_cost_revision_sha256,
+            )
+            if normalized_identity["identity_status"] == IDENTITY_BOUND:
+                # Stage telemetry and cost receipts share this immutable route
+                # identity. Do not add cost-only fields to its schema: either
+                # event may arrive first. The signed body digest plus original
+                # quote/outbox contract retains the cost execution proof.
+                bind_task_provider_route_identity(task, normalized_identity)
         else:
             if company_id is not None and personal_workspace_id is not None:
                 raise ConflictError("channel cost cannot belong to two billing scopes")
@@ -283,10 +392,27 @@ class ChannelCostService:
 
         values: dict[str, Any] = {
             "id": new_id(),
+            "schema_version": schema_version,
             "amount_cents": amount_cents,
             "idempotency_key": normalized_idempotency_key,
             "channel_key": normalized_channel_key,
             "channel_type": channel_type,
+            "route_id": route_id,
+            "provider_identity_status": normalized_identity["identity_status"],
+            "provider_name": normalized_identity["provider_name"],
+            "provider_account_id": normalized_identity["provider_account_id"],
+            "provider_channel_id": normalized_identity["provider_channel_id"],
+            "provider_route_id": normalized_identity["provider_route_id"],
+            "provider_key_index": normalized_identity["provider_key_index"],
+            "provider_key_fingerprint": normalized_identity[
+                "provider_key_fingerprint"
+            ],
+            "provider_credential_version": normalized_identity[
+                "provider_credential_version"
+            ],
+            "routing_release_sha256": normalized_identity[
+                "routing_release_sha256"
+            ],
             "occurred_at": normalized_occurred_at,
             "external_reference": normalized_external_reference,
             "company_id": company_id,
@@ -312,9 +438,11 @@ class ChannelCostService:
         if existing is not None:
             return (
                 cls._validate_replay(existing, **{k: values[k] for k in (
+                    "schema_version",
                     "amount_cents",
                     "channel_key",
                     "channel_type",
+                    "route_id",
                     "occurred_at",
                     "external_reference",
                     "company_id",
@@ -327,6 +455,15 @@ class ChannelCostService:
                     "source_document_sha256",
                     "relay_event_id",
                     "relay_payload_sha256",
+                    "provider_identity_status",
+                    "provider_name",
+                    "provider_account_id",
+                    "provider_channel_id",
+                    "provider_route_id",
+                    "provider_key_index",
+                    "provider_key_fingerprint",
+                    "provider_credential_version",
+                    "routing_release_sha256",
                 )}),
                 False,
             )
@@ -346,9 +483,11 @@ class ChannelCostService:
                     cls._validate_replay(
                         existing_event,
                         **{k: values[k] for k in (
+                            "schema_version",
                             "amount_cents",
                             "channel_key",
                             "channel_type",
+                            "route_id",
                             "occurred_at",
                             "external_reference",
                             "company_id",
@@ -361,6 +500,15 @@ class ChannelCostService:
                             "source_document_sha256",
                             "relay_event_id",
                             "relay_payload_sha256",
+                            "provider_identity_status",
+                            "provider_name",
+                            "provider_account_id",
+                            "provider_channel_id",
+                            "provider_route_id",
+                            "provider_key_index",
+                            "provider_key_fingerprint",
+                            "provider_credential_version",
+                            "routing_release_sha256",
                         )},
                     ),
                     False,
@@ -403,9 +551,11 @@ class ChannelCostService:
             cls._validate_replay(
                 entry,
                 **{k: values[k] for k in (
+                    "schema_version",
                     "amount_cents",
                     "channel_key",
                     "channel_type",
+                    "route_id",
                     "occurred_at",
                     "external_reference",
                     "company_id",
@@ -418,6 +568,15 @@ class ChannelCostService:
                     "source_document_sha256",
                     "relay_event_id",
                     "relay_payload_sha256",
+                    "provider_identity_status",
+                    "provider_name",
+                    "provider_account_id",
+                    "provider_channel_id",
+                    "provider_route_id",
+                    "provider_key_index",
+                    "provider_key_fingerprint",
+                    "provider_credential_version",
+                    "routing_release_sha256",
                 )},
             )
         return entry, inserted_id is not None

@@ -33,6 +33,8 @@ from platform_api.services.dashboard import DashboardService
 from platform_api.services.relay_outbox import RelayOutboxDispatcher
 from platform_api.services.relay_status import RelayStatusService
 from platform_api.services.task_timeouts import TaskTimeoutService
+from platform_api.services.personal import PersonalWorkspaceService
+from .legacy_commercial_isolation import isolate_legacy_commercial_gate
 
 
 RELAY_JOB_ID = "11111111-1111-4111-8111-111111111111"
@@ -47,17 +49,48 @@ def _personal_user(app, suffix: str) -> str:
         )
         session.add(user)
         session.flush()
+        PersonalWorkspaceService.ensure(session, user_id=user.id)
         return user.id
 
 
-def _retail_model(app) -> str:
+def _retail_model(
+    app,
+    *,
+    call_quota: int | None = None,
+    concurrency_limit: int | None = None,
+) -> str:
+    isolate_legacy_commercial_gate(app)
+    approved_capability = {
+        "schema_version": 1,
+        "modes": {
+            "text_to_video": {
+                "input_media_types": [],
+                "supports_face": False,
+                "required_resource_keys": [],
+                "limits": {
+                    "max_prompt_length": 500,
+                    "max_images": 0,
+                    "max_videos": 0,
+                    "max_audio": 0,
+                    "duration_seconds": [5],
+                    "aspect_ratios": ["16:9"],
+                    "resolutions": ["720p"],
+                    "output_counts": [1, 2],
+                },
+            }
+        },
+    }
+    relay_revision = "sha256:" + ("1" * 64)
     with app.state.session_factory.begin() as session:
         model = ModelDefinition(
             slug="personal-video-v1",
             display_name="Personal Video",
             provider_key="test-provider",
             billing_mode="per_second",
-            relay_capability_revision="sha256:" + ("1" * 64),
+            relay_capability_revision=relay_revision,
+            relay_capability_candidate_revision=relay_revision,
+            relay_capability_candidate=approved_capability,
+            relay_capability_approved_ceiling=approved_capability,
         )
         session.add(model)
         session.flush()
@@ -65,26 +98,7 @@ def _retail_model(app) -> str:
             ModelCapability(
                 model_id=model.id,
                 capability_key="generation",
-                config={
-                    "schema_version": 1,
-                    "modes": {
-                        "text_to_video": {
-                            "input_media_types": [],
-                            "supports_face": False,
-                            "required_resource_keys": [],
-                            "limits": {
-                                "max_prompt_length": 500,
-                                "max_images": 0,
-                                "max_videos": 0,
-                                "max_audio": 0,
-                                "duration_seconds": [5],
-                                "aspect_ratios": ["16:9"],
-                                "resolutions": ["720p"],
-                                "output_counts": [1, 2],
-                            },
-                        }
-                    },
-                },
+                config=approved_capability,
             )
         )
         session.add(
@@ -93,6 +107,8 @@ def _retail_model(app) -> str:
                 enabled=True,
                 price_per_second_points=3,
                 price_per_item_points=None,
+                call_quota=call_quota,
+                concurrency_limit=concurrency_limit,
                 config_override={},
             )
         )
@@ -240,7 +256,7 @@ def test_personal_workspace_reuses_relay_and_points_settlement_without_company(
         "tasks": True,
         "artworks": True,
         "task_cancel": False,
-        "assets": False,
+        "assets": True,
         "artifact_access": True,
         "publishing": False,
     }
@@ -277,6 +293,148 @@ def test_personal_workspace_reuses_relay_and_points_settlement_without_company(
             session, start=now - timedelta(days=1), end=now + timedelta(days=1)
         )
         assert operations["total_task_count"] == 0
+
+
+def test_personal_model_limits_are_workspace_scoped_quote_bound_and_replay_first(
+    app, client
+):
+    model_id = _retail_model(app, call_quota=2, concurrency_limit=1)
+    user_a = _personal_user(app, "limits-a")
+    user_b = _personal_user(app, "limits-b")
+    headers_a = {"X-User-ID": user_a}
+    headers_b = {"X-User-ID": user_b}
+
+    def provision_and_model(headers: dict[str, str]) -> tuple[str, dict]:
+        workspace_id = client.get(
+            "/api/v1/personal/me", headers=headers
+        ).json()["workspace_id"]
+        credited = client.post(
+            f"/internal/personal/wallets/{workspace_id}/credit",
+            headers={"X-Internal-Service-Token": "test-internal-token"},
+            json={
+                "amount_points": 100,
+                "idempotency_key": f"limits-credit-{workspace_id}",
+                "note": "personal limit admission test",
+            },
+        )
+        assert credited.status_code == 200, credited.text
+        available = client.get(
+            "/api/v1/personal/models", headers=headers
+        )
+        assert available.status_code == 200, available.text
+        model = next(item for item in available.json() if item["id"] == model_id)
+        assert model["call_quota"] == 2
+        assert model["concurrency_limit"] == 1
+        assert model["mode_readiness"]["text_to_video"]["default"] == {
+            "ready": True,
+            "status": "ready",
+            "blockers": [],
+        }
+        return workspace_id, model
+
+    workspace_a, model_a = provision_and_model(headers_a)
+    workspace_b, model_b = provision_and_model(headers_b)
+
+    def body(model: dict, key: str) -> dict:
+        return {
+            "model_id": model_id,
+            "expected_capability_version": model["capability_version"],
+            "expected_quote_revision": model["quote_revision"],
+            "idempotency_key": key,
+            "request_payload": {
+                "mode": "text_to_video",
+                "prompt": "a bounded personal generation",
+                "assets": [],
+                "duration_seconds": 5,
+                "aspect_ratio": "16:9",
+                "resolution": "720p",
+                "output_count": 1,
+                "face_enabled": False,
+            },
+        }
+
+    first_body = body(model_a, "personal-limit-a-0001")
+    first = client.post(
+        "/api/v1/personal/tasks", headers=headers_a, json=first_body
+    )
+    assert first.status_code == 201, first.text
+    assert first.json()["pricing_snapshot"]["call_quota"] == 2
+    assert first.json()["pricing_snapshot"]["concurrency_limit"] == 1
+    assert (
+        first.json()["pricing_snapshot"]["quote_revision"]
+        == model_a["quote_revision"]
+    )
+
+    # Saturation never blocks an exact replay of the already accepted request.
+    replay = client.post(
+        "/api/v1/personal/tasks", headers=headers_a, json=first_body
+    )
+    assert replay.status_code == 201, replay.text
+    assert replay.json()["id"] == first.json()["id"]
+    saturated = client.post(
+        "/api/v1/personal/tasks",
+        headers=headers_a,
+        json=body(model_a, "personal-limit-a-0002"),
+    )
+    assert saturated.status_code == 403, saturated.text
+
+    # The same global retail grant is accounted independently per workspace.
+    other_scope = client.post(
+        "/api/v1/personal/tasks",
+        headers=headers_b,
+        json=body(model_b, "personal-limit-b-0001"),
+    )
+    assert other_scope.status_code == 201, other_scope.text
+    assert other_scope.json()["workspace_id"] == workspace_b
+
+    with app.state.session_factory.begin() as session:
+        stored = session.get(GenerationTask, first.json()["id"])
+        assert stored.personal_workspace_id == workspace_a
+        assert stored.company_id is None
+        stored.status = TaskStatus.FAILED
+
+    second = client.post(
+        "/api/v1/personal/tasks",
+        headers=headers_a,
+        json=body(model_a, "personal-limit-a-0002"),
+    )
+    assert second.status_code == 201, second.text
+    with app.state.session_factory.begin() as session:
+        session.get(GenerationTask, second.json()["id"]).status = TaskStatus.FAILED
+
+    exhausted = client.post(
+        "/api/v1/personal/tasks",
+        headers=headers_a,
+        json=body(model_a, "personal-limit-a-0003"),
+    )
+    assert exhausted.status_code == 403, exhausted.text
+    readiness = client.get(
+        "/api/v1/personal/models", headers=headers_a
+    ).json()[0]["mode_readiness"]["text_to_video"]["default"]
+    assert readiness["ready"] is False
+    assert readiness["status"] == "blocked"
+    assert readiness["blockers"][0]["code"] == "model_call_quota_exhausted"
+
+    # Usage-policy edits are quote revisions, so a stale client cannot submit
+    # under a newly widened or narrowed server-side limit.
+    with app.state.session_factory.begin() as session:
+        grant = session.scalar(
+            select(PersonalRetailModelGrant).where(
+                PersonalRetailModelGrant.model_id == model_id
+            )
+        )
+        grant.call_quota = 3
+    stale = client.post(
+        "/api/v1/personal/tasks",
+        headers=headers_a,
+        json=body(model_a, "personal-limit-a-0004"),
+    )
+    assert stale.status_code == 409, stale.text
+    refreshed = client.get(
+        "/api/v1/personal/models", headers=headers_a
+    ).json()[0]
+    assert refreshed["call_quota"] == 3
+    assert refreshed["quote_revision"] != model_a["quote_revision"]
 
 
 def test_personal_artifact_access_is_owner_scoped_bound_and_audited(app, client):

@@ -32,6 +32,62 @@ type relaySchemaTestSynchronizedBuffer struct {
 	buffer bytes.Buffer
 }
 
+type relaySchemaTestProgressDeadline struct {
+	startedAt        time.Time
+	lastProgressAt   time.Time
+	idleDeadline     time.Time
+	absoluteDeadline time.Time
+	idleWindow       time.Duration
+	outputBytes      int
+}
+
+const (
+	relaySchemaTestDeadlineNoProgress      = "no-output-progress"
+	relaySchemaTestDeadlineAbsolute        = "absolute"
+	relaySchemaTestReadinessIdleWindow     = 30 * time.Second
+	relaySchemaTestReadinessAbsoluteWindow = 300 * time.Second
+	relaySchemaTestReadinessProbeSamples   = 20
+	relaySchemaTestReadinessFocusedLimit   = 500 * time.Millisecond
+	relaySchemaTestReadinessComposeLimit   = 3 * time.Second
+)
+
+// relaySchemaTestMeasureReadinessLatency proves the actual protected process
+// endpoint, over PostgreSQL TLS, stays inside both the focused lifecycle probe
+// budget and Compose's hard healthcheck timeout. Keep this separate from the
+// startup polling loop: startup elapsed time and steady-state probe latency are
+// different release signals.
+func relaySchemaTestMeasureReadinessLatency(t *testing.T, label, readyURL string, secretCanaries []string) {
+	t.Helper()
+	client := &http.Client{Timeout: relaySchemaTestReadinessComposeLimit}
+	durations := make([]time.Duration, 0, relaySchemaTestReadinessProbeSamples)
+	for sample := 0; sample < relaySchemaTestReadinessProbeSamples; sample++ {
+		startedAt := time.Now()
+		response, err := client.Get(readyURL)
+		elapsed := time.Since(startedAt)
+		require.NoError(t, err, "%s readiness probe %d exceeded its HTTP deadline", label, sample+1)
+		if response.StatusCode != http.StatusOK {
+			evidence := relaySchemaTestReadinessResponseEvidence(response, secretCanaries)
+			_ = response.Body.Close()
+			t.Fatalf("%s readiness probe %d returned %d; evidence=%s", label, sample+1, response.StatusCode, evidence)
+		}
+		_ = response.Body.Close()
+		require.Less(t, elapsed, relaySchemaTestReadinessComposeLimit,
+			"%s readiness probe %d exceeded the Compose timeout", label, sample+1)
+		durations = append(durations, elapsed)
+	}
+	sort.Slice(durations, func(left, right int) bool { return durations[left] < durations[right] })
+	p95Index := (95*len(durations)+99)/100 - 1
+	p95 := durations[p95Index]
+	maximum := durations[len(durations)-1]
+	t.Logf("%s_ready_probe_samples=%d p95=%s max=%s focused_limit=%s compose_limit=%s",
+		label, len(durations), p95.Round(time.Millisecond), maximum.Round(time.Millisecond),
+		relaySchemaTestReadinessFocusedLimit, relaySchemaTestReadinessComposeLimit)
+	require.Less(t, p95, relaySchemaTestReadinessFocusedLimit,
+		"%s readiness p95 exceeded the focused lifecycle-probe budget", label)
+	require.Less(t, maximum, relaySchemaTestReadinessFocusedLimit,
+		"%s readiness max exceeded the focused lifecycle-probe budget", label)
+}
+
 type relaySchemaTestRuntimeActivity struct {
 	State         string
 	WaitEventType string
@@ -85,6 +141,104 @@ func (buffer *relaySchemaTestSynchronizedBuffer) String() string {
 	buffer.mu.Lock()
 	defer buffer.mu.Unlock()
 	return buffer.buffer.String()
+}
+
+func (buffer *relaySchemaTestSynchronizedBuffer) Len() int {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.Len()
+}
+
+func newRelaySchemaTestProgressDeadline(
+	now time.Time,
+	outputBytes int,
+	idleWindow time.Duration,
+	absoluteWindow time.Duration,
+) relaySchemaTestProgressDeadline {
+	return relaySchemaTestProgressDeadline{
+		startedAt:        now,
+		lastProgressAt:   now,
+		idleDeadline:     now.Add(idleWindow),
+		absoluteDeadline: now.Add(absoluteWindow),
+		idleWindow:       idleWindow,
+		outputBytes:      outputBytes,
+	}
+}
+
+func (deadline *relaySchemaTestProgressDeadline) Observe(now time.Time, outputBytes int) string {
+	if outputBytes > deadline.outputBytes {
+		deadline.outputBytes = outputBytes
+		deadline.lastProgressAt = now
+		deadline.idleDeadline = now.Add(deadline.idleWindow)
+	}
+	if !now.Before(deadline.absoluteDeadline) {
+		return relaySchemaTestDeadlineAbsolute
+	}
+	if !now.Before(deadline.idleDeadline) {
+		return relaySchemaTestDeadlineNoProgress
+	}
+	return ""
+}
+
+func (deadline relaySchemaTestProgressDeadline) Evidence(now time.Time, reason string) string {
+	return fmt.Sprintf(
+		"timeout_reason=%s elapsed=%s last_progress=%s_ago output_bytes=%d",
+		reason,
+		now.Sub(deadline.startedAt).Round(time.Millisecond),
+		now.Sub(deadline.lastProgressAt).Round(time.Millisecond),
+		deadline.outputBytes,
+	)
+}
+
+func TestRelaySchemaTestProgressDeadline(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 28, 0, 0, 0, 0, time.UTC)
+	require.Equal(t, 30*time.Second, relaySchemaTestReadinessIdleWindow)
+	require.Equal(t, 300*time.Second, relaySchemaTestReadinessAbsoluteWindow)
+	require.Greater(t, relaySchemaTestReadinessAbsoluteWindow, relaySchemaTestReadinessIdleWindow)
+
+	t.Run("no output progress expires at the idle deadline", func(t *testing.T) {
+		deadline := newRelaySchemaTestProgressDeadline(
+			startedAt, 0, relaySchemaTestReadinessIdleWindow, relaySchemaTestReadinessAbsoluteWindow,
+		)
+		require.Empty(t, deadline.Observe(startedAt.Add(29*time.Second), 0))
+		require.Equal(
+			t,
+			relaySchemaTestDeadlineNoProgress,
+			deadline.Observe(startedAt.Add(30*time.Second), 0),
+		)
+		require.Equal(
+			t,
+			"timeout_reason=no-output-progress elapsed=30s last_progress=30s_ago output_bytes=0",
+			deadline.Evidence(startedAt.Add(30*time.Second), relaySchemaTestDeadlineNoProgress),
+		)
+	})
+
+	t.Run("output progress extends idle but never absolute deadline", func(t *testing.T) {
+		deadline := newRelaySchemaTestProgressDeadline(
+			startedAt, 0, relaySchemaTestReadinessIdleWindow, relaySchemaTestReadinessAbsoluteWindow,
+		)
+		outputBytes := 0
+		for elapsed := relaySchemaTestReadinessIdleWindow - time.Second; elapsed < relaySchemaTestReadinessAbsoluteWindow-time.Second; elapsed += relaySchemaTestReadinessIdleWindow - time.Second {
+			outputBytes++
+			require.Empty(t, deadline.Observe(startedAt.Add(elapsed), outputBytes))
+		}
+		outputBytes++
+		require.Empty(t, deadline.Observe(
+			startedAt.Add(relaySchemaTestReadinessAbsoluteWindow-time.Second), outputBytes,
+		))
+		require.Equal(
+			t,
+			relaySchemaTestDeadlineAbsolute,
+			deadline.Observe(startedAt.Add(relaySchemaTestReadinessAbsoluteWindow), outputBytes),
+		)
+		require.Equal(
+			t,
+			"timeout_reason=absolute elapsed=5m0s last_progress=1s_ago output_bytes=11",
+			deadline.Evidence(
+				startedAt.Add(relaySchemaTestReadinessAbsoluteWindow), relaySchemaTestDeadlineAbsolute,
+			),
+		)
+	})
 }
 
 const (
@@ -358,10 +512,10 @@ ON ddl_command_start EXECUTE FUNCTION public.relay_hostile_migration_event()`).E
 	require.Equal(t, RelaySchemaMaxVersion, result.Status.MaxVersion)
 	var freshLedger []RelaySchemaMigration
 	require.NoError(t, migrationDB.Order("version ASC").Find(&freshLedger).Error)
-	require.Len(t, freshLedger, 1, "fresh v3 must not fabricate unexecuted historical ledger events")
+	require.Len(t, freshLedger, 1, "fresh target must not fabricate unexecuted historical ledger events")
 	require.Equal(t, RelaySchemaTargetVersion, freshLedger[0].Version)
-	require.Equal(t, relaySchemaV3FrozenChecksumSHA256, freshLedger[0].Checksum)
-	require.Equal(t, relaySchemaV3PostgresCatalogSHA256, result.Status.CatalogSHA256)
+	require.Equal(t, relaySchemaContractForRuntime().Checksums[RelaySchemaTargetVersion], freshLedger[0].Checksum)
+	require.Equal(t, relaySchemaExpectedCatalogForRuntime("postgres", RelaySchemaTargetVersion), result.Status.CatalogSHA256)
 	commitRecovery, err := RunRelaySchemaMigrations(context.Background(), "")
 	require.NoError(t, err)
 	require.Equal(t, "current", commitRecovery.State)
@@ -412,7 +566,7 @@ ON ddl_command_start EXECUTE FUNCTION public.relay_hostile_migration_event()`).E
 	defer runtimeSQL.Close()
 	status, err := RequireRelaySchemaCurrent(runtimeDB)
 	require.NoError(t, err)
-	require.Equal(t, relaySchemaV3PostgresCatalogSHA256, status.CatalogSHA256)
+	require.Equal(t, relaySchemaExpectedCatalogForRuntime("postgres", RelaySchemaTargetVersion), status.CatalogSHA256)
 	require.NoError(t, VerifyRelayRuntimeDatabaseRole(runtimeDB))
 	require.Error(t, runtimeDB.Exec(`SET session_replication_role = replica`).Error)
 	require.Error(t, migrationDB.Exec(`DELETE FROM relay_schema_migrations WHERE version = ?`, RelaySchemaTargetVersion).Error, "current ledger trigger must remain active after role hardening")
@@ -712,6 +866,23 @@ DROP FUNCTION pg_catalog.relay_surface_rogue_extension_member()`).Error)
 	require.NoError(t, admin.Exec(`DROP ROLE relay_edge_assumer`).Error)
 	require.NoError(t, VerifyRelayRuntimeDatabaseRole(runtimeDB))
 	require.NoError(t, VerifyRelayDownloadEdgeDatabaseRole(edgeDB, status.CurrentVersion))
+	runtimeProof, err := AttestRelayRuntimeDatabaseRole(runtimeDB)
+	require.NoError(t, err)
+	_, err = VerifyRelayRuntimeDatabaseRoleProof(runtimeDB, runtimeProof)
+	require.NoError(t, err)
+	require.NoError(t, admin.Exec(`ALTER ROLE relay_runtime INHERIT`).Error)
+	require.Error(t, VerifyRelayRuntimeDatabaseRole(runtimeDB),
+		"the full/offline runtime role gate must reject a role that can inherit privileges")
+	_, err = AttestRelayRuntimeDatabaseRole(runtimeDB)
+	require.Error(t, err, "bounded full attestation must reject runtime INHERIT drift")
+	_, err = VerifyRelayRuntimeDatabaseRoleProof(runtimeDB, runtimeProof)
+	require.Error(t, err, "every light live proof must reject runtime INHERIT drift")
+	require.NoError(t, admin.Exec(`ALTER ROLE relay_runtime NOINHERIT`).Error)
+	require.NoError(t, VerifyRelayRuntimeDatabaseRole(runtimeDB))
+	runtimeProof, err = AttestRelayRuntimeDatabaseRole(runtimeDB)
+	require.NoError(t, err)
+	_, err = VerifyRelayRuntimeDatabaseRoleProof(runtimeDB, runtimeProof)
+	require.NoError(t, err)
 	require.NoError(t, admin.Exec(`CREATE ROLE relay_rogue_acl LOGIN PASSWORD '`+relaySchemaTestRoguePassword+`' NOINHERIT`).Error)
 	require.NoError(t, migrationDB.Exec(`GRANT UPDATE ON TABLE public.relay_schema_state TO relay_rogue_acl`).Error)
 	require.Error(t, VerifyRelayRuntimeDatabaseRole(runtimeDB))
@@ -962,8 +1133,38 @@ WHERE relation.relname = ? AND relation.relkind IN ('r', 'p')`, table).Scan(&sch
    AND mode = 'ShareLock' AND granted`, refencedPID, int64(0x41564944), int64(0x524f4f4c), int64(0x524f4f4d)).Scan(&replacementFenceCount).Error)
 	require.Equal(t, int64(2), replacementFenceCount)
 	var anchorTerminated bool
-	require.NoError(t, admin.Raw(`SELECT pg_catalog.pg_terminate_backend(?)`, fencedAnchorPID).Scan(&anchorTerminated).Error)
+	// The one-argument pg_terminate_backend only proves that PostgreSQL sent
+	// SIGTERM. It may return before the backend and its epoch lock disappear,
+	// in which case an immediate checkout is still correctly bound to the live
+	// anchor. PostgreSQL 16's timeout form waits for actual backend exit.
+	require.NoError(t, admin.Raw(`SELECT pg_catalog.pg_terminate_backend(?, ?)`, fencedAnchorPID, int64(5_000)).Scan(&anchorTerminated).Error)
 	require.True(t, anchorTerminated)
+	var anchorProofStillPresent bool
+	require.NoError(t, admin.Raw(`SELECT EXISTS (
+  SELECT 1
+    FROM pg_catalog.pg_stat_activity activity
+    JOIN pg_catalog.pg_locks process_lock ON process_lock.pid = activity.pid
+    JOIN pg_catalog.pg_locks epoch_lock ON epoch_lock.pid = activity.pid
+   WHERE activity.pid = ?
+     AND activity.backend_start = ?
+     AND activity.datid = (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database())
+     AND process_lock.locktype = 'advisory'
+     AND process_lock.classid = ((?::bigint >> 32) & 4294967295)::oid
+     AND process_lock.objid = (?::bigint & 4294967295)::oid
+     AND process_lock.objsubid = 1
+     AND process_lock.mode = 'ShareLock'
+     AND process_lock.granted
+     AND epoch_lock.locktype = 'advisory'
+     AND epoch_lock.classid = ((?::bigint >> 32) & 4294967295)::oid
+     AND epoch_lock.objid = (?::bigint & 4294967295)::oid
+     AND epoch_lock.objsubid = 1
+     AND epoch_lock.mode = 'ExclusiveLock'
+     AND epoch_lock.granted
+)`, fencedAnchorPID, fencedAnchor.anchorStart,
+		relayLifecycleAdvisoryLock, relayLifecycleAdvisoryLock,
+		fencedAnchor.anchorEpoch, fencedAnchor.anchorEpoch,
+	).Scan(&anchorProofStillPresent).Error)
+	require.False(t, anchorProofStillPresent, "anchor loss precondition must be server-observable before probing the pool")
 	// Keep the heartbeat deliberately paused. The pool must reject a fresh
 	// physical connection from the server-side pid+epoch proof even while the
 	// local health bit is stale true.
@@ -1057,6 +1258,168 @@ func relaySchemaTestMainProcessLifecycleLoss(
 	relaySchemaTestMainProcessLifecycleLossWithFixture(t, admin, migrationDB, fixture)
 }
 
+func relaySchemaTestDownloadEdgeRuntimeReady(
+	t *testing.T,
+	admin *gorm.DB,
+	fixture relaySchemaLifecycleProcessFixture,
+) {
+	t.Helper()
+	require.NotEmpty(t, fixture.downloadEdgeBinaryPath)
+	require.NotEmpty(t, fixture.downloadEdgeEnvironment)
+	require.NotEmpty(t, fixture.downloadEdgeDSN)
+
+	edgeDB, err := gorm.Open(postgres.Open(fixture.downloadEdgeDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	edgeSQL, err := edgeDB.DB()
+	require.NoError(t, err)
+	status, err := RequireRelaySchemaCurrent(edgeDB)
+	require.NoError(t, err)
+	require.Equal(t, RelaySchemaTargetVersion, status.CurrentVersion)
+	require.NoError(t, VerifyRelayDownloadEdgeDatabaseRole(edgeDB, status.CurrentVersion))
+	require.NoError(t, edgeSQL.Close())
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	require.NoError(t, listener.Close())
+	temporaryRoot := t.TempDir()
+	logDirectory := filepath.Join(temporaryRoot, "logs")
+	require.NoError(t, os.Mkdir(logDirectory, 0o700))
+	child := exec.Command(fixture.downloadEdgeBinaryPath)
+	child.Dir = temporaryRoot
+	child.Env = append(append([]string(nil), fixture.downloadEdgeEnvironment...),
+		"HOME="+temporaryRoot,
+		"TMPDIR="+temporaryRoot,
+		fmt.Sprintf("RELAY_DOWNLOAD_EDGE_LISTEN_ADDRESS=127.0.0.1:%d", port),
+	)
+	var childOutput relaySchemaTestSynchronizedBuffer
+	child.Stdout = &childOutput
+	child.Stderr = &childOutput
+	require.NoError(t, child.Start())
+	childDone := make(chan error, 1)
+	go func() { childDone <- child.Wait() }()
+	childWaited := false
+	t.Cleanup(func() {
+		if childWaited {
+			return
+		}
+		_ = child.Process.Kill()
+		select {
+		case <-childDone:
+		case <-time.After(5 * time.Second):
+		}
+	})
+
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	readyURL := fmt.Sprintf("http://127.0.0.1:%d/health/ready", port)
+	ready := false
+	readyStartedAt := time.Now()
+	readyDeadline := newRelaySchemaTestProgressDeadline(
+		readyStartedAt, childOutput.Len(),
+		relaySchemaTestReadinessIdleWindow, relaySchemaTestReadinessAbsoluteWindow,
+	)
+	readyTimeoutReason := ""
+	lastReadinessResponse := "no HTTP response"
+	for readyTimeoutReason == "" {
+		select {
+		case waitErr := <-childDone:
+			childWaited = true
+			diagnostics, leaked := relaySchemaTestChildDiagnosticEvidence(
+				logDirectory, childOutput.String(), fixture.secretCanaries,
+			)
+			if leaked {
+				t.Fatal("real download-edge child leaked a synthetic secret canary before readiness")
+			}
+			t.Fatalf("real download-edge child exited before readiness (%s); diagnostics=%s",
+				relaySchemaTestProcessExitEvidence(waitErr), diagnostics)
+		default:
+		}
+		response, requestErr := client.Get(readyURL)
+		if requestErr == nil {
+			lastReadinessResponse = relaySchemaTestReadinessResponseEvidence(response, fixture.secretCanaries)
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				ready = true
+				break
+			}
+		}
+		readyTimeoutReason = readyDeadline.Observe(time.Now(), childOutput.Len())
+		if readyTimeoutReason != "" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ready {
+		diagnostics, leaked := relaySchemaTestChildDiagnosticEvidence(
+			logDirectory, childOutput.String(), fixture.secretCanaries,
+		)
+		if leaked {
+			t.Fatal("real download-edge child leaked a synthetic secret canary while readiness remained closed")
+		}
+		t.Fatalf(
+			"real download-edge child did not become ready; %s; readiness_response=%s; diagnostics=%s",
+			readyDeadline.Evidence(time.Now(), readyTimeoutReason), lastReadinessResponse, diagnostics,
+		)
+	}
+	t.Logf("edge_ready_elapsed=%s", time.Since(readyStartedAt).Round(time.Millisecond))
+	relaySchemaTestMeasureReadinessLatency(t, "edge", readyURL, fixture.secretCanaries)
+	require.Eventually(t, func() bool {
+		var holders int64
+		queryErr := admin.Raw(`SELECT count(*)
+  FROM pg_catalog.pg_locks process_lock
+  JOIN pg_catalog.pg_stat_activity activity ON activity.pid = process_lock.pid
+ WHERE activity.datname = pg_catalog.current_database()
+   AND activity.usename = ?
+   AND process_lock.locktype = 'advisory'
+   AND process_lock.database = (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database())
+   AND process_lock.classid = ? AND process_lock.objid = ? AND process_lock.objsubid = 1
+   AND process_lock.mode = 'ShareLock' AND process_lock.granted`,
+			relaySchemaTestEdgeRole, int64(0x41564944), int64(0x524f4f4c)).Scan(&holders).Error
+		return queryErr == nil && holders > 0
+	}, 5*time.Second, 50*time.Millisecond, "real download-edge child must hold the same-database runtime process fence")
+
+	if runtime.GOOS == "windows" {
+		require.NoError(t, child.Process.Kill())
+		<-childDone
+		childWaited = true
+	} else {
+		require.NoError(t, child.Process.Signal(os.Interrupt))
+		select {
+		case waitErr := <-childDone:
+			childWaited = true
+			if waitErr != nil {
+				diagnostics, leaked := relaySchemaTestChildDiagnosticEvidence(
+					logDirectory, childOutput.String(), fixture.secretCanaries,
+				)
+				if leaked {
+					t.Fatal("real download-edge child leaked a synthetic secret canary during shutdown")
+				}
+				t.Fatalf("download-edge child did not drain cleanly (%s); diagnostics=%s",
+					relaySchemaTestProcessExitEvidence(waitErr), diagnostics)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("download-edge child did not drain before the hard deadline")
+		}
+	}
+	diagnostics, leaked := relaySchemaTestChildDiagnosticEvidence(
+		logDirectory, childOutput.String(), fixture.secretCanaries,
+	)
+	require.False(t, leaked, "real download-edge child leaked a synthetic secret canary: %s", diagnostics)
+	require.Eventually(t, func() bool {
+		var holders int64
+		queryErr := admin.Raw(`SELECT count(*)
+  FROM pg_catalog.pg_locks process_lock
+  JOIN pg_catalog.pg_stat_activity activity ON activity.pid = process_lock.pid
+ WHERE activity.datname = pg_catalog.current_database()
+   AND activity.usename = ?
+   AND process_lock.locktype = 'advisory'
+   AND process_lock.database = (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database())
+   AND process_lock.classid = ? AND process_lock.objid IN (?, ?) AND process_lock.granted`,
+			relaySchemaTestEdgeRole, int64(0x41564944), int64(0x524f4f4c), int64(0x524f4f4d)).Scan(&holders).Error
+		return queryErr == nil && holders == 0
+	}, 5*time.Second, 50*time.Millisecond, "download-edge child left same-database lifecycle holders after shutdown")
+}
+
 func relaySchemaTestMainProcessLifecycleLossWithFixture(
 	t *testing.T,
 	admin, migrationDB *gorm.DB,
@@ -1100,9 +1463,16 @@ func relaySchemaTestMainProcessLifecycleLossWithFixture(
 
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	statusURL := fmt.Sprintf("http://127.0.0.1:%d/api/status", port)
+	readyURL := fmt.Sprintf("http://127.0.0.1:%d/health/ready", port)
 	ready := false
-	readyDeadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(readyDeadline) {
+	readyStartedAt := time.Now()
+	readyDeadline := newRelaySchemaTestProgressDeadline(
+		readyStartedAt, childOutput.Len(),
+		relaySchemaTestReadinessIdleWindow, relaySchemaTestReadinessAbsoluteWindow,
+	)
+	readyTimeoutReason := ""
+	lastReadinessResponse := "no HTTP response"
+	for readyTimeoutReason == "" {
 		select {
 		case waitErr := <-childDone:
 			childWaited = true
@@ -1110,19 +1480,24 @@ func relaySchemaTestMainProcessLifecycleLossWithFixture(
 				logDirectory, childOutput.String(), fixture.secretCanaries,
 			)
 			if leaked {
-				t.Fatal("real new-api child leaked a synthetic secret canary before HTTP admission")
+				t.Fatal("real new-api child leaked a synthetic secret canary before readiness")
 			}
-			t.Fatalf("real new-api child exited before HTTP admission (%s); activity=%s; diagnostics=%s",
+			t.Fatalf("real new-api child exited before readiness (%s); activity=%s; diagnostics=%s",
 				relaySchemaTestProcessExitEvidence(waitErr), relaySchemaTestRuntimeActivityEvidence(admin), diagnostics)
 		default:
 		}
-		response, requestErr := client.Get(statusURL)
+		response, requestErr := client.Get(readyURL)
 		if requestErr == nil {
+			lastReadinessResponse = relaySchemaTestReadinessResponseEvidence(response, fixture.secretCanaries)
 			_ = response.Body.Close()
 			if response.StatusCode == http.StatusOK {
 				ready = true
 				break
 			}
+		}
+		readyTimeoutReason = readyDeadline.Observe(time.Now(), childOutput.Len())
+		if readyTimeoutReason != "" {
+			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -1131,11 +1506,16 @@ func relaySchemaTestMainProcessLifecycleLossWithFixture(
 			logDirectory, childOutput.String(), fixture.secretCanaries,
 		)
 		if leaked {
-			t.Fatal("real new-api child leaked a synthetic secret canary while HTTP admission remained closed")
+			t.Fatal("real new-api child leaked a synthetic secret canary while readiness remained closed")
 		}
-		t.Fatalf("real new-api child did not open HTTP admission; activity=%s; diagnostics=%s",
-			relaySchemaTestRuntimeActivityEvidence(admin), diagnostics)
+		t.Fatalf(
+			"real new-api child did not become ready; %s; readiness_response=%s; activity=%s; diagnostics=%s",
+			readyDeadline.Evidence(time.Now(), readyTimeoutReason),
+			lastReadinessResponse, relaySchemaTestRuntimeActivityEvidence(admin), diagnostics,
+		)
 	}
+	t.Logf("api_ready_elapsed=%s", time.Since(readyStartedAt).Round(time.Millisecond))
+	relaySchemaTestMeasureReadinessLatency(t, "api", readyURL, fixture.secretCanaries)
 	var anchorPID int
 	require.Eventually(t, func() bool {
 		queryErr := admin.Raw(`SELECT process_lock.pid
@@ -1268,6 +1648,7 @@ func TestRelaySchemaPostgresProtectedLifecycleProcess(t *testing.T) {
 	fixture := relaySchemaTestPrepareProtectedLifecycleProcess(
 		t, adminDSN, migrationDSN, runtimeDSN, rootProvisionState, principalProvisionState,
 	)
+	relaySchemaTestDownloadEdgeRuntimeReady(t, admin, fixture)
 	relaySchemaTestMainProcessLifecycleLossWithFixture(t, admin, migrationDB, fixture)
 	legacyAfter, err := relaySchemaV2CaptureLegacyDataSnapshot(admin)
 	require.NoError(t, err)

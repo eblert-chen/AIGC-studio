@@ -238,6 +238,9 @@ func collectPendingUpstreamModelChangesFromModels(
 }
 
 func collectPendingUpstreamModelChanges(ctx context.Context, channel *model.Channel, settings dto.ChannelOtherSettings) (pendingAddModels []string, pendingRemoveModels []string, err error) {
+	if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
+		return nil, nil, model.ErrProviderOnboardingManagedChannel
+	}
 	upstreamModels, err := fetchChannelUpstreamModelIDsWithContext(ctx, channel)
 	if err != nil {
 		return nil, nil, err
@@ -354,6 +357,9 @@ func fetchChannelUpstreamModelIDsWithContext(ctx context.Context, channel *model
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
+		return nil, model.ErrProviderOnboardingManagedChannel
 	}
 	baseURL := constant.ChannelBaseURLs[channel.Type]
 	if channel.GetBaseURL() != "" {
@@ -483,6 +489,9 @@ func fetchAdvancedCustomUpstreamModelIDs(ctx context.Context, channel *model.Cha
 }
 
 func updateChannelUpstreamModelSettings(channel *model.Channel, settings dto.ChannelOtherSettings, updateModels bool) error {
+	if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
+		return model.ErrProviderOnboardingManagedChannel
+	}
 	channel.SetOtherSettings(settings)
 	updates := map[string]interface{}{
 		"settings": channel.OtherSettings,
@@ -509,6 +518,9 @@ func checkAndPersistChannelUpstreamModelUpdatesWithContext(
 	force bool,
 	allowAutoApply bool,
 ) (modelsChanged bool, autoAdded int, err error) {
+	if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
+		return false, 0, model.ErrProviderOnboardingManagedChannel
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -703,7 +715,9 @@ func runChannelUpstreamModelUpdateTaskOnce(ctx context.Context, force bool, allo
 	// Count the enabled channels up front so progress can be reported as a
 	// percentage; a count error is non-fatal (progress just won't show a %).
 	var totalChannels int64
-	if err := model.DB.Model(&model.Channel{}).Where("status = ?", common.ChannelStatusEnabled).Count(&totalChannels).Error; err != nil {
+	if err := model.ExcludeProviderOnboardingManagedChannels(
+		model.DB.Model(&model.Channel{}),
+	).Where("status = ?", common.ChannelStatusEnabled).Count(&totalChannels).Error; err != nil {
 		totalChannels = 0
 	}
 	processed := 0
@@ -715,9 +729,9 @@ scanLoop:
 			break
 		}
 		var channels []*model.Channel
-		query := model.DB.
+		query := model.ExcludeProviderOnboardingManagedChannels(model.DB.
 			Select(channelUpstreamModelUpdateSelectFields).
-			Where("status = ?", common.ChannelStatusEnabled).
+			Where("status = ?", common.ChannelStatusEnabled)).
 			Order("id asc").
 			Limit(channelUpstreamModelUpdateTaskBatchSize)
 		if lastID > 0 {
@@ -734,7 +748,7 @@ scanLoop:
 		lastID = channels[len(channels)-1].Id
 
 		for _, channel := range channels {
-			if channel == nil {
+			if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
 				continue
 			}
 			if ctx != nil && ctx.Err() != nil {
@@ -867,6 +881,9 @@ func ApplyChannelUpstreamModelUpdates(c *gin.Context) {
 		})
 		return
 	}
+	if rejectNativeManagedProviderChannel(c, req.ID) {
+		return
+	}
 
 	channel, err := model.GetChannelById(req.ID, true)
 	if err != nil {
@@ -923,6 +940,9 @@ func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 		})
 		return
 	}
+	if rejectNativeManagedProviderChannel(c, req.ID) {
+		return
+	}
 
 	channel, err := model.GetChannelById(req.ID, true)
 	if err != nil {
@@ -967,6 +987,9 @@ func applyChannelUpstreamModelUpdates(
 	modelsChanged bool,
 	err error,
 ) {
+	if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
+		return nil, nil, nil, nil, false, model.ErrProviderOnboardingManagedChannel
+	}
 	settings := channel.GetOtherSettings()
 	pendingAddModels := normalizeModelNames(settings.UpstreamModelUpdateLastDetectedModels)
 	pendingRemoveModels := normalizeModelNames(settings.UpstreamModelUpdateLastRemovedModels)
@@ -1010,9 +1033,9 @@ func collectPendingApplyUpstreamModelChanges(settings dto.ChannelOtherSettings) 
 
 func findEnabledChannelsAfterID(lastID int, batchSize int) ([]*model.Channel, error) {
 	var channels []*model.Channel
-	query := model.DB.
+	query := model.ExcludeProviderOnboardingManagedChannels(model.DB.
 		Select(channelUpstreamModelUpdateSelectFields).
-		Where("status = ?", common.ChannelStatusEnabled).
+		Where("status = ?", common.ChannelStatusEnabled)).
 		Order("id asc").
 		Limit(batchSize)
 	if lastID > 0 {
@@ -1041,7 +1064,7 @@ func ApplyAllChannelUpstreamModelUpdates(c *gin.Context) {
 		lastID = channels[len(channels)-1].Id
 
 		for _, channel := range channels {
-			if channel == nil {
+			if channel == nil || model.IsProviderOnboardingManagedChannel(channel) {
 				continue
 			}
 

@@ -26,13 +26,20 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/generationprofile"
+	"github.com/QuantumNous/new-api/generationrelease"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 const (
@@ -46,12 +53,16 @@ const (
 	relaySchemaLifecyclePlatformSHA256 = "sha256:9191919191919191919191919191919191919191919191919191919191919191"
 	relaySchemaLifecycleTenantID       = "4f88d0a4-d950-4b42-936e-6adf03aaf62d"
 	relaySchemaLifecycleClientID       = "lifecycle-platform-api"
+	relaySchemaOfflineCommandTimeout   = 60 * time.Second
 )
 
 type relaySchemaLifecycleProcessFixture struct {
-	binaryPath     string
-	environment    []string
-	secretCanaries []string
+	binaryPath              string
+	environment             []string
+	downloadEdgeBinaryPath  string
+	downloadEdgeEnvironment []string
+	downloadEdgeDSN         string
+	secretCanaries          []string
 }
 
 var relaySchemaLifecycleDiagnosticURL = regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|rediss?)://[^\s]+`)
@@ -60,6 +71,13 @@ func relaySchemaTestSecret(label string) string {
 	first := sha256.Sum256([]byte("relay-schema-lifecycle\x00" + label))
 	second := sha256.Sum256([]byte("relay-schema-lifecycle-extra\x00" + label))
 	return hex.EncodeToString(first[:]) + hex.EncodeToString(second[:])
+}
+
+func relaySchemaTestExecutableSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
 }
 
 func relaySchemaTestRouteAcceptanceTrustStore(t *testing.T) (string, string) {
@@ -76,6 +94,96 @@ func relaySchemaTestRouteAcceptanceTrustStore(t *testing.T) (string, string) {
 	require.NoError(t, err)
 	trustDigest := sha256.Sum256(canonicalKeys)
 	return string(canonicalKeys), fmt.Sprintf("sha256:%x", trustDigest)
+}
+
+func relaySchemaTestSignedStagingRoutes(
+	t *testing.T,
+	temporaryRoot string,
+	routeAcceptanceSignerPath string,
+	providerKeyFingerprint string,
+) string {
+	t.Helper()
+	profile, ok := generationprofile.Get(generationprofile.VolcengineArkImageGenerationV1)
+	require.True(t, ok)
+	now := time.Now().UTC().Truncate(time.Second)
+	signedAt := now.Add(-time.Minute)
+	modelNotAfter := now.Add(2 * time.Hour)
+	routeNotAfter := now.Add(time.Hour)
+	seed := bytes.Repeat([]byte{0x42}, ed25519.SeedSize)
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	_, privateKeyFile := relaySchemaTestWriteProtectedFile(
+		t, "lifecycle-route-signing-seed", base64.StdEncoding.EncodeToString(seed),
+	)
+	clear(seed)
+	defer clear(privateKey)
+
+	release := generationrelease.Release{
+		APIVersion:             generationrelease.APIVersion,
+		Kind:                   generationrelease.Kind,
+		ReleaseID:              "lifecycle-seedream-5-r1",
+		PublicModelID:          constant.PlatformGenerationPublicSeedream50Model,
+		ProviderModelID:        constant.PlatformGenerationArkSeedream50Model,
+		AdapterProfileID:       profile.ID,
+		AdapterProfileRevision: profile.Revision,
+		LegacyPublicAliases:    []string{constant.PlatformGenerationLegacySeedream50LitePublicAlias},
+		Capability:             profile.Capability,
+		Audit: generationrelease.Audit{
+			CreatedAt: signedAt.Format(time.RFC3339),
+			CreatedBy: "lifecycle-release-authority",
+			Reason:    "protected runtime lifecycle acceptance",
+			SourceRef: "schema-lifecycle/pg16-tls",
+		},
+	}
+	attestation := generationrelease.Attestation{
+		Algorithm: generationrelease.Algorithm,
+		KeyID:     "release-test-2026", SignedAt: signedAt.Format(time.RFC3339),
+		NotAfter: modelNotAfter.Format(time.RFC3339),
+	}
+	payload, err := release.SigningPayload(attestation)
+	require.NoError(t, err)
+	attestation.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
+	clear(payload)
+	release.Attestation = &attestation
+	require.NoError(t, release.Validate(profile))
+	require.NoError(t, release.VerifyAttestation(
+		map[string]ed25519.PublicKey{"release-test-2026": privateKey.Public().(ed25519.PublicKey)}, now,
+	))
+
+	routes := map[string][]map[string]any{
+		constant.PlatformGenerationPublicSeedream50Model: {{
+			"route_id": "lifecycle-seedream-primary", "provider_name": "volcengine-ark",
+			"account_id": "lifecycle-ark-account", "channel_id": 17,
+			"native_channel_type": constant.ChannelTypeVolcEngine, "key_index": 0,
+			"key_fingerprint": providerKeyFingerprint, "channel_class": "official",
+			"upstream_model": constant.PlatformGenerationArkSeedream50Model,
+			"rpm_limit":      10, "active_task_limit": 2,
+			"capabilities": profile.Capability, "capability_profile": profile.ID,
+			"model_release": release,
+		}},
+	}
+	unsignedRoutes, err := json.Marshal(routes)
+	require.NoError(t, err)
+	unsignedRoutesFile := filepath.Join(temporaryRoot, "lifecycle-routes.unsigned.json")
+	require.NoError(t, os.WriteFile(unsignedRoutesFile, unsignedRoutes, 0o600))
+	clear(unsignedRoutes)
+	routeSigner := exec.Command(
+		routeAcceptanceSignerPath,
+		"-routes", unsignedRoutesFile,
+		"-private-key-file", privateKeyFile,
+		"-key-id", "release-test-2026",
+		"-release-id", "2b93d0ab-31a0-4ee0-8e6d-0a4b1a92db68",
+		"-environment", "staging",
+		"-source-revision", relaySchemaLifecycleSourceRevision,
+		"-source-snapshot-sha256", relaySchemaLifecycleSnapshotSHA256,
+		"-image-digest", relaySchemaLifecycleImageDigest,
+		"-not-before", signedAt.Format(time.RFC3339),
+		"-not-after", routeNotAfter.Format(time.RFC3339),
+	)
+	routeSigner.Dir = temporaryRoot
+	signedRoutes, err := routeSigner.CombinedOutput()
+	require.NoError(t, err, "sign lifecycle route acceptance: %s", string(signedRoutes))
+	defer clear(signedRoutes)
+	return strings.TrimSpace(string(signedRoutes))
 }
 
 func relaySchemaTestMinimalProcessEnvironment(temporaryRoot string) []string {
@@ -139,6 +247,7 @@ func relaySchemaTestProtectedLifecycleBaseEnvironment(
 
 func relaySchemaTestRunLifecycleOfflineCommand(
 	t *testing.T,
+	stage string,
 	binaryPath string,
 	temporaryRoot string,
 	baseEnvironment []string,
@@ -146,19 +255,46 @@ func relaySchemaTestRunLifecycleOfflineCommand(
 	extraEnvironment ...string,
 ) map[string]any {
 	t.Helper()
-	command := exec.Command(binaryPath, argument)
+	require.NotEmpty(t, stage)
+	commandTimeout := relaySchemaOfflineCommandTimeout
+	if testDeadline, ok := t.Deadline(); ok {
+		remaining := time.Until(testDeadline) - 5*time.Second
+		if remaining <= 0 {
+			t.Fatalf("lifecycle offline command has no remaining test budget: stage=%s argument=%s", stage, argument)
+		}
+		if remaining < commandTimeout {
+			commandTimeout = remaining
+		}
+	}
+	commandContext, cancelCommand := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancelCommand()
+	t.Logf("lifecycle offline command starting: stage=%s argument=%s timeout=%s", stage, argument, commandTimeout)
+	command := exec.CommandContext(commandContext, binaryPath, argument)
+	command.WaitDelay = 5 * time.Second
 	command.Dir = temporaryRoot
 	command.Env = append(append([]string(nil), baseEnvironment...), extraEnvironment...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	require.NoError(t, command.Run(), "%s failed: %s", argument, stderr.String())
+	commandErr := command.Run()
+	if commandContext.Err() != nil {
+		t.Fatalf(
+			"lifecycle offline command exceeded its deadline: stage=%s argument=%s timeout=%s error=%v stderr=%s",
+			stage, argument, commandTimeout, commandContext.Err(),
+			relaySchemaLifecycleDiagnosticURL.ReplaceAllString(stderr.String(), "<redacted-url>"),
+		)
+	}
+	require.NoError(
+		t, commandErr, "lifecycle offline command failed: stage=%s argument=%s stderr=%s",
+		stage, argument, relaySchemaLifecycleDiagnosticURL.ReplaceAllString(stderr.String(), "<redacted-url>"),
+	)
+	t.Logf("lifecycle offline command completed: stage=%s argument=%s", stage, argument)
 	decoder := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
 	var receipt map[string]any
-	require.NoError(t, decoder.Decode(&receipt), "%s did not emit one JSON receipt", argument)
+	require.NoError(t, decoder.Decode(&receipt), "%s/%s did not emit one JSON receipt", stage, argument)
 	_, err := decoder.Token()
-	require.ErrorIs(t, err, io.EOF, "%s emitted trailing stdout", argument)
+	require.ErrorIs(t, err, io.EOF, "%s/%s emitted trailing stdout", stage, argument)
 	return receipt
 }
 
@@ -171,6 +307,14 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 	expectedPrincipalProvisionState string,
 ) relaySchemaLifecycleProcessFixture {
 	t.Helper()
+	// The child processes receive these role identities through their minimal
+	// environment below. Keep the in-process readiness verifier on the exact
+	// same topology: relaySchemaTestDownloadEdgeRuntimeReady opens the edge DSN
+	// in this test process before starting the child and must not inherit an
+	// unrelated caller environment (or an empty one in the focused gate).
+	t.Setenv(relaySchemaOwnerRoleEnvironment, relaySchemaTestOwnerRole)
+	t.Setenv(relayMigrationDatabaseRoleEnvironment, relaySchemaTestMigratorRole)
+	t.Setenv(relayRuntimeDatabaseRoleEnvironment, relaySchemaTestRuntimeRole)
 	databaseCAPath := ""
 	for label, dsn := range map[string]string{
 		"role-admin": adminDSN,
@@ -229,15 +373,39 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 	build.Dir = moduleRoot
 	buildOutput, err := build.CombinedOutput()
 	require.NoError(t, err, "build lifecycle child: %s", string(buildOutput))
+	downloadEdgeBinaryName := "relay-download-edge-lifecycle-test"
+	if runtime.GOOS == "windows" {
+		downloadEdgeBinaryName += ".exe"
+	}
+	downloadEdgeBinaryPath := filepath.Join(t.TempDir(), downloadEdgeBinaryName)
+	downloadEdgeBuild := exec.Command(
+		"go", "build", "-ldflags", linkerFlags, "-o", downloadEdgeBinaryPath, "./cmd/relay-download-edge",
+	)
+	downloadEdgeBuild.Dir = moduleRoot
+	downloadEdgeBuildOutput, err := downloadEdgeBuild.CombinedOutput()
+	require.NoError(t, err, "build download-edge lifecycle child: %s", string(downloadEdgeBuildOutput))
+	routeAcceptanceSignerPath := filepath.Join(t.TempDir(), "relay-route-acceptance-sign"+relaySchemaTestExecutableSuffix())
+	routeAcceptanceSignerBuild := exec.Command("go", "build", "-o", routeAcceptanceSignerPath, "./cmd/relay-route-acceptance-sign")
+	routeAcceptanceSignerBuild.Dir = moduleRoot
+	routeAcceptanceSignerBuildOutput, err := routeAcceptanceSignerBuild.CombinedOutput()
+	require.NoError(t, err, "build lifecycle route-acceptance signer: %s", string(routeAcceptanceSignerBuildOutput))
 
 	temporaryRoot := t.TempDir()
+	providerChannelKey := relaySchemaTestSecret("lifecycle-provider-channel-key")
+	providerChannelKeyDigest := sha256.Sum256([]byte(providerChannelKey))
+	providerChannelKeyFingerprint := hex.EncodeToString(providerChannelKeyDigest[:])
+	signedStagingRoutes := relaySchemaTestSignedStagingRoutes(
+		t, temporaryRoot, routeAcceptanceSignerPath, providerChannelKeyFingerprint,
+	)
 	baseEnvironment := relaySchemaTestProtectedLifecycleBaseEnvironment(
 		temporaryRoot, runtimeDSNFile, relayDatabaseCAFile, routeAcceptanceTrustSHA256,
 	)
 	clientIDs := []string{
 		"lifecycle-platform-api", "lifecycle-platform-dispatcher",
-		"lifecycle-platform-relay-sync", "lifecycle-platform-timeout",
+		"lifecycle-platform-relay-sync", "lifecycle-platform-relay-catalog-sync",
+		"lifecycle-platform-timeout",
 	}
+	sort.Strings(clientIDs)
 	upstreamTokens := make(map[string]string, len(clientIDs))
 	clientAPIKeys := make(map[string]string, len(clientIDs))
 	principals := make([]map[string]any, 0, len(clientIDs))
@@ -357,13 +525,15 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		{"platform-api", "platform_api", "PLATFORM_API_RUNTIME_SECRETS_FILE", "PLATFORM_API_DATABASE_PASSWORD_FILE"},
 		{"dispatcher", "platform_dispatcher", "PLATFORM_DISPATCHER_RUNTIME_SECRETS_FILE", "PLATFORM_DISPATCHER_DATABASE_PASSWORD_FILE"},
 		{"relay-sync", "platform_relay_sync", "PLATFORM_RELAY_SYNC_RUNTIME_SECRETS_FILE", "PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE"},
+		{"relay-catalog-sync", "platform_relay_catalog_sync", "PLATFORM_RELAY_CATALOG_SYNC_RUNTIME_SECRETS_FILE", "PLATFORM_RELAY_CATALOG_SYNC_DATABASE_PASSWORD_FILE"},
 		{"timeout-worker", "platform_timeout_worker", "PLATFORM_TIMEOUT_WORKER_RUNTIME_SECRETS_FILE", "PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD_FILE"},
 		{"publishing-worker", "platform_publishing_worker", "PLATFORM_PUBLISHING_WORKER_RUNTIME_SECRETS_FILE", "PLATFORM_PUBLISHING_WORKER_DATABASE_PASSWORD_FILE"},
 		{"download-gateway-registration-worker", "platform_download_gateway_worker", "PLATFORM_DOWNLOAD_GATEWAY_WORKER_RUNTIME_SECRETS_FILE", "PLATFORM_DOWNLOAD_GATEWAY_WORKER_DATABASE_PASSWORD_FILE"},
 	}
 	platformClientID := map[string]string{
 		"platform-api": "lifecycle-platform-api", "dispatcher": "lifecycle-platform-dispatcher",
-		"relay-sync": "lifecycle-platform-relay-sync", "timeout-worker": "lifecycle-platform-timeout",
+		"relay-sync": "lifecycle-platform-relay-sync", "relay-catalog-sync": "lifecycle-platform-relay-catalog-sync",
+		"timeout-worker": "lifecycle-platform-timeout",
 	}
 	platformAttemptDigest := sha256.Sum256([]byte("relay-schema-platform-download-attempt-key"))
 	platformAttemptKey := base64.StdEncoding.EncodeToString(platformAttemptDigest[:])
@@ -409,7 +579,7 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		switch item.role {
 		case "migration":
 			secrets = map[string]any{"database_url": platformDatabaseURL(item.role, item.databaseUser)}
-		case "relay-sync", "timeout-worker":
+		case "relay-sync", "relay-catalog-sync", "timeout-worker":
 			secrets = platformRelaySecrets(item.role, item.databaseUser)
 		case "dispatcher":
 			secrets = platformRelaySecrets(item.role, item.databaseUser)
@@ -516,6 +686,7 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 	for _, consumer := range []string{
 		"pre", "migrate", "post", "principal", "api", "edge",
 		"platform-migration", "platform-api", "platform-dispatcher", "platform-relay-sync",
+		"platform-relay-catalog-sync",
 		"platform-timeout-worker", "platform-publishing-worker", "platform-download-gateway-registration-worker",
 		"platform-db-role-pre",
 	} {
@@ -596,6 +767,7 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		"RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_API_DIRECTORY=" + receiptDirectories["platform-api"],
 		"RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_DISPATCHER_DIRECTORY=" + receiptDirectories["platform-dispatcher"],
 		"RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_RELAY_SYNC_DIRECTORY=" + receiptDirectories["platform-relay-sync"],
+		"RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_RELAY_CATALOG_SYNC_DIRECTORY=" + receiptDirectories["platform-relay-catalog-sync"],
 		"RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_TIMEOUT_WORKER_DIRECTORY=" + receiptDirectories["platform-timeout-worker"],
 		"RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_PUBLISHING_WORKER_DIRECTORY=" + receiptDirectories["platform-publishing-worker"],
 		"RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_DOWNLOAD_GATEWAY_REGISTRATION_WORKER_DIRECTORY=" + receiptDirectories["platform-download-gateway-registration-worker"],
@@ -637,7 +809,7 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		migrateIsolationReceipt := copyReceiptToProtectedFile(phase, "migrate")
 		postIsolationReceipt := copyReceiptToProtectedFile(phase, "post")
 		roleReceipt := relaySchemaTestRunLifecycleOfflineCommand(
-			t, binaryPath, temporaryRoot, roleAdminEnvironment, "relay-provision-database-roles",
+			t, phase+"/database-roles", binaryPath, temporaryRoot, roleAdminEnvironment, "relay-provision-database-roles",
 			"RELAY_COMPAT_IMAGE_DIGEST="+relaySchemaLifecycleImageDigest,
 			"RELAY_MIGRATION_DATABASE_PASSWORD_FILE="+migrationPasswordFile,
 			"RELAY_RUNTIME_DATABASE_PASSWORD_FILE="+runtimePasswordFile,
@@ -650,7 +822,7 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		require.Equal(t, "relay_database_role_provision", roleReceipt["kind"])
 		require.Equal(t, "provisioned", roleReceipt["state"])
 		migrationReceipt := relaySchemaTestRunLifecycleOfflineCommand(
-			t, binaryPath, temporaryRoot, migrationEnvironment, "relay-migrate",
+			t, phase+"/schema-migration", binaryPath, temporaryRoot, migrationEnvironment, "relay-migrate",
 			"RELAY_COMPAT_IMAGE_DIGEST="+relaySchemaLifecycleImageDigest,
 			"RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE="+providerKeyringFile,
 			"RELAY_SECRET_ISOLATION_RECEIPT_FILE="+migrateIsolationReceipt,
@@ -659,7 +831,7 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		)
 		require.Equal(t, "relay_schema_migration", migrationReceipt["kind"])
 		postReceipt := relaySchemaTestRunLifecycleOfflineCommand(
-			t, binaryPath, temporaryRoot, roleAdminEnvironment, "relay-provision-edge-login",
+			t, phase+"/edge-login", binaryPath, temporaryRoot, roleAdminEnvironment, "relay-provision-edge-login",
 			"RELAY_COMPAT_IMAGE_DIGEST="+relaySchemaLifecycleImageDigest,
 			"RELAY_SECRET_ISOLATION_RECEIPT_FILE="+postIsolationReceipt,
 			"RELAY_SECRET_ISOLATION_COMMIT_FILE="+commitMarkerFile,
@@ -669,11 +841,12 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		require.Equal(t, "attached", postReceipt["state"])
 	}
 	isolationReceipt := relaySchemaTestRunLifecycleOfflineCommand(
-		t, binaryPath, temporaryRoot, baseEnvironment, "relay-validate-secret-isolation", isolationExtras...,
+		t, "pre-root/secret-isolation", binaryPath, temporaryRoot, baseEnvironment,
+		"relay-validate-secret-isolation", isolationExtras...,
 	)
 	require.Equal(t, "relay_secret_isolation", isolationReceipt["kind"])
 	require.Equal(t, "validated", isolationReceipt["state"])
-	require.EqualValues(t, 14, isolationReceipt["consumers"])
+	require.EqualValues(t, len(receiptDirectories), isolationReceipt["consumers"])
 	preRootCommitMarkerFile := copyCommitMarkerToProtectedFile("pre-root")
 	runDatabaseReleaseChain("pre-root", preRootCommitMarkerFile)
 	rootPassword := relaySchemaTestSecret("root-password")[:64]
@@ -687,7 +860,7 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		"RELAY_SECRET_ISOLATION_RECEIPT_ROOT_BOOTSTRAP_DIRECTORY="+rootIsolationDirectory,
 	)
 	rootIsolationReceipt := relaySchemaTestRunLifecycleOfflineCommand(
-		t, binaryPath, temporaryRoot, baseEnvironment,
+		t, "root/secret-isolation", binaryPath, temporaryRoot, baseEnvironment,
 		"relay-validate-root-secret-isolation-v1", rootIsolationEnvironment...,
 	)
 	require.Equal(t, "relay_root_secret_isolation", rootIsolationReceipt["kind"])
@@ -700,7 +873,7 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 	clear(rootIsolationRaw)
 	if expectedRootProvisionState != "preprovisioned" {
 		rootReceipt := relaySchemaTestRunLifecycleOfflineCommand(
-			t, binaryPath, temporaryRoot, baseEnvironment, "relay-provision-root",
+			t, "root/provision", binaryPath, temporaryRoot, baseEnvironment, "relay-provision-root",
 			"RELAY_COMPAT_IMAGE_DIGEST="+relaySchemaLifecycleImageDigest,
 			"RELAY_PROVISION_ROOT_USERNAME=lifecycle_root",
 			"RELAY_PROVISION_ROOT_PASSWORD_FILE="+rootPasswordFile,
@@ -722,7 +895,7 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		}
 	}
 	postRootIsolationReceipt := relaySchemaTestRunLifecycleOfflineCommand(
-		t, binaryPath, temporaryRoot, baseEnvironment,
+		t, "post-root/secret-isolation", binaryPath, temporaryRoot, baseEnvironment,
 		"relay-validate-secret-isolation", postRootIsolationExtras...,
 	)
 	require.Equal(t, "relay_secret_isolation", postRootIsolationReceipt["kind"])
@@ -731,9 +904,11 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 	runDatabaseReleaseChain("post-root", commitMarkerFile)
 	principalIsolationReceipt := copyReceiptToProtectedFile("post-root", "principal")
 	apiIsolationReceipt := copyReceiptToProtectedFile("post-root", "api")
+	edgeIsolationReceipt := copyReceiptToProtectedFile("post-root", "edge")
 	if expectedPrincipalProvisionState != "preprovisioned" {
 		principalReceipt := relaySchemaTestRunLifecycleOfflineCommand(
-			t, binaryPath, temporaryRoot, baseEnvironment, "relay-provision-service-principals",
+			t, "post-root/service-principals", binaryPath, temporaryRoot, baseEnvironment,
+			"relay-provision-service-principals",
 			"RELAY_COMPAT_IMAGE_DIGEST="+relaySchemaLifecycleImageDigest,
 			"RELAY_SERVICE_PRINCIPALS_FILE="+principalFile,
 			"RELAY_DATABASE_CA_FILE="+relayDatabaseCAFile,
@@ -745,6 +920,62 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		require.Equal(t, expectedPrincipalProvisionState, principalReceipt["state"])
 		require.EqualValues(t, len(clientIDs), principalReceipt["count"])
 	}
+	// The protected API startup synchronizes every signed route against the
+	// actual native channel and its encrypted key-set snapshot. Install a real
+	// VolcEngine channel through the runtime DML boundary; a catalog-only route
+	// with an invented fingerprint would make the child fail before readiness.
+	t.Setenv("RELAY_COMPAT_ENVIRONMENT", "staging")
+	t.Setenv("RELAY_PROVIDER_CREDENTIAL_KEYRING_FILE", providerKeyringFile)
+	inlineProviderKeyring, hadInlineProviderKeyring := os.LookupEnv(providerCredentialKeyringJSONEnvironment)
+	require.NoError(t, os.Unsetenv(providerCredentialKeyringJSONEnvironment))
+	t.Cleanup(func() {
+		if hadInlineProviderKeyring {
+			_ = os.Setenv(providerCredentialKeyringJSONEnvironment, inlineProviderKeyring)
+			return
+		}
+		_ = os.Unsetenv(providerCredentialKeyringJSONEnvironment)
+	})
+	channelDB, err := gorm.Open(postgres.Open(runtimeDSN), &gorm.Config{})
+	require.NoError(t, err)
+	channel := Channel{
+		Id: 17, Type: constant.ChannelTypeVolcEngine, Key: providerChannelKey,
+		Status: common.ChannelStatusEnabled, Name: "lifecycle VolcEngine route", CreatedTime: time.Now().Unix(),
+		Models: constant.PlatformGenerationPublicSeedream50Model, Group: "default",
+	}
+	require.NoError(t, channelDB.Create(&channel).Error)
+	require.NotEmpty(t, channel.CredentialSetVersion)
+	var installedChannel Channel
+	require.NoError(t, channelDB.Where("id = ?", channel.Id).First(&installedChannel).Error)
+	require.Equal(t, constant.ChannelTypeVolcEngine, installedChannel.Type)
+	require.Equal(t, providerChannelKey, installedChannel.Key)
+	require.Equal(t, providerChannelKeyFingerprint, providerChannelCredentialFingerprint(installedChannel.Key))
+	channelSQL, err := channelDB.DB()
+	require.NoError(t, err)
+	require.NoError(t, channelSQL.Close())
+	parsedOBSEndpoint, err := url.Parse(obsEndpoint)
+	require.NoError(t, err)
+	require.NotEmpty(t, parsedOBSEndpoint.Hostname())
+	downloadEdgeEnvironment := make([]string, 0, len(baseEnvironment)+16)
+	for _, entry := range baseEnvironment {
+		if strings.HasPrefix(entry, "SQL_DSN_FILE=") {
+			continue
+		}
+		downloadEdgeEnvironment = append(downloadEdgeEnvironment, entry)
+	}
+	downloadEdgeEnvironment = append(downloadEdgeEnvironment,
+		"RELAY_COMPAT_ENVIRONMENT=staging",
+		"RELAY_COMPAT_IMAGE_DIGEST="+relaySchemaLifecycleImageDigest,
+		"RELAY_DOWNLOAD_EDGE_ENVIRONMENT=staging",
+		"RELAY_DOWNLOAD_EDGE_SQL_DSN_FILE="+edgeDSNFile,
+		"RELAY_DOWNLOAD_EDGE_RUNTIME_SECRETS_FILE="+edgeRuntimeSecretsFile,
+		"RELAY_SECRET_ISOLATION_RECEIPT_FILE="+edgeIsolationReceipt,
+		"RELAY_SECRET_ISOLATION_COMMIT_FILE="+commitMarkerFile,
+		"RELAY_DATABASE_RELEASE_PROOF_FILE="+databaseReleaseProofReadOnlyFile,
+		"RELAY_DOWNLOAD_EDGE_ALLOWED_OBS_HOSTS="+strings.ToLower(parsedOBSEndpoint.Hostname()),
+		"RELAY_DOWNLOAD_EDGE_PROOF_KEY_ID=lifecycle-edge-proof-key",
+		"RELAY_DOWNLOAD_EDGE_PRODUCER_SUBJECT=relay-download-edge/lifecycle-gate",
+		"DEBUG=false",
+	)
 
 	environment := append(append([]string(nil), baseEnvironment...),
 		"RELAY_COMPAT_ENVIRONMENT=staging",
@@ -768,7 +999,7 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		"HUAWEI_OBS_ENDPOINT="+obsEndpoint,
 		"HUAWEI_OBS_BUCKET="+obsBucket,
 		"RELAY_NATIVE_PAID_COMPAT_ENABLED=false",
-		"RELAY_COMPAT_MODEL_ROUTES_JSON={}",
+		"RELAY_COMPAT_MODEL_ROUTES_JSON="+signedStagingRoutes,
 		"BATCH_UPDATE_ENABLED=false",
 		"UPDATE_TASK=false",
 		"RELAY_CODEX_CREDENTIAL_AUTO_REFRESH_ENABLED=false",
@@ -781,10 +1012,20 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 	)
 	secretCanaries := []string{
 		runtimeDSN,
+		edgeDSN,
 		redisPassword,
 		redisDSN,
+		providerChannelKey,
 		hex.EncodeToString(operationsDigest[:]),
 		providerKEKBase64,
+		relaySchemaTestEdgePassword,
+	}
+	for _, name := range []string{
+		"registration_token", "registration_signing_secret", "ticket_token_key_base64",
+		"source_encryption_key_base64", "platform_edge_completion_token",
+		"completion_signing_secret", "proof_signing_seed_base64", "proof_read_token",
+	} {
+		secretCanaries = append(secretCanaries, edgeDocument[name].(string))
 	}
 	for _, clientID := range clientIDs {
 		secretCanaries = append(secretCanaries, upstreamTokens[clientID], strings.TrimPrefix(upstreamTokens[clientID], "sk-"), clientAPIKeys[clientID])
@@ -804,7 +1045,9 @@ func relaySchemaTestPrepareProtectedLifecycleProcess(
 		}
 	}
 	return relaySchemaLifecycleProcessFixture{
-		binaryPath: binaryPath, environment: environment, secretCanaries: secretCanaries,
+		binaryPath: binaryPath, environment: environment,
+		downloadEdgeBinaryPath: downloadEdgeBinaryPath, downloadEdgeEnvironment: downloadEdgeEnvironment,
+		downloadEdgeDSN: edgeDSN, secretCanaries: secretCanaries,
 	}
 }
 
@@ -850,6 +1093,31 @@ func relaySchemaTestChildDiagnosticEvidence(logDirectory string, output string, 
 		combined = "<no child diagnostic output>"
 	}
 	return combined, leaked
+}
+
+func relaySchemaTestReadinessResponseEvidence(response *http.Response, secretCanaries []string) string {
+	if response == nil || response.Body == nil {
+		return "no HTTP response"
+	}
+	const maximumBodyBytes = 32 << 10
+	body, err := io.ReadAll(io.LimitReader(response.Body, maximumBodyBytes+1))
+	if err != nil {
+		return fmt.Sprintf("status=%d body=<unreadable>", response.StatusCode)
+	}
+	truncated := len(body) > maximumBodyBytes
+	if truncated {
+		body = body[:maximumBodyBytes]
+	}
+	value := relaySchemaLifecycleDiagnosticURL.ReplaceAllString(string(body), "<redacted-url>")
+	for _, canary := range secretCanaries {
+		if canary != "" {
+			value = strings.ReplaceAll(value, canary, "<redacted-secret>")
+		}
+	}
+	if truncated {
+		value += "<truncated>"
+	}
+	return fmt.Sprintf("status=%d body=%s", response.StatusCode, value)
 }
 
 func relaySchemaTestStartTLSRedis(t *testing.T, password string) (string, string) {
@@ -1028,6 +1296,21 @@ func relaySchemaTestServeRedisConnection(connection net.Conn, password string, s
 			}
 			payload := "# Persistence\r\naof_enabled:1\r\n"
 			_, _ = fmt.Fprintf(connection, "$%d\r\n%s\r\n", len(payload), payload)
+		case "EVAL":
+			// The lifecycle fixture is intentionally not a general Redis
+			// implementation. The generation worker's claim script must still
+			// receive Redis' real empty-result shape when this isolated fixture has
+			// no scheduled outbox rows. Returning the generic +OK used for
+			// unsupported commands turns "no work" into the string member "OK",
+			// which the production queue correctly rejects as an invalid outbox ID
+			// and causes an unbounded error-log loop in the readiness gate.
+			if len(command) >= 2 {
+				if response, handled := relaySchemaTestRedisEvalResponse(command[1]); handled {
+					_, _ = io.WriteString(connection, response)
+					continue
+				}
+			}
+			_, _ = io.WriteString(connection, "+OK\r\n")
 		case "DEL", "EXISTS":
 			_, _ = io.WriteString(connection, ":0\r\n")
 		case "TTL", "PTTL":
@@ -1036,6 +1319,30 @@ func relaySchemaTestServeRedisConnection(connection net.Conn, password string, s
 			_, _ = io.WriteString(connection, "+OK\r\n")
 		}
 	}
+}
+
+func relaySchemaTestRedisEvalResponse(script string) (string, bool) {
+	// This exact pair identifies PlatformGenerationDelayQueue.claimDueAt while
+	// avoiding a false success for unrelated scripts whose integer result is
+	// part of their fencing contract.
+	if strings.Contains(script, "ZRANGEBYSCORE") &&
+		strings.Contains(script, "ZRANGEBYSCORE', KEYS[1]") {
+		return "$-1\r\n", true
+	}
+	return "", false
+}
+
+func TestRelaySchemaLifecycleRedisFixtureReturnsNilForEmptyGenerationClaim(t *testing.T) {
+	response, handled := relaySchemaTestRedisEvalResponse(`
+local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 1)
+if #due == 0 then return nil end
+`)
+	require.True(t, handled)
+	require.Equal(t, "$-1\r\n", response)
+
+	response, handled = relaySchemaTestRedisEvalResponse(`return redis.call('DEL', KEYS[1])`)
+	require.False(t, handled)
+	require.Empty(t, response)
 }
 
 func relaySchemaTestReadRedisCommand(reader *bufio.Reader) ([]string, error) {

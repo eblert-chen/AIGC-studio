@@ -8,7 +8,13 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from platform_api.models import ChannelCostEntry, GenerationTask, TaskStatus, WalletAccount
+from platform_api.models import (
+    ChannelCostEntry,
+    GenerationTask,
+    PersonalWalletAccount,
+    TaskStatus,
+    WalletAccount,
+)
 from platform_api.services.billing import WalletService
 from platform_api.services.channel_cost_events import ChannelCostEventVerifier
 
@@ -20,6 +26,12 @@ from .test_platform_admin_section5 import (
     _create_task,
     _grant_model,
     _recharge,
+)
+from .test_personal_workspace import (
+    RELAY_JOB_ID as PERSONAL_RELAY_JOB_ID,
+    _create_and_settle as _create_and_settle_personal,
+    _personal_user,
+    _retail_model,
 )
 
 
@@ -73,6 +85,100 @@ def _post_signed(client, payload: dict, *, event_id: str, timestamp: int | None 
 
 def _relay_cost_payload(**kwargs) -> dict:
     return _cost_payload(**kwargs, evidence_source="provider_reported")
+
+
+def _bound_provider_identity(*, route_id: int, route_key: str) -> dict:
+    return {
+        "schema_version": 2,
+        "route_id": route_id,
+        "identity_status": "bound",
+        "provider_name": "google_gemini",
+        "provider_account_id": "google-account-a",
+        "provider_channel_id": 990001,
+        "provider_route_id": route_id,
+        "provider_key_index": 0,
+        "provider_key_fingerprint": "a" * 64,
+        "provider_credential_version": "11111111-1111-4111-8111-111111111111",
+        "route_key": route_key,
+        "routing_release_sha256": "sha256:" + ("b" * 64),
+    }
+
+
+def test_v2_relay_cost_pins_account_hides_full_fingerprint_and_cannot_rotate(
+    client, app, tenant
+):
+    app.state.channel_cost_event_verifier = ChannelCostEventVerifier(
+        SIGNING_SECRET,
+        signature_required=True,
+    )
+    _, admin_headers = _admin(client, "relay-cost-account-binding")
+    model = _catalog_model(client, admin_headers, "relay-cost-account-binding")
+    _grant_model(
+        client,
+        admin_headers,
+        company_id=tenant["company_id"],
+        model_id=model["id"],
+        enabled=True,
+        price_cents=100,
+    )
+    _recharge(
+        client,
+        admin_headers,
+        company_id=tenant["company_id"],
+        suffix="relay-cost-account-binding",
+    )
+    task = _create_task(
+        client,
+        tenant,
+        model_id=model["id"],
+        suffix="relay-cost-account-binding",
+    )
+    relay_job_id = str(uuid4())
+    with app.state.session_factory.begin() as session:
+        stored_task = session.get(GenerationTask, task["id"])
+        stored_task.status = TaskStatus.PROCESSING
+        stored_task.relay_job_id = relay_job_id
+
+    route_key = "official.google-account-a"
+    payload = {
+        **_relay_cost_payload(
+            suffix="relay-cost-account-binding",
+            amount_cents=23,
+            channel_key=route_key,
+            channel_type="official",
+            company_id=tenant["company_id"],
+            task_id=task["id"],
+            relay_job_id=relay_job_id,
+        ),
+        **_bound_provider_identity(route_id=71, route_key=route_key),
+    }
+    event_id = str(uuid4())
+    created = _post_signed(client, payload, event_id=event_id)
+    assert created.status_code == 201, created.text
+    response = created.json()
+    assert response["provider_key_fingerprint_prefix"] == "a" * 12
+    assert "provider_key_fingerprint" not in response
+
+    replay = _post_signed(client, payload, event_id=event_id)
+    assert replay.status_code == 201, replay.text
+    assert replay.json()["id"] == response["id"]
+
+    rotated = {
+        **payload,
+        "idempotency_key": "relay-cost-account-binding-rotated",
+        "provider_key_fingerprint": "c" * 64,
+        "provider_credential_version": "22222222-2222-4222-8222-222222222222",
+    }
+    rejected = _post_signed(client, rotated, event_id=str(uuid4()))
+    assert rejected.status_code == 409, rejected.text
+
+    with app.state.session_factory() as session:
+        assert session.query(ChannelCostEntry).count() == 1
+        stored_task = session.get(GenerationTask, task["id"])
+        assert stored_task.provider_route_evidence_sha256 is not None
+        assert stored_task.provider_route_evidence["provider_key_fingerprint"] == (
+            "a" * 64
+        )
 
 
 def test_signed_relay_costs_cover_all_terminal_outcomes_and_preserve_wallet(
@@ -245,6 +351,90 @@ def test_signed_relay_cost_is_recorded_while_artifact_transfer_is_still_processi
         assert entry is not None
         assert entry.company_id == tenant["company_id"]
         assert entry.relay_job_id == relay_job_id
+
+
+def test_signed_personal_relay_cost_preserves_exact_workspace_task_and_job_linkage(
+    client, app
+):
+    app.state.channel_cost_event_verifier = ChannelCostEventVerifier(
+        SIGNING_SECRET,
+        signature_required=True,
+    )
+    user_id = _personal_user(app, "relay-provider-cost")
+    task = _create_and_settle_personal(
+        app,
+        client,
+        {"X-User-ID": user_id},
+        _retail_model(app),
+        settle=False,
+    )
+    with app.state.session_factory() as session:
+        wallet = session.get(PersonalWalletAccount, task["workspace_id"])
+        assert wallet is not None
+        wallet_before = (wallet.available_points, wallet.reserved_points)
+
+    payload = _relay_cost_payload(
+        suffix="relay-signed-personal",
+        amount_cents=31,
+        channel_key="official.personal-route",
+        channel_type="official",
+        task_id=task["id"],
+        relay_job_id=PERSONAL_RELAY_JOB_ID,
+    )
+    payload["personal_workspace_id"] = task["workspace_id"]
+    event_id = str(uuid4())
+    first = _post_signed(client, payload, event_id=event_id)
+    assert first.status_code == 201, first.text
+    body = first.json()
+    assert body["company_id"] is None
+    assert body["personal_workspace_id"] == task["workspace_id"]
+    assert body["task_id"] == task["id"]
+    assert body["relay_job_id"] == PERSONAL_RELAY_JOB_ID
+    assert body["relay_payload_sha256"] == hashlib.sha256(_raw(payload)).hexdigest()
+
+    replay = _post_signed(
+        client,
+        payload,
+        event_id=event_id,
+        timestamp=int(time.time()) + 1,
+    )
+    assert replay.status_code == 201, replay.text
+    assert replay.json()["id"] == body["id"]
+    assert replay.json()["relay_event_timestamp"] == body["relay_event_timestamp"]
+
+    with app.state.session_factory() as session:
+        wallet = session.get(PersonalWalletAccount, task["workspace_id"])
+        assert wallet is not None
+        assert (wallet.available_points, wallet.reserved_points) == wallet_before
+        entries = session.scalars(
+            select(ChannelCostEntry).where(ChannelCostEntry.task_id == task["id"])
+        ).all()
+        assert len(entries) == 1
+        assert entries[0].company_id is None
+        assert entries[0].personal_workspace_id == task["workspace_id"]
+        assert entries[0].relay_job_id == PERSONAL_RELAY_JOB_ID
+
+    dual_scope = _post_signed(
+        client,
+        {
+            **payload,
+            "idempotency_key": "relay-personal-dual-scope",
+            "company_id": str(uuid4()),
+        },
+        event_id=str(uuid4()),
+    )
+    assert dual_scope.status_code == 409
+
+    wrong_workspace = _post_signed(
+        client,
+        {
+            **payload,
+            "idempotency_key": "relay-personal-wrong-workspace",
+            "personal_workspace_id": str(uuid4()),
+        },
+        event_id=str(uuid4()),
+    )
+    assert wrong_workspace.status_code == 409
 
 
 def test_signed_relay_cost_rejects_conflicts_bad_evidence_and_cross_tenant_links(

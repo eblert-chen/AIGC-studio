@@ -39,6 +39,32 @@ func newRelaySchemaSQLite(t *testing.T) *gorm.DB {
 	return database
 }
 
+func TestRelaySchemaStatusDoesNotMisclassifyDatabaseFailuresAsUninitialized(t *testing.T) {
+	t.Run("inherited GORM error", func(t *testing.T) {
+		database := newRelaySchemaSQLite(t)
+		failure := errors.New("inherited database failure")
+		poisoned := database.Session(&gorm.Session{})
+		poisoned.AddError(failure)
+
+		status, err := GetRelaySchemaStatus(poisoned)
+
+		require.ErrorIs(t, err, failure)
+		require.Equal(t, RelaySchemaStatusUnavailable, status.Classification)
+	})
+
+	t.Run("closed connection pool", func(t *testing.T) {
+		database := newRelaySchemaSQLite(t)
+		sqlDB, err := database.DB()
+		require.NoError(t, err)
+		require.NoError(t, sqlDB.Close())
+
+		status, err := GetRelaySchemaStatus(database)
+
+		require.Error(t, err)
+		require.Equal(t, RelaySchemaStatusUnavailable, status.Classification)
+	})
+}
+
 func TestRelaySchemaMetadataBootstrapRejectsPartialState(t *testing.T) {
 	database := newRelaySchemaSQLite(t)
 	require.NoError(t, database.AutoMigrate(&RelaySchemaState{}))
@@ -93,15 +119,17 @@ func TestRelaySchemaStatusValidatesStateLedgerCombinations(t *testing.T) {
 	t.Run("consistent future ledger is ahead", func(t *testing.T) {
 		database := newRelaySchemaSQLite(t)
 		require.NoError(t, ensureRelaySchemaMetadata(database))
+		futureVersion := RelaySchemaTargetVersion + 1
+		futureCatalog := fmt.Sprintf("sha256:v%d", futureVersion)
 		require.NoError(t, database.Create(&RelaySchemaMigration{
-			Version: 4, Name: "future", Phase: "expand", Checksum: "sha256:future", CatalogSHA256: "sha256:v4",
+			Version: futureVersion, Name: "future", Phase: "expand", Checksum: "sha256:future", CatalogSHA256: futureCatalog,
 		}).Error)
 		require.NoError(t, database.Model(&RelaySchemaState{}).Where("id = ?", relaySchemaStateSingletonID).
 			Updates(map[string]any{
-				"baseline_version": 4, "fresh_bootstrap": false, "current_version": 4,
-				"target_version": 4, "current_checksum": "sha256:future",
-				"target_checksum": "sha256:future", "current_catalog_sha256": "sha256:v4",
-				"target_catalog_sha256": "sha256:v4",
+				"baseline_version": futureVersion, "fresh_bootstrap": false, "current_version": futureVersion,
+				"target_version": futureVersion, "current_checksum": "sha256:future",
+				"target_checksum": "sha256:future", "current_catalog_sha256": futureCatalog,
+				"target_catalog_sha256": futureCatalog,
 			}).Error)
 		status, err := GetRelaySchemaStatus(database)
 		require.NoError(t, err)
@@ -295,7 +323,74 @@ func TestRelaySchemaV2PlanningNeverReplaysLiveV1(t *testing.T) {
 	})
 }
 
-func TestRelaySchemaV3TopLevelMigrationNeverExecutesLiveV1(t *testing.T) {
+func TestRelaySchemaV5TopLevelMigrationNeverExecutesLiveV1(t *testing.T) {
+	runWithSentinel := func(t *testing.T, seedV1 bool) {
+		t.Helper()
+		database := newRelaySchemaSQLite(t)
+		definitions := relaySchemaMigrations()
+		require.GreaterOrEqual(t, len(definitions), 5)
+		v5Definitions := append([]relaySchemaMigrationDefinition(nil), definitions[:5]...)
+		if seedV1 {
+			require.NoError(t, ensureRelaySchemaMetadata(database))
+			v1Attempt := uuid.NewString()
+			require.NoError(t, markRelaySchemaApplying(database, v5Definitions[0], v1Attempt))
+			require.NoError(t, runRelaySchemaBootstrapTransaction(
+				database,
+				[]relaySchemaMigrationDefinition{v5Definitions[0]},
+				v5Definitions[0],
+				v1Attempt,
+			))
+		}
+
+		liveV1Calls := 0
+		liveV1Sentinel := func(*gorm.DB) error {
+			liveV1Calls++
+			return errors.New("live v1 sentinel executed")
+		}
+		v5Definitions[0].Up = liveV1Sentinel
+		v5Definitions[0].Bootstrap = liveV1Sentinel
+		originalDefinitions := relaySchemaDefinitionsForRuntime
+		originalContract := relaySchemaContractForRuntime
+		relaySchemaDefinitionsForRuntime = func() []relaySchemaMigrationDefinition {
+			return v5Definitions
+		}
+		relaySchemaContractForRuntime = func() RelaySchemaContract {
+			contract := GetRelaySchemaContract()
+			contract.TargetVersion = relaySchemaV5FrozenVersion
+			contract.MaxVersion = relaySchemaV5FrozenVersion
+			delete(contract.Checksums, relaySchemaV6FrozenVersion)
+			delete(contract.Checksums, relaySchemaV7FrozenVersion)
+			delete(contract.Checksums, relaySchemaV8FrozenVersion)
+			return contract
+		}
+		t.Cleanup(func() {
+			relaySchemaDefinitionsForRuntime = originalDefinitions
+			relaySchemaContractForRuntime = originalContract
+		})
+
+		result, err := RunRelaySchemaMigrations(context.Background(), "")
+		require.NoError(t, err)
+		require.Zero(t, liveV1Calls, "top-level v5 orchestration must never execute the live v1 definition")
+		require.True(t, result.Status.Current)
+		require.Equal(t, relaySchemaV5FrozenVersion, result.Status.CurrentVersion)
+		var ledger []RelaySchemaMigration
+		require.NoError(t, database.Order("version ASC").Find(&ledger).Error)
+		if seedV1 {
+			require.Len(t, ledger, 5)
+			for index, row := range ledger {
+				require.Equal(t, int64(index+1), row.Version)
+			}
+			return
+		}
+		require.Len(t, ledger, 1)
+		require.Equal(t, relaySchemaV5FrozenVersion, ledger[0].Version)
+	}
+
+	t.Run("fresh v5 bootstrap", func(t *testing.T) { runWithSentinel(t, false) })
+	t.Run("exact v1 through v5 bridge", func(t *testing.T) { runWithSentinel(t, true) })
+}
+
+func TestRelaySchemaCurrentTopLevelMigrationNeverExecutesLiveV1(t *testing.T) {
 	runWithSentinel := func(t *testing.T, seedV1 bool) {
 		t.Helper()
 		database := newRelaySchemaSQLite(t)
@@ -331,24 +426,24 @@ func TestRelaySchemaV3TopLevelMigrationNeverExecutesLiveV1(t *testing.T) {
 
 		result, err := RunRelaySchemaMigrations(context.Background(), "")
 		require.NoError(t, err)
-		require.Zero(t, liveV1Calls, "top-level v3 orchestration must never execute the live v1 definition")
+		require.Zero(t, liveV1Calls, "top-level current orchestration must never execute the live v1 definition")
 		require.True(t, result.Status.Current)
-		require.Equal(t, int64(3), result.Status.CurrentVersion)
+		require.Equal(t, RelaySchemaTargetVersion, result.Status.CurrentVersion)
 		var ledger []RelaySchemaMigration
 		require.NoError(t, database.Order("version ASC").Find(&ledger).Error)
 		if seedV1 {
-			require.Len(t, ledger, 3)
-			require.Equal(t, int64(1), ledger[0].Version)
-			require.Equal(t, int64(2), ledger[1].Version)
-			require.Equal(t, int64(3), ledger[2].Version)
+			require.Len(t, ledger, len(definitions))
+			for index, row := range ledger {
+				require.Equal(t, int64(index+1), row.Version)
+			}
 			return
 		}
 		require.Len(t, ledger, 1)
-		require.Equal(t, int64(3), ledger[0].Version)
+		require.Equal(t, RelaySchemaTargetVersion, ledger[0].Version)
 	}
 
-	t.Run("fresh v3 bootstrap", func(t *testing.T) { runWithSentinel(t, false) })
-	t.Run("exact v1 through v3 bridge", func(t *testing.T) { runWithSentinel(t, true) })
+	t.Run("fresh current bootstrap", func(t *testing.T) { runWithSentinel(t, false) })
+	t.Run("exact v1 through current bridge", func(t *testing.T) { runWithSentinel(t, true) })
 }
 
 func TestRelaySchemaV2ToV3RunsOnlyVersionedCredentialCorrection(t *testing.T) {
@@ -376,8 +471,23 @@ func TestRelaySchemaV2ToV3RunsOnlyVersionedCredentialCorrection(t *testing.T) {
 	definitions[1].Up = v2Sentinel
 	definitions[1].Bootstrap = v2Sentinel
 	originalDefinitions := relaySchemaDefinitionsForRuntime
-	relaySchemaDefinitionsForRuntime = func() []relaySchemaMigrationDefinition { return definitions }
-	t.Cleanup(func() { relaySchemaDefinitionsForRuntime = originalDefinitions })
+	originalContract := relaySchemaContractForRuntime
+	relaySchemaDefinitionsForRuntime = func() []relaySchemaMigrationDefinition { return definitions[:3] }
+	relaySchemaContractForRuntime = func() RelaySchemaContract {
+		contract := GetRelaySchemaContract()
+		contract.TargetVersion = relaySchemaV3FrozenVersion
+		contract.MaxVersion = relaySchemaV3FrozenVersion
+		delete(contract.Checksums, relaySchemaV4FrozenVersion)
+		delete(contract.Checksums, relaySchemaV5FrozenVersion)
+		delete(contract.Checksums, relaySchemaV6FrozenVersion)
+		delete(contract.Checksums, relaySchemaV7FrozenVersion)
+		delete(contract.Checksums, relaySchemaV8FrozenVersion)
+		return contract
+	}
+	t.Cleanup(func() {
+		relaySchemaDefinitionsForRuntime = originalDefinitions
+		relaySchemaContractForRuntime = originalContract
+	})
 
 	result, err := RunRelaySchemaMigrations(context.Background(), "")
 	require.NoError(t, err)

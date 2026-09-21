@@ -15,7 +15,11 @@ from platform_api.models import (
 from platform_api.services.billing import WalletService
 
 from .conftest import TEST_RELAY_CAPABILITY_REVISION, bootstrap
-from .test_model_capability_v1_contract import _mode, canonical_capability
+from .test_model_capability_v1_contract import (
+    _mode,
+    _request_with_fixture_distribution_evidence,
+    canonical_capability,
+)
 
 
 def _admin(client, suffix: str) -> tuple[str, dict[str, str]]:
@@ -91,9 +95,13 @@ def _catalog_model(client, admin_headers, suffix: str) -> dict:
     )
     assert created.status_code == 201, created.text
     model = created.json()
-    published = client.post(
-        f"/api/v1/platform-admin/models/{model['id']}/publish",
-        headers=admin_headers,
+    published = _request_with_fixture_distribution_evidence(
+        client,
+        model["id"],
+        lambda: client.post(
+            f"/api/v1/platform-admin/models/{model['id']}/publish",
+            headers=admin_headers,
+        ),
     )
     assert published.status_code == 200, published.text
     with client.app.state.session_factory.begin() as session:
@@ -112,14 +120,35 @@ def _grant_model(
     enabled: bool,
     price_cents: int,
 ):
-    response = client.put(
-        f"/api/v1/platform-admin/companies/{company_id}/model-grants",
+    entitlements = client.get(
+        f"/api/v1/platform-admin/companies/{company_id}/entitlements",
         headers=admin_headers,
-        json={
-            "model_id": model_id,
-            "enabled": enabled,
-            "price_per_item_cents": price_cents,
-        },
+    )
+    expected_updated_at = None
+    if entitlements.status_code == 200:
+        current = next(
+            (
+                item
+                for item in entitlements.json()["models"]
+                if item["model_id"] == model_id and item["grant_id"] is not None
+            ),
+            None,
+        )
+        if current is not None:
+            expected_updated_at = current["grant_updated_at"]
+    response = _request_with_fixture_distribution_evidence(
+        client,
+        model_id,
+        lambda: client.put(
+            f"/api/v1/platform-admin/companies/{company_id}/model-grants",
+            headers=admin_headers,
+            json={
+                "model_id": model_id,
+                "expected_updated_at": expected_updated_at,
+                "enabled": enabled,
+                "price_per_item_cents": price_cents,
+            },
+        ),
     )
     assert response.status_code == 200, response.text
     return response.json()

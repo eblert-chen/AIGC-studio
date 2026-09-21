@@ -600,34 +600,7 @@ func RelayTask(c *gin.Context) {
 			// Non-native compatibility callers may not provide a staged template.
 			task = model.InitTask(result.Platform, relayInfo)
 		}
-		task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
-		task.PrivateData.NodeName = common.NodeName
-		if platformOwnedBilling {
-			// The customer ledger is owned by Platform. Keep the native task for
-			// provider polling, credential recovery and callback correlation, but
-			// persist no new-api quota/refund context that a later poller could
-			// settle or refund a second time.
-			task.PrivateData.BillingSource = service.BillingSourcePlatformExternal
-			task.PrivateData.SubscriptionId = 0
-			task.PrivateData.TokenId = 0
-			task.PrivateData.BillingContext = nil
-			task.Quota = 0
-		} else {
-			task.PrivateData.BillingSource = relayInfo.BillingSource
-			task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
-			task.PrivateData.TokenId = relayInfo.TokenId
-			task.PrivateData.BillingContext = &model.TaskBillingContext{
-				ModelPrice:      relayInfo.PriceData.ModelPrice,
-				GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
-				ModelRatio:      relayInfo.PriceData.ModelRatio,
-				OtherRatios:     relayInfo.PriceData.OtherRatios(),
-				OriginModelName: relayInfo.OriginModelName,
-				PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
-			}
-			task.Quota = result.Quota
-		}
-		task.Data = result.TaskData
-		task.Action = relayInfo.Action
+		applyTaskSubmitResultForInsert(task, result, relayInfo, platformOwnedBilling, common.NodeName, time.Now().Unix())
 		if insertErr := task.Insert(); insertErr != nil {
 			common.SysError("insert task error: " + insertErr.Error())
 		}
@@ -635,6 +608,58 @@ func RelayTask(c *gin.Context) {
 
 	if taskErr != nil {
 		respondTaskError(c, taskErr)
+	}
+}
+
+func applyTaskSubmitResultForInsert(
+	task *model.Task,
+	result *relay.TaskSubmitResult,
+	relayInfo *relaycommon.RelayInfo,
+	platformOwnedBilling bool,
+	nodeName string,
+	completedAt int64,
+) {
+	task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
+	task.PrivateData.NodeName = nodeName
+	if platformOwnedBilling {
+		// The customer ledger is owned by Platform. Keep the native task for
+		// provider polling, credential recovery and callback correlation, but
+		// persist no new-api quota/refund context that a later poller could
+		// settle or refund a second time.
+		task.PrivateData.BillingSource = service.BillingSourcePlatformExternal
+		task.PrivateData.SubscriptionId = 0
+		task.PrivateData.TokenId = 0
+		task.PrivateData.BillingContext = nil
+		task.Quota = 0
+	} else {
+		task.PrivateData.BillingSource = relayInfo.BillingSource
+		task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
+		task.PrivateData.TokenId = relayInfo.TokenId
+		task.PrivateData.BillingContext = &model.TaskBillingContext{
+			ModelPrice:      relayInfo.PriceData.ModelPrice,
+			GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
+			ModelRatio:      relayInfo.PriceData.ModelRatio,
+			OtherRatios:     relayInfo.PriceData.OtherRatios(),
+			OriginModelName: relayInfo.OriginModelName,
+			PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
+		}
+		task.Quota = result.Quota
+	}
+	task.Action = relayInfo.Action
+	if terminal := result.ImmediateTerminal; terminal != nil {
+		task.Status = model.TaskStatusSuccess
+		task.Progress = "100%"
+		if task.StartTime == 0 {
+			task.StartTime = task.SubmitTime
+		}
+		task.FinishTime = completedAt
+		task.FailReason = ""
+		task.PrivateData.ResultURL = terminal.Url
+	}
+	if platformOwnedBilling {
+		task.SetPlatformExternalResponseReceipt(result.TaskData, string(task.Status))
+	} else {
+		task.Data = result.TaskData
 	}
 }
 

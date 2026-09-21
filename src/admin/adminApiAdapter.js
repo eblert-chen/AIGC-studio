@@ -1,6 +1,7 @@
 import { buildEntitlementKey } from "./adminConsoleUtils.js";
 import { adaptRelayUnknownPage } from "./relayUnknownOperations.js";
 import { adaptRelayCallbackDeadLetterPage } from "./relayCallbackDeadLetters.js";
+import { adaptRelayProviderResultReconciliationPage } from "./relayProviderResultReconciliations.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -63,6 +64,7 @@ const PERMISSION_GROUPS = {
   audit: "安全审计",
   relay_health: "Relay 健康",
   admin_access: "管理员权限",
+  task_content: "内容数据",
 };
 
 function number(value, fallback = 0) {
@@ -88,6 +90,280 @@ function nullableSum(values) {
     : parsed.reduce((sum, value) => sum + value, 0);
 }
 
+function hasOwn(object, key) {
+  return Boolean(object && Object.prototype.hasOwnProperty.call(object, key));
+}
+
+function isFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isInteger(value) {
+  return Number.isInteger(value);
+}
+
+function isNonNegativeInteger(value) {
+  return isInteger(value) && value >= 0;
+}
+
+function billingContract(record) {
+  if (record?.billing_unit === "CNY_CENT" && record?.billing_version === 1) return "CNY_CENT";
+  if (record?.billing_unit === "POINT" && record?.billing_version === 2) return "POINT";
+  return null;
+}
+
+function hasCompanyRankingEvidence(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.companies)) return false;
+  const seenCompanyIds = new Set();
+  return value.companies.every((item) => {
+    const companyId = typeof item?.company_id === "string" ? item.company_id.trim() : "";
+    const unit = billingContract(item);
+    if (!companyId || seenCompanyIds.has(companyId) || !unit) return false;
+    if (typeof item.company_name !== "string" || !item.company_name.trim()) return false;
+    if (![item.task_count, item.succeeded_count].every(isNonNegativeInteger)) return false;
+    if (item.succeeded_count > item.task_count) return false;
+    const relevantValues = unit === "POINT"
+      ? [item.consumption_points, item.available_points, item.reserved_points]
+      : [item.consumption_cents, item.available_cents, item.reserved_cents];
+    if (!relevantValues.every(isNonNegativeInteger)) return false;
+    seenCompanyIds.add(companyId);
+    return true;
+  });
+}
+
+function hasUnitSafeHealthAlert(alert, unit) {
+  if (!alert || typeof alert !== "object" || typeof alert.code !== "string") return false;
+  if (!["critical", "warning", "info"].includes(alert.severity)) return false;
+  const details = alert.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return false;
+  const pointBilling = unit === "POINT";
+  if (alert.code === "LOW_BALANCE") {
+    const relevant = pointBilling
+      ? [details.available_points, details.threshold_points]
+      : [details.available_cents, details.threshold_cents];
+    const forbidden = pointBilling
+      ? ["available_cents", "threshold_cents"]
+      : ["available_points", "threshold_points"];
+    return relevant.every(isNonNegativeInteger)
+      && forbidden.every((key) => !hasOwn(details, key));
+  }
+  if (alert.code === "STALE_RESERVED_BALANCE") {
+    const relevant = pointBilling ? details.reserved_points : details.reserved_cents;
+    const forbidden = pointBilling ? "reserved_cents" : "reserved_points";
+    return isNonNegativeInteger(relevant)
+      && !hasOwn(details, forbidden)
+      && isNonNegativeInteger(details.stale_task_count)
+      && isNonNegativeInteger(details.threshold_hours);
+  }
+  if (alert.code === "ABNORMAL_SPEND") {
+    const relevant = pointBilling
+      ? [details.spend_24h_points, details.baseline_daily_points]
+      : [details.spend_24h_cents, details.baseline_daily_cents];
+    const forbidden = pointBilling
+      ? ["spend_24h_cents", "baseline_daily_cents"]
+      : ["spend_24h_points", "baseline_daily_points"];
+    return relevant.every(isNonNegativeInteger)
+      && forbidden.every((key) => !hasOwn(details, key))
+      && isFiniteNumber(details.ratio)
+      && details.ratio >= 0;
+  }
+  return true;
+}
+
+function hasCompanyHealthEvidence(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.items)) return false;
+  if (![value.low_balance_threshold_cents, value.low_balance_threshold_points]
+    .every(isNonNegativeInteger)) return false;
+  const seenCompanyIds = new Set();
+  return value.items.every((item) => {
+    const companyId = typeof item?.company_id === "string" ? item.company_id.trim() : "";
+    const unit = billingContract(item);
+    if (!companyId || seenCompanyIds.has(companyId) || !unit) return false;
+    if (typeof item.company_name !== "string" || !item.company_name.trim()) return false;
+    if (!Array.isArray(item.alerts) || !item.alerts.every((alert) => hasUnitSafeHealthAlert(alert, unit))) return false;
+    if (!isNonNegativeInteger(item.task_count_30d)) return false;
+    if (item.failure_rate_30d != null
+      && (!isFiniteNumber(item.failure_rate_30d)
+        || item.failure_rate_30d < 0
+        || item.failure_rate_30d > 1)) return false;
+    const centValues = [item.available_cents, item.reserved_cents, item.spend_24h_cents];
+    const pointValues = [item.available_points, item.reserved_points, item.spend_24h_points];
+    const relevant = unit === "POINT" ? pointValues : centValues;
+    const irrelevant = unit === "POINT" ? centValues : pointValues;
+    if (!relevant.every(isNonNegativeInteger) || !irrelevant.every((entry) => entry === null)) return false;
+    seenCompanyIds.add(companyId);
+    return true;
+  });
+}
+
+function isNullableFiniteNumber(value) {
+  return value == null || isFiniteNumber(value);
+}
+
+function approximatelyEqual(left, right) {
+  return Math.abs(left - right) <= 0.000001;
+}
+
+function hasProfitEvidence(record) {
+  if (!record || typeof record !== "object") return false;
+  const revenue = record.settled_revenue_cents;
+  const cost = record.provider_cost_cents;
+  const knownProfit = record.known_gross_profit_cents;
+  const finalProfit = record.gross_profit_cents;
+  const grossMargin = record.gross_margin;
+  const missingCostCount = record.cost_missing_task_count;
+  const costStatus = record.cost_reconciliation_status;
+  const revenueUnavailableTaskCount = record.revenue_unavailable_task_count;
+  const revenueMissingTaskCount = record.revenue_missing_task_count;
+  const revenueStatus = record.revenue_reconciliation_status;
+  if (![revenue, cost].every(isInteger)) return false;
+  if (!isNonNegativeInteger(missingCostCount)) return false;
+  if (![revenueUnavailableTaskCount, revenueMissingTaskCount].every(isNonNegativeInteger)) return false;
+  if (!isNullableFiniteNumber(grossMargin)) return false;
+
+  const costComplete = costStatus === "complete" && missingCostCount === 0;
+  const costIncomplete = costStatus === "incomplete" && missingCostCount > 0;
+  if (!costComplete && !costIncomplete) return false;
+
+  const revenueComplete = revenueStatus === "complete"
+    && revenueUnavailableTaskCount === 0
+    && revenueMissingTaskCount === 0;
+  const revenueIncomplete = revenueStatus === "incomplete"
+    && revenueUnavailableTaskCount === 0
+    && revenueMissingTaskCount > 0;
+  const revenueUnavailable = revenueStatus === "unavailable"
+    && revenueUnavailableTaskCount > 0;
+  if (!revenueComplete && !revenueIncomplete && !revenueUnavailable) return false;
+
+  if (revenueComplete) {
+    if (!isInteger(knownProfit) || knownProfit !== revenue - cost) return false;
+  } else if (knownProfit !== null) {
+    return false;
+  }
+
+  const financeComplete = revenueComplete && costComplete;
+  if (!financeComplete) return finalProfit === null && grossMargin === null;
+  if (!isInteger(finalProfit) || finalProfit !== knownProfit) return false;
+  if (revenue === 0) return grossMargin == null;
+  return isFiniteNumber(grossMargin) && approximatelyEqual(grossMargin, finalProfit / revenue);
+}
+
+function hasOperatingProfitEvidence(record) {
+  if (!record || typeof record !== "object") return false;
+  const revenue = record.settled_revenue_cents;
+  const settledPoints = record.settled_points;
+  const pointSucceededTaskCount = record.point_succeeded_task_count;
+  const pointSettlementCount = record.point_settlement_count;
+  const unattributedPointSettlementCount = record.unattributed_point_settlement_count;
+  const pointSettlementMissingTaskCount = record.point_settlement_missing_task_count;
+  const pointSettlementDuplicateTaskCount = record.point_settlement_duplicate_task_count;
+  const cost = record.provider_cost_cents;
+  const knownProfit = record.known_gross_profit_cents;
+  const finalProfit = record.gross_profit_cents;
+  const grossMargin = record.gross_margin;
+  const missingCostCount = record.cost_missing_task_count;
+  const costStatus = record.cost_reconciliation_status;
+  const revenueStatus = record.revenue_reconciliation_status;
+  const financeStatus = record.finance_status;
+
+  if (![revenue, cost].every(isInteger)) return false;
+  if (![settledPoints, pointSucceededTaskCount, pointSettlementCount,
+    unattributedPointSettlementCount, pointSettlementMissingTaskCount,
+    pointSettlementDuplicateTaskCount, missingCostCount]
+    .every(isNonNegativeInteger)) return false;
+  if (unattributedPointSettlementCount !== pointSettlementCount) return false;
+  if (pointSucceededTaskCount !== pointSettlementCount
+    + pointSettlementMissingTaskCount + pointSettlementDuplicateTaskCount) return false;
+  if (pointSettlementCount === 0 ? settledPoints !== 0 : settledPoints === 0) return false;
+  if (!isNullableFiniteNumber(grossMargin)) return false;
+
+  const costComplete = costStatus === "complete" && missingCostCount === 0;
+  const costIncomplete = costStatus === "incomplete" && missingCostCount > 0;
+  if (!costComplete && !costIncomplete) return false;
+
+  const revenueComplete = revenueStatus === "complete"
+    && unattributedPointSettlementCount === 0
+    && pointSettlementMissingTaskCount === 0
+    && pointSettlementDuplicateTaskCount === 0;
+  const revenueIncomplete = revenueStatus === "incomplete"
+    && (unattributedPointSettlementCount > 0
+      || pointSettlementMissingTaskCount > 0
+      || pointSettlementDuplicateTaskCount > 0);
+  if (!revenueComplete && !revenueIncomplete) return false;
+
+  const financeComplete = costComplete && revenueComplete;
+  if (financeStatus !== (financeComplete ? "complete" : "incomplete")) return false;
+  if (revenueComplete) {
+    if (!isInteger(knownProfit) || knownProfit !== revenue - cost) return false;
+  } else if (knownProfit !== null) {
+    return false;
+  }
+
+  if (!financeComplete) {
+    return finalProfit === null && grossMargin === null;
+  }
+  if (!isInteger(finalProfit) || finalProfit !== knownProfit) return false;
+  if (revenue === 0) return grossMargin == null;
+  return isFiniteNumber(grossMargin) && approximatelyEqual(grossMargin, finalProfit / revenue);
+}
+
+function hasOperatingEvidence(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.points)) return false;
+  if (value.point_bucket_time_basis !== "task_updated_at") return false;
+  if (!hasOperatingProfitEvidence(value.totals) || !isInteger(value.totals.recharge_cents)) return false;
+  return value.points.every((point) => (
+    typeof point?.bucket_start === "string"
+    && point.bucket_start.length > 0
+    && isInteger(point.recharge_cents)
+    && hasOperatingProfitEvidence(point)
+  ));
+}
+
+function hasModelProfitabilityEvidence(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.items)) return false;
+  if (!isInteger(value.unattributed_provider_cost_cents)) return false;
+  if (![value.revenue_unavailable_task_count, value.revenue_missing_task_count]
+    .every(isNonNegativeInteger)) return false;
+  const summaryRevenueComplete = value.revenue_reconciliation_status === "complete"
+    && value.revenue_unavailable_task_count === 0
+    && value.revenue_missing_task_count === 0;
+  const summaryRevenueIncomplete = value.revenue_reconciliation_status === "incomplete"
+    && value.revenue_unavailable_task_count === 0
+    && value.revenue_missing_task_count > 0;
+  const summaryRevenueUnavailable = value.revenue_reconciliation_status === "unavailable"
+    && value.revenue_unavailable_task_count > 0;
+  if (!summaryRevenueComplete && !summaryRevenueIncomplete && !summaryRevenueUnavailable) return false;
+  const seenModelIds = new Set();
+  const rowsValid = value.items.every((item) => {
+    const modelId = typeof item?.model_id === "string" ? item.model_id.trim() : "";
+    if (!modelId || seenModelIds.has(modelId) || typeof item?.display_name !== "string") return false;
+    seenModelIds.add(modelId);
+    if (!isNonNegativeInteger(item.task_count) || !hasProfitEvidence(item)) return false;
+    if (item.cost_missing_task_count > item.task_count) return false;
+    if (hasOwn(item, "success_rate") && item.success_rate != null
+      && (!isFiniteNumber(item.success_rate) || item.success_rate < 0 || item.success_rate > 1)) return false;
+    if (hasOwn(item, "average_terminal_latency_seconds")
+      && item.average_terminal_latency_seconds != null
+      && (!isFiniteNumber(item.average_terminal_latency_seconds)
+        || item.average_terminal_latency_seconds < 0)) return false;
+    return true;
+  });
+  if (!rowsValid) return false;
+  return value.revenue_unavailable_task_count === value.items.reduce(
+    (sum, item) => sum + item.revenue_unavailable_task_count,
+    0,
+  ) && value.revenue_missing_task_count === value.items.reduce(
+    (sum, item) => sum + item.revenue_missing_task_count,
+    0,
+  );
+}
+
+function evidenceSourceStatus(explicitStatus, rawValue, evidenceAvailable) {
+  if (explicitStatus && explicitStatus !== "available") return explicitStatus;
+  if (rawValue == null) return explicitStatus || "unavailable";
+  return evidenceAvailable ? "available" : "unavailable";
+}
+
 function percent(value) {
   return value == null ? 0 : number(value) * 100;
 }
@@ -95,15 +371,17 @@ function percent(value) {
 function comparisonMetric(operating, comparisonName, metricName) {
   const comparison = operating?.comparisons?.[comparisonName];
   const metric = comparison?.metrics?.[metricName];
-  const status = comparison?.status || "unavailable";
+  const status = ["available", "partial"].includes(comparison?.status)
+    ? comparison.status
+    : "unavailable";
   return {
     status,
-    current: metric?.current ?? null,
-    baseline: status === "unavailable" ? null : metric?.baseline ?? null,
-    absoluteChange: status === "unavailable" ? null : metric?.absolute_change ?? null,
+    current: nullableNumber(metric?.current),
+    baseline: status === "unavailable" ? null : nullableNumber(metric?.baseline),
+    absoluteChange: status === "unavailable" ? null : nullableNumber(metric?.absolute_change),
     changeRate: status === "unavailable" || metric?.change_rate == null
       ? null
-      : percent(metric.change_rate),
+      : nullablePercent(metric.change_rate),
   };
 }
 
@@ -210,6 +488,7 @@ export function visibleAdminSections(me) {
   const sections = [];
   if (hasAll("platform.analytics.read", "platform.finance.read", "platform.provider_costs.read")) sections.push("cockpit");
   if (hasAll("platform.analytics.read")) sections.push("task-operations");
+  if (hasAll("platform.task_content.read")) sections.push("prompt-collection");
   if (hasAll("platform.analytics.read", "platform.finance.read", "platform.provider_costs.read")) sections.push("model-profit");
   if (hasAll("platform.analytics.read", "platform.finance.read")) sections.push("company-health");
   if (hasAll("platform.entitlements.read")) sections.push("entitlements");
@@ -268,15 +547,83 @@ export function adaptRelayControlChannelPage(page) {
 }
 
 export function adaptAdminOperationsData(raw = {}) {
-  const hasOperating = Boolean(raw.operating && typeof raw.operating === "object");
+  const hasOperating = hasOperatingEvidence(raw.operating);
+  const hasProfitability = hasModelProfitabilityEvidence(raw.profitability);
+  const hasCompanyHealth = hasCompanyHealthEvidence(raw.companyHealth);
+  const hasDashboardCompanies = hasCompanyRankingEvidence(raw.dashboard);
   const hasTaskOps = Boolean(raw.taskOps && typeof raw.taskOps === "object");
-  const operating = raw.operating || {};
+  const operating = hasOperating ? raw.operating : {};
   const taskOps = raw.taskOps || {};
-  const profitability = raw.profitability?.items || [];
-  const companyHealthRows = raw.companyHealth?.items || [];
+  const profitability = hasProfitability ? raw.profitability.items : [];
+  const sourceStatus = { ...(raw.sourceStatuses || {}) };
+  sourceStatus.operating = evidenceSourceStatus(
+    sourceStatus.operating,
+    raw.operating,
+    hasOperating,
+  );
+  sourceStatus.profitability = evidenceSourceStatus(
+    sourceStatus.profitability,
+    raw.profitability,
+    hasProfitability,
+  );
+  sourceStatus.companyHealth = evidenceSourceStatus(
+    sourceStatus.companyHealth,
+    raw.companyHealth,
+    hasCompanyHealth,
+  );
+  sourceStatus.dashboard = evidenceSourceStatus(
+    sourceStatus.dashboard,
+    raw.dashboard,
+    hasDashboardCompanies,
+  );
+  const sourceErrors = { ...(raw.sourceErrors || {}) };
+  if (raw.operating != null && !hasOperating && sourceStatus.operating === "unavailable") {
+    sourceErrors.operating ||= "接口响应缺少完整、可核验的经营财务字段，已停止展示。";
+  }
+  if (raw.profitability != null && !hasProfitability && sourceStatus.profitability === "unavailable") {
+    sourceErrors.profitability ||= "接口响应缺少完整的模型收入归因、利润或未归因渠道成本证据，已停止展示。";
+  }
+  if (raw.companyHealth != null && !hasCompanyHealth && sourceStatus.companyHealth === "unavailable") {
+    sourceErrors.companyHealth ||= "企业健康响应缺少匹配计费单位的钱包、预留或消费证据，已停止展示。";
+  }
+  if (raw.dashboard != null && !hasDashboardCompanies && sourceStatus.dashboard === "unavailable") {
+    sourceErrors.dashboard ||= "企业排行响应缺少匹配计费单位的余额或消费证据，已停止展示。";
+  }
+  const companyHealthRows = hasCompanyHealth ? raw.companyHealth.items : [];
   const channelRows = raw.channelHealth?.channels || [];
   const relayControlPage = adaptRelayControlChannelPage(raw.relayChannels);
+  const relayRouteOptions = (raw.relayModels?.items || []).flatMap((model) => (
+    Array.isArray(model?.routes) ? model.routes : []
+  ).map((route) => ({
+    publicModelId: String(model?.relay_model_id || ""),
+    capabilityRevision: String(model?.candidate_revision || model?.capability_revision || ""),
+    routeId: String(route?.route_id || ""),
+    channelId: Number(route?.channel_id),
+    upstreamModel: String(route?.upstream_model || ""),
+    adapterProfileId: String(route?.adapter_profile_id || ""),
+    adapterProfileRevision: String(route?.adapter_profile_revision || ""),
+    enabled: route?.enabled === true,
+    accepted: route?.accepted === true,
+    fresh: route?.fresh === true,
+    requiredTestModes: Array.isArray(route?.required_test_modes)
+      ? route.required_test_modes.map((mode) => String(mode || "")).filter(Boolean)
+      : [],
+    freshTestModes: Array.isArray(route?.fresh_test_modes)
+      ? route.fresh_test_modes.map((mode) => String(mode || "")).filter(Boolean)
+      : [],
+  }))).filter((route) => (
+    route.publicModelId
+    && route.routeId
+    && Number.isInteger(route.channelId)
+    && route.channelId > 0
+    && route.upstreamModel
+    && route.adapterProfileId
+    && route.adapterProfileRevision
+  ));
   const relayUnknownPage = adaptRelayUnknownPage(raw.relayUnknownSubmissions);
+  const relayProviderResultReconciliations = adaptRelayProviderResultReconciliationPage(
+    raw.relayProviderResultReconciliations,
+  );
   const relayCallbackDeadLetters = adaptRelayCallbackDeadLetterPage(raw.relayCallbackDeadLetters);
   const exceptionRows = (raw.exceptions?.items || []).map(exceptionItem);
   const relayUnmapped = [
@@ -313,11 +660,22 @@ export function adaptAdminOperationsData(raw = {}) {
     : taskTrendPoints.reduce((sum, point) => sum + trendFailureCount(point, code), 0);
   const failureTotal = failureCodes.reduce((sum, code) => sum + failureCount(code), 0);
   const operatingTotals = operating.totals || {};
-  const costIncomplete = number(operatingTotals.cost_missing_task_count) > 0;
-  const grossProfit = number(operatingTotals.known_gross_profit_cents);
-  const grossMargin = operatingTotals.gross_margin == null
-    ? (number(operatingTotals.settled_revenue_cents) ? grossProfit / number(operatingTotals.settled_revenue_cents) : 0)
-    : number(operatingTotals.gross_margin);
+  const costIncomplete = hasOperating
+    && operatingTotals.cost_reconciliation_status === "incomplete";
+  const revenueIncomplete = hasOperating
+    && operatingTotals.revenue_reconciliation_status === "incomplete";
+  const financeIncomplete = hasOperating
+    && operatingTotals.finance_status === "incomplete";
+  const grossProfit = hasOperating
+    ? (revenueIncomplete
+      ? null
+      : costIncomplete
+      ? operatingTotals.known_gross_profit_cents
+      : operatingTotals.gross_profit_cents)
+    : null;
+  const grossMargin = hasOperating && !financeIncomplete
+    ? nullableNumber(operatingTotals.gross_margin)
+    : null;
 
   const matrix = raw.matrix || {};
   const entitlementProducts = (matrix.columns || []).map((column) => ({
@@ -334,22 +692,28 @@ export function adaptAdminOperationsData(raw = {}) {
     name: row.company_name,
     status: row.company_status,
     plan: "独立合同",
+    billingUnit: row.billing_unit,
+    billingVersion: row.billing_version,
   }));
   const entitlementGrants = {};
   for (const row of matrix.rows || []) {
     for (const cell of row.cells || []) {
       if (!cell.configured && cell.state === "unconfigured") continue;
       const product = entitlementProducts.find((item) => item.id === cell.item_id);
+      const pointBilling = cell.billing_unit === "POINT" && Number(cell.billing_version) === 2;
       const price = product?.billingMode === "per_second"
-        ? cell.price_per_second_cents
-        : cell.price_per_item_cents;
+        ? (pointBilling ? cell.price_per_second_points : cell.price_per_second_cents)
+        : (pointBilling ? cell.price_per_item_points : cell.price_per_item_cents);
       entitlementGrants[buildEntitlementKey(row.company_id, cell.item_id)] = {
         companyId: row.company_id,
         productId: cell.item_id,
         state: entitlementState(cell),
         serverState: cell.state,
         enabled: cell.enabled,
-        priceCents: price,
+        billingUnit: cell.billing_unit,
+        billingVersion: cell.billing_version,
+        pricePoints: pointBilling ? price : null,
+        priceCents: pointBilling ? null : price,
         quota: cell.call_quota,
         concurrency: cell.concurrency_limit,
         effectiveAt: localDateTime(cell.effective_at),
@@ -359,16 +723,52 @@ export function adaptAdminOperationsData(raw = {}) {
     }
   }
 
-  const dashboardCompanies = raw.dashboard?.companies || [];
-  const dashboardCompanyById = new Map(dashboardCompanies.map((item) => [item.company_id, item]));
+  const dashboardCompanies = hasDashboardCompanies ? raw.dashboard.companies : [];
+  const companyRanking = dashboardCompanies.map((item) => {
+    const pointBilling = item.billing_unit === "POINT";
+    const taskCount = item.task_count;
+    return {
+      id: item.company_id,
+      name: item.company_name,
+      billingUnit: item.billing_unit,
+      billingVersion: item.billing_version,
+      consumptionCents: pointBilling ? null : item.consumption_cents,
+      consumptionPoints: pointBilling ? item.consumption_points : null,
+      taskCount,
+      successRate: taskCount > 0 ? item.succeeded_count / taskCount * 100 : null,
+      balanceCents: pointBilling ? null : item.available_cents,
+      balancePoints: pointBilling ? item.available_points : null,
+      reservedCents: pointBilling ? null : item.reserved_cents,
+      reservedPoints: pointBilling ? item.reserved_points : null,
+    };
+  }).sort((left, right) => (
+    right.taskCount - left.taskCount
+    || (right.successRate ?? -1) - (left.successRate ?? -1)
+    || left.name.localeCompare(right.name, "zh-CN")
+    || left.id.localeCompare(right.id)
+  ));
+  const dashboardCompanyById = new Map(companyRanking.map((item) => [item.id, item]));
   const businessTrend = (operating.points || []).map((point) => ({
     date: dateLabel(point.bucket_start),
     // The chart contract is yuan while every backend ledger field is integer
     // cents. Keeping the conversion here prevents a 100x visual overstatement.
-    recharge: number(point.recharge_cents) / 100,
-    revenue: number(point.settled_revenue_cents) / 100,
-    cost: number(point.provider_cost_cents) / 100,
-    grossProfit: number(point.known_gross_profit_cents) / 100,
+    recharge: point.recharge_cents / 100,
+    revenue: point.settled_revenue_cents / 100,
+    settledPoints: point.settled_points,
+    pointSucceededTaskCount: point.point_succeeded_task_count,
+    pointSettlementCount: point.point_settlement_count,
+    pointSettlementMissingTaskCount: point.point_settlement_missing_task_count,
+    pointSettlementDuplicateTaskCount: point.point_settlement_duplicate_task_count,
+    cost: point.provider_cost_cents / 100,
+    grossProfit: point.finance_status === "complete"
+      ? point.gross_profit_cents / 100
+      : null,
+    knownGrossProfit: point.revenue_reconciliation_status === "complete"
+      && point.cost_reconciliation_status === "incomplete"
+      ? point.known_gross_profit_cents / 100
+      : null,
+    revenueReconciliationStatus: point.revenue_reconciliation_status,
+    financeStatus: point.finance_status,
   }));
 
   const relayStageCounts = taskOps.relay_stage_task_counts || {};
@@ -547,12 +947,15 @@ export function adaptAdminOperationsData(raw = {}) {
   });
 
   return {
-    sourceStatus: { ...(raw.sourceStatuses || {}) },
-    sourceErrors: { ...(raw.sourceErrors || {}) },
+    sourceStatus,
+    sourceErrors,
     summary: {
       pending: allExceptions.filter((item) => item.status !== "resolved").length,
       alertBacklog: nullableNumber(accountPoolMetrics?.pending_alert_count),
-      unreconciledCosts: number(operatingTotals.cost_missing_task_count),
+      unreconciledCosts: hasOperating ? operatingTotals.cost_missing_task_count : null,
+      unattributedPointSettlements: hasOperating
+        ? operatingTotals.unattributed_point_settlement_count
+        : null,
       lastRefreshed: raw.loadedAt || raw.exceptions?.generated_at || raw.operating?.end_time || raw.matrix?.generated_at || null,
       environment: raw.environment || "development",
     },
@@ -575,34 +978,105 @@ export function adaptAdminOperationsData(raw = {}) {
     reliability,
     business: {
       metrics: hasOperating ? [
-        { key: "recharge", label: "充值现金流", valueCents: number(operatingTotals.recharge_cents), ...metricComparisons(operating, "recharge_cents") },
-        { key: "revenue", label: "结算收入", valueCents: number(operatingTotals.settled_revenue_cents), ...metricComparisons(operating, "settled_revenue_cents") },
-        { key: "cost", label: "渠道成本", valueCents: number(operatingTotals.provider_cost_cents), ...metricComparisons(operating, "provider_cost_cents") },
-        { key: "grossProfit", label: costIncomplete ? "已知毛利（成本未完整）" : "毛利", valueCents: grossProfit, ...metricComparisons(operating, "known_gross_profit_cents") },
-        { key: "grossMargin", label: costIncomplete ? "已知毛利率" : "毛利率", valuePercent: grossMargin * 100, ...metricComparisons(operating, "gross_margin") },
+        { key: "recharge", label: "账户人工入账", valueKind: "money", valueCents: operatingTotals.recharge_cents, ...metricComparisons(operating, "recharge_cents") },
+        { key: "revenue", label: "已归因法币收入", valueKind: "money", valueCents: operatingTotals.settled_revenue_cents, ...metricComparisons(operating, "settled_revenue_cents") },
+        {
+          key: "points",
+          label: "积分结算",
+          valueKind: "points",
+          valuePoints: operatingTotals.settled_points,
+          settlementCount: operatingTotals.point_settlement_count,
+          ...metricComparisons(operating, "settled_points"),
+        },
+        { key: "cost", label: "渠道成本", valueKind: "money", valueCents: operatingTotals.provider_cost_cents, ...metricComparisons(operating, "provider_cost_cents") },
+        {
+          key: "grossProfit",
+          label: revenueIncomplete
+            ? "最终毛利（积分收入待归因）"
+            : costIncomplete
+            ? "已知毛利（成本未完整）"
+            : "最终毛利",
+          valueKind: "money",
+          valueCents: grossProfit,
+          unavailableLabel: revenueIncomplete ? "待积分收入归因" : undefined,
+          ...metricComparisons(
+            operating,
+            costIncomplete && !revenueIncomplete
+              ? "known_gross_profit_cents"
+              : "gross_profit_cents",
+          ),
+        },
+        {
+          key: "grossMargin",
+          label: revenueIncomplete
+            ? "最终毛利率（积分收入待归因）"
+            : costIncomplete
+            ? "最终毛利率（待成本完整）"
+            : "最终毛利率",
+          valueKind: "percent",
+          valuePercent: grossMargin == null ? null : grossMargin * 100,
+          unavailableLabel: revenueIncomplete
+            ? "待积分收入归因"
+            : costIncomplete
+            ? "待成本完整"
+            : "暂无收入基数",
+          ...metricComparisons(operating, "gross_margin"),
+        },
       ] : [],
       trend: hasOperating ? businessTrend : [],
-      companyRanking: dashboardCompanies.map((item) => ({
-        id: item.company_id,
-        name: item.company_name,
-        revenueCents: number(item.consumption_cents),
-        taskCount: number(item.task_count),
-        successRate: number(item.task_count) ? number(item.succeeded_count) / number(item.task_count) * 100 : 0,
-        balanceCents: number(item.available_cents),
-      })),
+      financeEvidence: hasOperating ? {
+        settledPoints: operatingTotals.settled_points,
+        pointSucceededTaskCount: operatingTotals.point_succeeded_task_count,
+        pointSettlementCount: operatingTotals.point_settlement_count,
+        unattributedPointSettlementCount: operatingTotals.unattributed_point_settlement_count,
+        pointSettlementMissingTaskCount: operatingTotals.point_settlement_missing_task_count,
+        pointSettlementDuplicateTaskCount: operatingTotals.point_settlement_duplicate_task_count,
+        costReconciliationStatus: operatingTotals.cost_reconciliation_status,
+        revenueReconciliationStatus: operatingTotals.revenue_reconciliation_status,
+        financeStatus: operatingTotals.finance_status,
+      } : null,
+      companyRanking,
     },
-    modelProfitability: profitability.map((item) => ({
-      id: item.model_id,
-      model: item.display_name,
-      calls: number(item.task_count),
-      revenueCents: number(item.settled_revenue_cents),
-      costCents: number(item.provider_cost_cents),
-      grossProfitCents: number(item.known_gross_profit_cents),
-      grossMargin: (item.gross_margin == null ? (number(item.settled_revenue_cents) ? number(item.known_gross_profit_cents) / number(item.settled_revenue_cents) : 0) : number(item.gross_margin)) * 100,
-      successRate: percent(item.success_rate),
-      avgSeconds: number(item.average_terminal_latency_seconds),
-      missingCostRate: number(item.task_count) ? number(item.cost_missing_task_count) / number(item.task_count) * 100 : 0,
-    })),
+    modelProfitabilitySummary: {
+      unattributedProviderCostCents: hasProfitability
+        ? raw.profitability.unattributed_provider_cost_cents
+        : null,
+      revenueUnavailableTaskCount: hasProfitability
+        ? raw.profitability.revenue_unavailable_task_count
+        : null,
+      revenueMissingTaskCount: hasProfitability
+        ? raw.profitability.revenue_missing_task_count
+        : null,
+      revenueReconciliationStatus: hasProfitability
+        ? raw.profitability.revenue_reconciliation_status
+        : "unavailable",
+    },
+    modelProfitability: profitability.map((item) => {
+      const revenueComplete = item.revenue_reconciliation_status === "complete";
+      const costComplete = item.cost_reconciliation_status === "complete";
+      const financeComplete = revenueComplete && costComplete;
+      return {
+        id: item.model_id,
+        model: item.display_name,
+        calls: item.task_count,
+        revenueCents: revenueComplete ? item.settled_revenue_cents : null,
+        costCents: item.provider_cost_cents,
+        knownGrossProfitCents: item.known_gross_profit_cents,
+        grossProfitCents: financeComplete ? item.gross_profit_cents : null,
+        costReconciliationStatus: item.cost_reconciliation_status,
+        revenueReconciliationStatus: item.revenue_reconciliation_status,
+        revenueUnavailableTaskCount: item.revenue_unavailable_task_count,
+        revenueMissingTaskCount: item.revenue_missing_task_count,
+        financeStatus: financeComplete ? "complete" : "incomplete",
+        grossMargin: financeComplete ? nullablePercent(item.gross_margin) : null,
+        successRate: nullablePercent(item.success_rate),
+        avgSeconds: nullableNumber(item.average_terminal_latency_seconds),
+        missingCostCount: item.cost_missing_task_count,
+        missingCostRate: item.task_count > 0
+          ? item.cost_missing_task_count / item.task_count * 100
+          : null,
+      };
+    }),
     companyHealth: companyHealthRows.map((item) => {
       const abnormal = (item.alerts || []).find((alert) => alert.code === "ABNORMAL_SPEND");
       const reservation = (item.alerts || []).find((alert) => alert.code === "STALE_RESERVED_BALANCE");
@@ -611,9 +1085,17 @@ export function adaptAdminOperationsData(raw = {}) {
         id: item.company_id,
         name: item.company_name,
         risk: riskFromCompany(item),
-        balanceCents: number(item.available_cents),
+        billingUnit: item.billing_unit,
+        billingVersion: item.billing_version,
+        balanceCents: item.billing_unit === "CNY_CENT" ? item.available_cents : null,
+        balancePoints: item.billing_unit === "POINT" ? item.available_points : null,
+        reservedCents: item.billing_unit === "CNY_CENT" ? item.reserved_cents : null,
+        reservedPoints: item.billing_unit === "POINT" ? item.reserved_points : null,
+        spend24hCents: item.billing_unit === "CNY_CENT" ? item.spend_24h_cents : null,
+        spend24hPoints: item.billing_unit === "POINT" ? item.spend_24h_points : null,
+        lowBalance: (item.alerts || []).some((alert) => alert.code === "LOW_BALANCE"),
         daysInactive: item.last_task_at ? Math.max(0, Math.floor((Date.now() - new Date(item.last_task_at).getTime()) / DAY_MS)) : null,
-        consumptionChange: abnormal ? (number(abnormal.details?.ratio, 1) - 1) * 100 : 0,
+        consumptionChange: abnormal ? (number(abnormal.details?.ratio, 1) - 1) * 100 : null,
         reservationAgeHours: reservation ? number(reservation.details?.threshold_hours) : 0,
         failureRate: percent(item.failure_rate_30d),
         entitlementsExpiring: expiry,
@@ -623,6 +1105,7 @@ export function adaptAdminOperationsData(raw = {}) {
     }),
     channels: channelOperations,
     relayChannels: relayControlPage.items,
+    relayRouteOptions,
     relayChannelSourceStatus: relayControlPage.sourceStatus,
     relayChannelTotal: relayControlPage.total,
     relayUnknownSubmissions: relayUnknownPage.items,
@@ -630,6 +1113,12 @@ export function adaptAdminOperationsData(raw = {}) {
     relayUnknownSubmissionPage: relayUnknownPage.page,
     relayUnknownSubmissionPageSize: relayUnknownPage.pageSize,
     relayUnknownSubmissionTotal: relayUnknownPage.total,
+    relayProviderResultReconciliations: relayProviderResultReconciliations.items,
+    relayProviderResultReconciliationSourceStatus:
+      relayProviderResultReconciliations.sourceStatus,
+    relayProviderResultReconciliationPage: relayProviderResultReconciliations.page,
+    relayProviderResultReconciliationPageSize: relayProviderResultReconciliations.pageSize,
+    relayProviderResultReconciliationTotal: relayProviderResultReconciliations.total,
     relayCallbackDeadLetters: relayCallbackDeadLetters.items,
     relayCallbackDeadLetterSourceStatus: relayCallbackDeadLetters.sourceStatus,
     relayCallbackDeadLetterTotal: relayCallbackDeadLetters.total,
@@ -670,19 +1159,25 @@ export function adaptAdminOperationsData(raw = {}) {
     auditEvents: (raw.audits?.items || []).map((item) => ({
       id: item.id,
       occurredAt: item.created_at,
-      actorName: item.actor_display_name || item.actor_user_id,
-      actorId: item.actor_user_id,
+      actorName: item.actor_kind === "system"
+        ? `系统任务 · ${item.actor_key || "Platform"}`
+        : item.actor_display_name || item.actor_user_id,
+      actorId: item.actor_kind === "system" ? item.actor_key : item.actor_user_id,
       actionLabel: item.action,
       action: item.action,
       targetLabel: `${item.target_type} · ${item.target_id}`,
-      reason: item.after_summary?.change_reason || item.after_summary?.reason || "—",
+      reason: item.after_summary?.change_reason
+        || item.after_summary?.reason
+        || "—",
       // Older audit responses do not expose an execution result. Preserve a
       // server value when present, otherwise describe the row as recorded
       // instead of silently presenting every entry as a successful action.
       result: item.result || item.outcome || item.status || "recorded",
       before: item.before_summary || {},
       after: item.after_summary || {},
-      rollbackHint: item.action?.startsWith("channel.cost") ? "追加负数调整项，不删除原成本记录" : "根据变更前快照创建新的反向变更，并关联原审计 ID",
+      rollbackHint: item.action?.startsWith("channel.cost")
+        ? "追加负数调整项，不删除原成本记录"
+        : "根据变更前快照创建新的反向变更，并关联原审计 ID",
     })),
     adminPermissionCatalog: (raw.permissionCatalog || []).map((item) => ({
       key: item.code,

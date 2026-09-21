@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -10,6 +11,23 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestGetPlatformRelayDeliveryCountsWithDBHonorsCancelledContext(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open("file:delivery-count-context-"+uuid.NewString()+"?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := database.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	require.NoError(t, database.AutoMigrate(&PlatformRelayExternalDelivery{}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = GetPlatformRelayDeliveryCountsWithDB(
+		database.WithContext(ctx),
+		PlatformRelayDeliveryKindDownloadCompletion,
+	)
+	require.ErrorIs(t, err, context.Canceled)
+}
 
 func TestPlatformGenerationLifecyclePersistsTaskStagesAtomically(t *testing.T) {
 	previousDB := DB

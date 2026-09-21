@@ -79,6 +79,12 @@ var platformProcessSecretRoleContracts = []platformProcessSecretRoleContract{
 		fields: []string{"database_url", "relay_backends"},
 	},
 	{
+		role: "relay-catalog-sync", fileID: "platform_relay_catalog_sync_runtime", prefix: "platform.relay_catalog_sync",
+		environment: "PLATFORM_RELAY_CATALOG_SYNC_RUNTIME_SECRETS_FILE", databaseUser: "platform_relay_catalog_sync",
+		passwordFileID: "platform_relay_catalog_sync_password", passwordEnvironment: "PLATFORM_RELAY_CATALOG_SYNC_DATABASE_PASSWORD_FILE",
+		fields: []string{"database_url", "relay_backends"},
+	},
+	{
 		role: "timeout-worker", fileID: "platform_timeout_worker_runtime", prefix: "platform.timeout_worker",
 		environment: "PLATFORM_TIMEOUT_WORKER_RUNTIME_SECRETS_FILE", databaseUser: "platform_timeout_worker",
 		passwordFileID: "platform_timeout_worker_password", passwordEnvironment: "PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD_FILE",
@@ -409,7 +415,8 @@ func platformProcessSecretParse(raw []byte, expectedRole string) (platformRelayS
 	clear(databasePassword)
 
 	relayRole := expectedRole == "platform-api" || expectedRole == "dispatcher" ||
-		expectedRole == "relay-sync" || expectedRole == "timeout-worker"
+		expectedRole == "relay-sync" || expectedRole == "relay-catalog-sync" ||
+		expectedRole == "timeout-worker"
 	if relayRole && values.RelayBackends == nil {
 		return invalid()
 	}
@@ -579,7 +586,7 @@ func platformRelaySecretIsolationBindGroup(
 }
 
 // platformRelaySecretIsolationBindPlatformContracts proves the intentional
-// equality surface between the seven Platform process bundles and Relay A/B/C.
+// equality surface between the eight Platform process bundles and Relay A/B/C.
 // Everything not assigned to one exact-count group remains globally unique.
 func platformRelaySecretIsolationBindPlatformContracts(files []platformRelaySecretIsolationFile) error {
 	invalid := func() error { return errors.New("Relay and Platform secret binding is invalid") }
@@ -721,6 +728,7 @@ func platformRelaySecretIsolationBindPlatformContracts(files []platformRelaySecr
 		{"platform-api", "platform.api"},
 		{"dispatcher", "platform.dispatcher"},
 		{"relay-sync", "platform.relay_sync"},
+		{"relay-catalog-sync", "platform.relay_catalog_sync"},
 		{"timeout-worker", "platform.timeout_worker"},
 	}
 	relayBackendURLMembers := make([]string, 0, len(mappedRoles))

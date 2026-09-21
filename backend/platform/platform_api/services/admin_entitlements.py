@@ -4,29 +4,45 @@ import hashlib
 import json
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Mapping
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from ..models import (
     AuditLog,
+    BillingUnit,
     Company,
+    CompanyEntitlementBatchJournal,
     CompanyModelGrant,
     CompanyResourceGrant,
     ModelDefinition,
     ResourceDefinition,
     ResourceKind,
+    new_id,
+    utcnow,
 )
 from .audit import AuditService
 from .errors import ConflictError, NotFoundError
+from .commercial_pricing import CommercialPricingPolicy
 from .models import ModelGrantService
+from .model_release_guard import require_model_release_snapshot
 from .resources import ResourceGrantService
 
 
 EntitlementKind = Literal["model", "resource"]
 CopyMode = Literal["merge", "replace"]
 MAX_BATCH_CELLS = 500
+
+
+def _company_billing_contract(company: Company) -> tuple[BillingUnit, int]:
+    if company.billing_version == 1:
+        return BillingUnit.CNY_CENT, 1
+    if company.billing_version == 2:
+        return BillingUnit.POINT, 2
+    raise ConflictError("company billing version is invalid")
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -127,9 +143,27 @@ def _catalog_item(kind: EntitlementKind, item: Any) -> dict[str, Any]:
     }
 
 
-def _grant_before(kind: EntitlementKind, grant: Any | None) -> dict[str, Any]:
+def _grant_before(
+    kind: EntitlementKind,
+    grant: Any | None,
+    *,
+    billing_unit: BillingUnit | None = None,
+    billing_version: int | None = None,
+) -> dict[str, Any]:
     if grant is None:
-        return {"configured": False}
+        result: dict[str, Any] = {"configured": False}
+        if kind == "model" and billing_unit is not None:
+            result.update(
+                {
+                    "billing_unit": billing_unit.value,
+                    "billing_version": billing_version,
+                    "price_per_second_cents": None,
+                    "price_per_item_cents": None,
+                    "price_per_second_points": None,
+                    "price_per_item_points": None,
+                }
+            )
+        return result
     result: dict[str, Any] = {
         "configured": True,
         "grant_id": grant.id,
@@ -144,8 +178,14 @@ def _grant_before(kind: EntitlementKind, grant: Any | None) -> dict[str, Any]:
     if kind == "model":
         result.update(
             {
+                "billing_unit": (
+                    billing_unit.value if billing_unit is not None else None
+                ),
+                "billing_version": billing_version,
                 "price_per_second_cents": grant.price_per_second_cents,
                 "price_per_item_cents": grant.price_per_item_cents,
+                "price_per_second_points": grant.price_per_second_points,
+                "price_per_item_points": grant.price_per_item_points,
             }
         )
     return result
@@ -275,6 +315,7 @@ class AdminEntitlementService:
         columns = [_catalog_item(kind, item) for kind, item in selected_catalog]
         rows: list[dict[str, Any]] = []
         for company in companies:
+            billing_unit, billing_version = _company_billing_contract(company)
             cells = []
             for kind, item in selected_catalog:
                 grant = (
@@ -291,7 +332,12 @@ class AdminEntitlementService:
                     "state": _cell_state(
                         grant=grant, catalog_active=catalog_active, now=current
                     ),
-                    **_grant_before(kind, grant),
+                    **_grant_before(
+                        kind,
+                        grant,
+                        billing_unit=billing_unit,
+                        billing_version=billing_version,
+                    ),
                 }
                 cells.append(cell)
             rows.append(
@@ -299,6 +345,8 @@ class AdminEntitlementService:
                     "company_id": company.id,
                     "company_name": company.name,
                     "company_status": _enum_value(company.status),
+                    "billing_unit": billing_unit.value,
+                    "billing_version": billing_version,
                     "cells": cells,
                 }
             )
@@ -415,14 +463,46 @@ class AdminEntitlementService:
             if key in seen:
                 raise ConflictError("batch contains duplicate entitlement cells")
             seen.add(key)
+            billing_unit = raw.get("billing_unit")
+            if billing_unit is not None:
+                billing_unit = _enum_value(billing_unit)
+                if billing_unit not in {
+                    BillingUnit.CNY_CENT.value,
+                    BillingUnit.POINT.value,
+                }:
+                    raise ConflictError("billing_unit is invalid")
+            billing_version = raw.get("billing_version")
+            if billing_version is not None:
+                try:
+                    billing_version = int(billing_version)
+                except (TypeError, ValueError) as exc:
+                    raise ConflictError("billing_version is invalid") from exc
+            point_prices = (
+                raw.get("price_per_second_points"),
+                raw.get("price_per_item_points"),
+            )
+            cent_prices = (
+                raw.get("price_per_second_cents"),
+                raw.get("price_per_item_cents"),
+            )
+            if kind == "resource" and (
+                billing_unit is not None
+                or billing_version is not None
+                or any(price is not None for price in (*point_prices, *cent_prices))
+            ):
+                raise ConflictError("resource grants do not have a billing contract")
             result.append(
                 {
                     "company_id": company_id,
                     "item_kind": kind,
                     "item_id": item_id,
                     "enabled": bool(raw.get("enabled")),
+                    "billing_unit": billing_unit,
+                    "billing_version": billing_version,
                     "price_per_second_cents": raw.get("price_per_second_cents"),
                     "price_per_item_cents": raw.get("price_per_item_cents"),
+                    "price_per_second_points": raw.get("price_per_second_points"),
+                    "price_per_item_points": raw.get("price_per_item_points"),
                     "config_override": raw.get("config_override"),
                     "call_quota": raw.get("call_quota"),
                     "concurrency_limit": raw.get("concurrency_limit"),
@@ -458,6 +538,9 @@ class AdminEntitlementService:
         *,
         changes: Iterable[dict[str, Any]],
         lock_rows: bool = False,
+        expected_release_snapshots: Mapping[
+            str, Mapping[str, Any]
+        ] | None = None,
     ) -> dict[str, Any]:
         normalized = cls._normalize_changes(changes)
         company_ids = sorted({item["company_id"] for item in normalized})
@@ -480,7 +563,9 @@ class AdminEntitlementService:
         ).order_by(CompanyResourceGrant.company_id, CompanyResourceGrant.resource_id)
         if lock_rows:
             company_statement = company_statement.with_for_update()
-            model_statement = model_statement.with_for_update()
+            model_statement = model_statement.execution_options(
+                populate_existing=True
+            ).with_for_update()
             resource_statement = resource_statement.with_for_update()
             model_grant_statement = model_grant_statement.with_for_update()
             resource_grant_statement = resource_grant_statement.with_for_update()
@@ -507,25 +592,81 @@ class AdminEntitlementService:
             raise NotFoundError(f"models do not exist: {', '.join(missing_models)}")
         if missing_resources:
             raise NotFoundError(f"resources do not exist: {', '.join(missing_resources)}")
+        for model_id, snapshot in (expected_release_snapshots or {}).items():
+            model = models.get(model_id)
+            if model is None:
+                raise NotFoundError(f"models do not exist: {model_id}")
+            require_model_release_snapshot(
+                model=model,
+                expected_snapshot=snapshot,
+            )
 
         changes_out: list[dict[str, Any]] = []
         for desired in normalized:
             kind = desired["item_kind"]
+            company = companies[desired["company_id"]]
+            billing_unit, billing_version = _company_billing_contract(company)
             item = models[desired["item_id"]] if kind == "model" else resources[desired["item_id"]]
             grant = (
                 model_grants.get((desired["company_id"], desired["item_id"]))
                 if kind == "model"
                 else resource_grants.get((desired["company_id"], desired["item_id"]))
             )
-            before = _grant_before(kind, grant)
+            before = _grant_before(
+                kind,
+                grant,
+                billing_unit=billing_unit,
+                billing_version=billing_version,
+            )
             if kind == "model":
                 if desired["enabled"] and not _model_catalog_active(item):
                     raise ConflictError("cannot enable a draft or retired model")
-                second_price = desired["price_per_second_cents"]
-                item_price = desired["price_per_item_cents"]
-                if second_price is None and item_price is None and grant is not None:
-                    second_price = grant.price_per_second_cents
-                    item_price = grant.price_per_item_cents
+                declared_unit = desired["billing_unit"]
+                declared_version = desired["billing_version"]
+                if (declared_unit is None) != (declared_version is None):
+                    raise ConflictError(
+                        "billing_unit and billing_version must be supplied together"
+                    )
+                if declared_unit is None and billing_unit == BillingUnit.POINT:
+                    raise ConflictError(
+                        "point entitlement changes require explicit POINT v2 billing evidence"
+                    )
+                if declared_unit is not None and (
+                    declared_unit != billing_unit.value
+                    or declared_version != billing_version
+                ):
+                    raise ConflictError(
+                        "entitlement billing contract does not match target company"
+                    )
+                second_cents = desired["price_per_second_cents"]
+                item_cents = desired["price_per_item_cents"]
+                second_points = desired["price_per_second_points"]
+                item_points = desired["price_per_item_points"]
+                if (
+                    second_cents is None
+                    and item_cents is None
+                    and second_points is None
+                    and item_points is None
+                    and grant is not None
+                ):
+                    second_cents = grant.price_per_second_cents
+                    item_cents = grant.price_per_item_cents
+                    second_points = grant.price_per_second_points
+                    item_points = grant.price_per_item_points
+                cent_prices = (second_cents, item_cents)
+                point_prices = (second_points, item_points)
+                if billing_unit == BillingUnit.CNY_CENT:
+                    if any(price is not None for price in point_prices):
+                        raise ConflictError(
+                            "legacy company entitlement cannot contain point prices"
+                        )
+                    second_price, item_price = cent_prices
+                else:
+                    if any(price is not None for price in cent_prices):
+                        raise ConflictError(
+                            "point company entitlement cannot contain cent prices"
+                        )
+                    second_price, item_price = point_prices
                 if desired["enabled"] and second_price is None and item_price is None:
                     raise ConflictError("enabling a model requires its catalog billing price")
                 if second_price is not None and item_price is not None:
@@ -538,13 +679,46 @@ class AdminEntitlementService:
                     raise ConflictError("model price must be positive")
                 if item_price is not None and int(item_price) <= 0:
                     raise ConflictError("model price must be positive")
+                if second_price is not None or item_price is not None:
+                    CommercialPricingPolicy.require_price(
+                        session,
+                        model=item,
+                        unit_price=second_price if second_price is not None else item_price,
+                        billing_unit=billing_unit.value,
+                        enabled=desired["enabled"],
+                        current_unit_price=(
+                            (grant.price_per_second_points or grant.price_per_item_points)
+                            if grant is not None and billing_unit == BillingUnit.POINT
+                            else (grant.price_per_second_cents or grant.price_per_item_cents)
+                            if grant is not None else None
+                        ),
+                        config_override=(desired["config_override"] if desired["config_override"] is not None else grant.config_override if grant is not None else {}),
+                        scope="company",
+                        expected_release_snapshot=(expected_release_snapshots or {}).get(item.id),
+                    )
                 after = {
                     "configured": not (
                         grant is None and not desired["enabled"] and second_price is None and item_price is None
                     ),
                     "enabled": desired["enabled"],
-                    "price_per_second_cents": second_price,
-                    "price_per_item_cents": item_price,
+                    "billing_unit": billing_unit.value,
+                    "billing_version": billing_version,
+                    "price_per_second_cents": (
+                        second_price
+                        if billing_unit == BillingUnit.CNY_CENT
+                        else None
+                    ),
+                    "price_per_item_cents": (
+                        item_price
+                        if billing_unit == BillingUnit.CNY_CENT
+                        else None
+                    ),
+                    "price_per_second_points": (
+                        second_price if billing_unit == BillingUnit.POINT else None
+                    ),
+                    "price_per_item_points": (
+                        item_price if billing_unit == BillingUnit.POINT else None
+                    ),
                     "config_override": (
                         desired["config_override"]
                         if desired["config_override"] is not None
@@ -660,6 +834,196 @@ class AdminEntitlementService:
         }
 
     @classmethod
+    def _execution_identity(
+        cls,
+        *,
+        expected_snapshot: str,
+        actor_user_id: str,
+        reason: str,
+        idempotency_key: str,
+        request_intent: Mapping[str, Any],
+    ) -> tuple[str, str, str]:
+        normalized_reason = reason.strip()
+        if len(normalized_reason) < 3 or len(normalized_reason) > 240:
+            raise ConflictError("change reason must contain 3 to 240 characters")
+        normalized_key = idempotency_key.strip()
+        if not normalized_key or len(normalized_key) > 120:
+            raise ConflictError("idempotency_key must contain 1 to 120 characters")
+        canonical_intent = _canonical(dict(request_intent))
+        if not isinstance(canonical_intent.get("operation"), str) or not (
+            canonical_intent["operation"].strip()
+        ):
+            raise ConflictError("entitlement request intent requires an operation")
+        request_hash = _sha256(
+            {
+                "actor_user_id": actor_user_id,
+                "expected_snapshot": expected_snapshot,
+                "reason": normalized_reason,
+                "request_intent": canonical_intent,
+            }
+        )
+        return normalized_reason, normalized_key, request_hash
+
+    @classmethod
+    def idempotent_replay(
+        cls,
+        session: Session,
+        *,
+        expected_snapshot: str,
+        actor_user_id: str,
+        reason: str,
+        idempotency_key: str,
+        request_intent: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        (
+            _,
+            normalized_key,
+            request_hash,
+        ) = cls._execution_identity(
+            expected_snapshot=expected_snapshot,
+            actor_user_id=actor_user_id,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            request_intent=request_intent,
+        )
+        journal = session.scalar(
+            select(CompanyEntitlementBatchJournal).where(
+                CompanyEntitlementBatchJournal.idempotency_key
+                == normalized_key
+            ).execution_options(populate_existing=True)
+        )
+        if journal is None:
+            return None
+        return cls._journal_result(
+            journal,
+            actor_user_id=actor_user_id,
+            request_hash=request_hash,
+            expected_snapshot=expected_snapshot,
+        )
+
+    @staticmethod
+    def _journal_result(
+        journal: CompanyEntitlementBatchJournal,
+        *,
+        actor_user_id: str,
+        request_hash: str,
+        expected_snapshot: str,
+    ) -> dict[str, Any]:
+        if journal.state == "frozen":
+            raise ConflictError(
+                "this idempotency_key belongs to a legacy entitlement batch; "
+                "automatic replay or re-execution is forbidden and operator "
+                "reconciliation is required"
+            )
+        if (
+            journal.actor_user_id != actor_user_id
+            or journal.request_sha256 != request_hash
+            or journal.expected_snapshot != expected_snapshot
+        ):
+            raise ConflictError("idempotency_key is already used by another batch")
+        if journal.state == "completed" and isinstance(
+            journal.result_payload, dict
+        ):
+            stored = journal.result_payload
+            return {**stored, "idempotent_replay": True}
+        if journal.state == "pending" and journal.result_payload is None:
+            raise ConflictError(
+                "entitlement batch is pending or its commit outcome is unknown; "
+                "automatic re-execution is forbidden and operator reconciliation "
+                "is required"
+            )
+        raise ConflictError("stored entitlement batch journal is incomplete")
+
+    @classmethod
+    def _claim_execution(
+        cls,
+        session: Session,
+        *,
+        expected_snapshot: str,
+        actor_user_id: str,
+        reason: str,
+        idempotency_key: str,
+        request_intent: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        (
+            normalized_reason,
+            normalized_key,
+            request_hash,
+        ) = cls._execution_identity(
+            expected_snapshot=expected_snapshot,
+            actor_user_id=actor_user_id,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            request_intent=request_intent,
+        )
+        journal_id = new_id()
+        values = {
+            "id": journal_id,
+            "idempotency_key": normalized_key,
+            "actor_user_id": actor_user_id,
+            "request_sha256": request_hash,
+            "expected_snapshot": expected_snapshot,
+            "state": "pending",
+            "created_at": utcnow(),
+            "updated_at": utcnow(),
+        }
+        dialect_name = session.get_bind().dialect.name
+        if dialect_name == "postgresql":
+            insert_statement = postgresql_insert(
+                CompanyEntitlementBatchJournal
+            ).values(**values)
+        elif dialect_name == "sqlite":
+            insert_statement = sqlite_insert(
+                CompanyEntitlementBatchJournal
+            ).values(**values)
+        else:  # pragma: no cover - production is PostgreSQL; tests use SQLite.
+            raise RuntimeError("unsupported Platform database dialect")
+        claimed_id = session.scalar(
+            insert_statement.on_conflict_do_nothing(
+                index_elements=["idempotency_key"]
+            ).returning(CompanyEntitlementBatchJournal.id)
+        )
+        if claimed_id is not None:
+            journal = session.get(
+                CompanyEntitlementBatchJournal, claimed_id
+            )
+        else:
+            journal = session.scalar(
+                select(CompanyEntitlementBatchJournal)
+                .where(
+                    CompanyEntitlementBatchJournal.idempotency_key
+                    == normalized_key
+                )
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+        if journal is None:
+            raise ConflictError(
+                "entitlement batch idempotency journal is temporarily unavailable; "
+                "retry without changing the request"
+            )
+        if claimed_id is None:
+            return {
+                "journal": journal,
+                "normalized_reason": normalized_reason,
+                "normalized_key": normalized_key,
+                "request_hash": request_hash,
+                "replay": cls._journal_result(
+                    journal,
+                    actor_user_id=actor_user_id,
+                    request_hash=request_hash,
+                    expected_snapshot=expected_snapshot,
+                ),
+            }
+        return {
+            "journal": journal,
+            "normalized_reason": normalized_reason,
+            "normalized_key": normalized_key,
+            "request_hash": request_hash,
+            "replay": None,
+        }
+
+    @classmethod
     def execute_changes(
         cls,
         session: Session,
@@ -670,34 +1034,45 @@ class AdminEntitlementService:
         reason: str,
         request_id: str,
         idempotency_key: str,
+        expected_release_snapshots: Mapping[
+            str, Mapping[str, Any]
+        ] | None = None,
+        request_intent: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        normalized_reason = reason.strip()
-        if len(normalized_reason) < 3 or len(normalized_reason) > 240:
-            raise ConflictError("change reason must contain 3 to 240 characters")
-        normalized_key = idempotency_key.strip()
-        if not normalized_key or len(normalized_key) > 120:
-            raise ConflictError("idempotency_key must contain 1 to 120 characters")
-        normalized_changes = cls._normalize_changes(changes)
-        request_hash = _sha256(
-            {"changes": normalized_changes, "reason": normalized_reason}
+        normalized_changes: list[dict[str, Any]] | None = None
+        if request_intent is None:
+            # Direct service callers predate the HTTP intent contract. Keep
+            # their idempotency stable by deriving a complete, immutable
+            # intent once from their supplied cells. Production routes always
+            # pass the original client intent explicitly.
+            normalized_changes = cls._normalize_changes(changes)
+            request_intent = {
+                "operation": "service_batch",
+                "cells": normalized_changes,
+            }
+        claim = cls._claim_execution(
+            session,
+            expected_snapshot=expected_snapshot,
+            actor_user_id=actor_user_id,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            request_intent=request_intent,
         )
-        existing = session.scalar(
-            select(AuditLog).where(
-                AuditLog.action == "company.entitlements.batch",
-                AuditLog.target_type == "entitlement_batch",
-                AuditLog.target_id == normalized_key,
-            )
-        )
-        if existing is not None:
-            if existing.after_summary.get("request_hash") != request_hash:
-                raise ConflictError("idempotency_key is already used by another batch")
-            stored = existing.after_summary.get("result")
-            if isinstance(stored, dict):
-                return {**stored, "idempotent_replay": True}
-            raise ConflictError("stored entitlement batch result is incomplete")
+        replay = claim["replay"]
+        if replay is not None:
+            return replay
+        journal = claim["journal"]
+        normalized_reason = claim["normalized_reason"]
+        normalized_key = claim["normalized_key"]
+        request_hash = claim["request_hash"]
+        if normalized_changes is None:
+            normalized_changes = cls._normalize_changes(changes)
 
         preview = cls.preview_changes(
-            session, changes=normalized_changes, lock_rows=True
+            session,
+            changes=normalized_changes,
+            lock_rows=True,
+            expected_release_snapshots=expected_release_snapshots,
         )
         if preview["snapshot"] != expected_snapshot:
             raise ConflictError("entitlement matrix changed after preview; preview again")
@@ -715,11 +1090,18 @@ class AdminEntitlementService:
                     enabled=after["enabled"],
                     price_per_second_cents=after["price_per_second_cents"],
                     price_per_item_cents=after["price_per_item_cents"],
+                    price_per_second_points=after["price_per_second_points"],
+                    price_per_item_points=after["price_per_item_points"],
                     config_override=after["config_override"],
                     call_quota=after["call_quota"],
                     concurrency_limit=after["concurrency_limit"],
                     effective_at=after["effective_at"],
                     expires_at=after["expires_at"],
+                    expected_release_snapshot=(
+                        (expected_release_snapshots or {}).get(
+                            cell["item_id"]
+                        )
+                    ),
                 )
             else:
                 grant = ResourceGrantService.upsert_company_grant(
@@ -786,6 +1168,10 @@ class AdminEntitlementService:
             },
             request_id=request_id,
         )
+        journal.state = "completed"
+        journal.result_payload = _canonical(result)
+        journal.updated_at = utcnow()
+        session.flush()
         return result
 
     @classmethod
@@ -799,20 +1185,35 @@ class AdminEntitlementService:
         include_models: bool = True,
         include_resources: bool = True,
     ) -> list[dict[str, Any]]:
-        if session.get(Company, source_company_id) is None:
+        source_company = session.get(Company, source_company_id)
+        if source_company is None:
             raise NotFoundError("source company does not exist")
         targets = sorted({item.strip() for item in target_company_ids if item.strip()})
         if source_company_id in targets:
             raise ConflictError("source company cannot also be a copy target")
-        existing_targets = set(
-            session.scalars(select(Company.id).where(Company.id.in_(targets))).all()
-        )
-        if existing_targets != set(targets):
+        target_companies = {
+            company.id: company
+            for company in session.scalars(
+                select(Company).where(Company.id.in_(targets))
+            ).all()
+        }
+        if set(target_companies) != set(targets):
             raise NotFoundError("one or more target companies do not exist")
         if not targets:
             raise ConflictError("at least one target company is required")
         changes: list[dict[str, Any]] = []
         if include_models:
+            source_unit, source_version = _company_billing_contract(source_company)
+            mismatched_targets = [
+                target
+                for target in targets
+                if _company_billing_contract(target_companies[target])
+                != (source_unit, source_version)
+            ]
+            if mismatched_targets:
+                raise ConflictError(
+                    "model entitlement copy cannot cross billing versions"
+                )
             source = {
                 grant.model_id: grant
                 for grant in session.scalars(
@@ -847,8 +1248,12 @@ class AdminEntitlementService:
                                 "item_kind": "model",
                                 "item_id": item_id,
                                 "enabled": source_grant.enabled,
+                                "billing_unit": source_unit.value,
+                                "billing_version": source_version,
                                 "price_per_second_cents": source_grant.price_per_second_cents,
                                 "price_per_item_cents": source_grant.price_per_item_cents,
+                                "price_per_second_points": source_grant.price_per_second_points,
+                                "price_per_item_points": source_grant.price_per_item_points,
                                 "config_override": source_grant.config_override or {},
                                 "call_quota": source_grant.call_quota,
                                 "concurrency_limit": source_grant.concurrency_limit,
@@ -857,14 +1262,21 @@ class AdminEntitlementService:
                             }
                         )
                     elif mode == "replace" and target_grant is not None:
+                        target_unit, target_version = _company_billing_contract(
+                            target_companies[target]
+                        )
                         changes.append(
                             {
                                 "company_id": target,
                                 "item_kind": "model",
                                 "item_id": item_id,
                                 "enabled": False,
+                                "billing_unit": target_unit.value,
+                                "billing_version": target_version,
                                 "price_per_second_cents": target_grant.price_per_second_cents,
                                 "price_per_item_cents": target_grant.price_per_item_cents,
+                                "price_per_second_points": target_grant.price_per_second_points,
+                                "price_per_item_points": target_grant.price_per_item_points,
                                 "config_override": target_grant.config_override or {},
                                 "call_quota": target_grant.call_quota,
                                 "concurrency_limit": target_grant.concurrency_limit,
@@ -940,9 +1352,73 @@ class AdminEntitlementService:
         targets = sorted({item.strip() for item in target_company_ids if item.strip()})
         if not targets:
             raise ConflictError("at least one target company is required")
-        specs = list(template_cells)
+        target_companies = {
+            company.id: company
+            for company in session.scalars(
+                select(Company).where(Company.id.in_(targets))
+            ).all()
+        }
+        if set(target_companies) != set(targets):
+            raise NotFoundError("one or more target companies do not exist")
+        specs = [dict(cell) for cell in template_cells]
         if not specs:
             raise ConflictError("template must contain at least one entitlement cell")
+        model_contracts: set[tuple[str, int]] = set()
+        for spec in specs:
+            if spec.get("item_kind") != "model":
+                continue
+            declared_unit = spec.get("billing_unit")
+            declared_version = spec.get("billing_version")
+            has_point_price = any(
+                spec.get(field) is not None
+                for field in (
+                    "price_per_second_points",
+                    "price_per_item_points",
+                )
+            )
+            if declared_unit is None and declared_version is None:
+                if has_point_price:
+                    raise ConflictError(
+                        "point entitlement templates require explicit POINT v2 billing evidence"
+                    )
+                declared_unit = BillingUnit.CNY_CENT.value
+                declared_version = 1
+                spec["billing_unit"] = declared_unit
+                spec["billing_version"] = declared_version
+            elif declared_unit is None or declared_version is None:
+                raise ConflictError(
+                    "billing_unit and billing_version must be supplied together"
+                )
+            declared_unit = _enum_value(declared_unit)
+            try:
+                declared_version = int(declared_version)
+            except (TypeError, ValueError) as exc:
+                raise ConflictError("template billing version is invalid") from exc
+            if (declared_unit, declared_version) not in {
+                (BillingUnit.CNY_CENT.value, 1),
+                (BillingUnit.POINT.value, 2),
+            }:
+                raise ConflictError("template billing contract is invalid")
+            spec["billing_unit"] = declared_unit
+            spec["billing_version"] = declared_version
+            model_contracts.add((declared_unit, declared_version))
+        if len(model_contracts) > 1:
+            raise ConflictError(
+                "one entitlement template cannot mix billing versions"
+            )
+        if model_contracts:
+            template_contract = next(iter(model_contracts))
+            if any(
+                (
+                    _company_billing_contract(target_companies[target])[0].value,
+                    _company_billing_contract(target_companies[target])[1],
+                )
+                != template_contract
+                for target in targets
+            ):
+                raise ConflictError(
+                    "model entitlement template cannot cross billing versions"
+                )
         changes = [
             {**spec, "company_id": company_id}
             for company_id in targets
@@ -969,8 +1445,16 @@ class AdminEntitlementService:
                             "item_kind": "model",
                             "item_id": grant.model_id,
                             "enabled": False,
+                            "billing_unit": _company_billing_contract(
+                                target_companies[grant.company_id]
+                            )[0].value,
+                            "billing_version": _company_billing_contract(
+                                target_companies[grant.company_id]
+                            )[1],
                             "price_per_second_cents": grant.price_per_second_cents,
                             "price_per_item_cents": grant.price_per_item_cents,
+                            "price_per_second_points": grant.price_per_second_points,
+                            "price_per_item_points": grant.price_per_item_points,
                             "config_override": grant.config_override or {},
                             "call_quota": grant.call_quota,
                             "concurrency_limit": grant.concurrency_limit,

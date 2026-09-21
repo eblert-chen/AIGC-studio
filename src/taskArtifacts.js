@@ -1,18 +1,12 @@
-import { modeLabel } from "./modelCapabilities.js";
+import { modeLabel, modeUsesDuration } from "./modelCapabilities.js";
+import {
+  billingAmountLabel,
+  billingPresentationState,
+} from "./billingPresentation.js";
 
 function finiteCount(value) {
   const count = Number(value);
   return Number.isFinite(count) && count >= 0 ? Math.floor(count) : null;
-}
-
-function money(cents) {
-  const value = Number(cents);
-  return Number.isFinite(value) ? `¥${(value / 100).toFixed(2)}` : "金额未记录";
-}
-
-function points(value) {
-  const amount = Number(value);
-  return Number.isFinite(amount) ? `${Math.max(0, Math.round(amount))} 积分` : "积分未记录";
 }
 
 export function normalizePage(payload, { page = 1, pageSize = 50 } = {}) {
@@ -36,12 +30,67 @@ export function normalizePage(payload, { page = 1, pageSize = 50 } = {}) {
   };
 }
 
+export function taskArtifactEvidence(task = {}) {
+  if (task?.status !== "succeeded") {
+    return {
+      complete: false,
+      state: "not_applicable",
+      detail: "任务尚未进入成功归档状态。",
+      artifacts: [],
+    };
+  }
+
+  const expectedCount = Number(task?.request_payload?.output_count);
+  if (!Number.isSafeInteger(expectedCount) || expectedCount < 1) {
+    return {
+      complete: false,
+      state: "evidence_missing",
+      detail: "任务报告成功，但缺少可核验的预期产物数量。",
+      artifacts: [],
+    };
+  }
+
+  const artifacts = Array.isArray(task.output_artifacts) ? task.output_artifacts : [];
+  if (artifacts.length !== expectedCount) {
+    return {
+      complete: false,
+      state: "evidence_missing",
+      detail: `任务报告成功，但归档产物为 ${artifacts.length}/${expectedCount}，已关闭下载与后续操作。`,
+      artifacts: [],
+    };
+  }
+
+  const valid = artifacts.every((artifact) => (
+    artifact !== null
+    && typeof artifact === "object"
+    && !Array.isArray(artifact)
+    && typeof artifact.asset_id === "string"
+    && artifact.asset_id.trim().length > 0
+    && typeof artifact.media_type === "string"
+    && artifact.media_type.trim().length > 0
+  ));
+  if (!valid) {
+    return {
+      complete: false,
+      state: "evidence_missing",
+      detail: "任务报告成功，但归档产物标识或媒体类型不完整，已关闭下载与后续操作。",
+      artifacts: [],
+    };
+  }
+
+  return {
+    complete: true,
+    state: "complete",
+    detail: `${artifacts.length} 个产物已通过平台归档证据核验。`,
+    artifacts,
+  };
+}
+
 export function deriveArtworksFromTasks(tasks = []) {
   return tasks.flatMap((task) => {
-    if (task?.status !== "succeeded" || !Array.isArray(task.output_artifacts)) {
-      return [];
-    }
-    return task.output_artifacts.map((artifact, index) => ({
+    const evidence = taskArtifactEvidence(task);
+    if (!evidence.complete) return [];
+    return evidence.artifacts.map((artifact, index) => ({
       artifact_id: `${task.id}:${artifact.asset_id}`,
       task_id: task.id,
       company_id: task.company_id,
@@ -62,6 +111,9 @@ export function deriveArtworksFromTasks(tasks = []) {
       request_payload: task.request_payload || {},
       actual_cost_cents: task.actual_cost_cents,
       actual_cost_points: task.actual_cost_points,
+      billing_unit: task.billing_unit,
+      billing_version: task.billing_version,
+      billing_scope: task.billing_scope,
       created_at: task.created_at,
       download_evidence_available: false,
     }));
@@ -148,26 +200,82 @@ export function downloadRecordState(record = {}) {
 }
 
 export function taskCostLabel(task = {}) {
-  if (task.actual_cost_points !== null && task.actual_cost_points !== undefined) {
-    return points(task.actual_cost_points);
+  const billing = billingPresentationState(task);
+  const amountLabel = (pointsField, centsField, options = {}) => billingAmountLabel(task, {
+    pointsField,
+    centsField,
+    ...options,
+  });
+
+  if (["failed", "cancelled"].includes(task.status)) {
+    if (!billing.available) return "账务单位待确认";
+    const actualField = billing.kind === "legacy_cents"
+      ? "actual_cost_cents"
+      : "actual_cost_points";
+    const reservedField = billing.kind === "legacy_cents"
+      ? "reserved_cents"
+      : "reserved_points";
+    const actualDeclared = Object.hasOwn(task, actualField);
+    const reservedDeclared = Object.hasOwn(task, reservedField);
+    const actualRaw = task[actualField];
+    const reservedRaw = task[reservedField];
+    const actualIsValid = actualRaw === null
+      || (typeof actualRaw === "number" && Number.isSafeInteger(actualRaw) && actualRaw >= 0);
+    const reservedIsValid = typeof reservedRaw === "number"
+      && Number.isSafeInteger(reservedRaw)
+      && reservedRaw >= 0;
+    const actual = actualRaw === null ? 0 : actualRaw;
+    if (actualDeclared && !actualIsValid) {
+      return "账务数据异常";
+    }
+    if (actualDeclared && actual > 0) {
+      return `账务异常：${amountLabel("actual_cost_points", "actual_cost_cents")}`;
+    }
+    if (reservedDeclared && !reservedIsValid) {
+      return "账务数据异常";
+    }
+    if (reservedDeclared && reservedRaw > 0) {
+      return `预占未释放：${amountLabel("reserved_points", "reserved_cents")}`;
+    }
+    if (!actualDeclared || !reservedDeclared) return "扣费状态待核验";
+    return "未扣费";
   }
-  if (task.actual_cost_cents !== null && task.actual_cost_cents !== undefined) {
-    return money(task.actual_cost_cents);
+  if (billing.kind === "points" || billing.kind === "internal_test") {
+    if (task.actual_cost_points !== null && task.actual_cost_points !== undefined) {
+      return amountLabel("actual_cost_points", "actual_cost_cents", {
+        pointNoun: billing.kind === "internal_test" ? "影子积分" : "积分",
+      });
+    }
+  } else if (billing.kind === "legacy_cents") {
+    if (task.actual_cost_cents !== null && task.actual_cost_cents !== undefined) {
+      return amountLabel("actual_cost_points", "actual_cost_cents");
+    }
+  } else if (
+    task.actual_cost_points !== null && task.actual_cost_points !== undefined
+    || task.actual_cost_cents !== null && task.actual_cost_cents !== undefined
+  ) {
+    return "结算单位待确认";
   }
-  if (["failed", "cancelled", "timed_out"].includes(task.status)) return "未扣费";
-  if (Number(task.reserved_points) > 0) {
-    return `预占 ${points(task.reserved_points)}`;
+  if (task.status === "succeeded") return "结算金额未记录";
+  if (task.status === "timed_out") return "费用待核验";
+  if (billing.kind === "points" || billing.kind === "internal_test") {
+    const pointNoun = billing.kind === "internal_test" ? "影子积分" : "积分";
+    if (Number(task.reserved_points) > 0) {
+      return `预占 ${amountLabel("reserved_points", "reserved_cents", { pointNoun })}`;
+    }
+    if (task.quote_points !== null && task.quote_points !== undefined) {
+      return `预计 ${amountLabel("quote_points", "quote_cents", { pointNoun })}`;
+    }
   }
-  if (task.quote_points !== null && task.quote_points !== undefined) {
-    return `预计 ${points(task.quote_points)}`;
+  if (billing.kind === "legacy_cents") {
+    if (Number(task.reserved_cents) > 0) {
+      return `预占 ${amountLabel("reserved_points", "reserved_cents")}`;
+    }
+    if (task.quote_cents !== null && task.quote_cents !== undefined) {
+      return `预计 ${amountLabel("quote_points", "quote_cents")}`;
+    }
   }
-  if (Number(task.reserved_cents) > 0) {
-    return `预占 ${money(task.reserved_cents)}`;
-  }
-  if (task.quote_cents !== null && task.quote_cents !== undefined) {
-    return `预计 ${money(task.quote_cents)}`;
-  }
-  return "金额未记录";
+  return billing.available ? "计费金额未记录" : "计费单位待确认";
 }
 
 export function taskParametersLabel(payload = {}) {
@@ -178,7 +286,7 @@ export function taskParametersLabel(payload = {}) {
   if (payload.mode) values.push(modeLabel(payload.mode));
   if (payload.aspect_ratio) values.push(payload.aspect_ratio);
   if (payload.resolution) values.push(payload.resolution);
-  if (Number(payload.duration_seconds) > 0) {
+  if (modeUsesDuration(payload.mode) && Number(payload.duration_seconds) > 0) {
     values.push(`${Number(payload.duration_seconds)} 秒`);
   }
   if (Number(payload.output_count) > 0) {

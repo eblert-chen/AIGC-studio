@@ -30,6 +30,7 @@ type PlatformChannelCostInput struct {
 	OccurredAt           time.Time
 	ExternalReference    string
 	CompanyID            string
+	PersonalWorkspaceID  string
 	TaskID               string
 	RelayJobID           string
 	Note                 string
@@ -64,8 +65,9 @@ func (input PlatformChannelCostInput) Validate() error {
 		return fmt.Errorf("channel cost external_reference is invalid")
 	}
 	for name, value := range map[string]string{
-		"company_id": input.CompanyID,
-		"task_id":    input.TaskID,
+		"company_id":            input.CompanyID,
+		"personal_workspace_id": input.PersonalWorkspaceID,
+		"task_id":               input.TaskID,
 	} {
 		if value != "" && (strings.TrimSpace(value) != value || utf8.RuneCountInString(value) > 64) {
 			return fmt.Errorf("channel cost %s is invalid", name)
@@ -74,6 +76,17 @@ func (input PlatformChannelCostInput) Validate() error {
 	if input.RelayJobID != "" {
 		if parsed, err := uuid.Parse(input.RelayJobID); err != nil || parsed.String() != input.RelayJobID {
 			return fmt.Errorf("channel cost relay_job_id must be a canonical UUID")
+		}
+	}
+	if input.CompanyID != "" && input.PersonalWorkspaceID != "" {
+		return fmt.Errorf("channel cost cannot belong to two billing scopes")
+	}
+	if input.TaskID != "" {
+		if (input.CompanyID == "") == (input.PersonalWorkspaceID == "") {
+			return fmt.Errorf("task-linked channel cost requires exactly one billing scope")
+		}
+		if input.RelayJobID == "" {
+			return fmt.Errorf("task-linked channel cost requires relay_job_id")
 		}
 	}
 	if strings.TrimSpace(input.Note) != input.Note || utf8.RuneCountInString(input.Note) > 240 {
@@ -111,6 +124,7 @@ type PlatformChannelCostPayload struct {
 	OccurredAt           time.Time `json:"occurred_at"`
 	ExternalReference    string    `json:"external_reference"`
 	CompanyID            string    `json:"company_id,omitempty"`
+	PersonalWorkspaceID  string    `json:"personal_workspace_id,omitempty"`
 	TaskID               string    `json:"task_id,omitempty"`
 	RelayJobID           string    `json:"relay_job_id,omitempty"`
 	Note                 string    `json:"note"`
@@ -128,6 +142,7 @@ func (input PlatformChannelCostInput) Payload() PlatformChannelCostPayload {
 		OccurredAt:           input.OccurredAt.UTC(),
 		ExternalReference:    input.ExternalReference,
 		CompanyID:            input.CompanyID,
+		PersonalWorkspaceID:  input.PersonalWorkspaceID,
 		TaskID:               input.TaskID,
 		RelayJobID:           input.RelayJobID,
 		Note:                 input.Note,

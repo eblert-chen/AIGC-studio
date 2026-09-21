@@ -41,3 +41,16 @@ func TestJsonRawMessageToString(t *testing.T) {
 		})
 	}
 }
+
+func TestRejectDuplicateJSONKeysRejectsExactNestedAndCaseAmbiguousKeys(t *testing.T) {
+	for _, raw := range []string{
+		`{"model":1,"model":2}`,
+		`{"outer":{"route_id":"a","route_id":"b"}}`,
+		`{"public_model_id":"seedream-5","PUBLIC_MODEL_ID":"tampered"}`,
+		`{"signed_at":"2026-08-29T00:00:00Z","ſigned_at":"tampered"}`,
+		`{"key_id":"trusted","Key_id":"tampered"}`,
+	} {
+		require.ErrorContains(t, RejectDuplicateJSONKeys([]byte(raw)), "duplicated")
+	}
+	require.NoError(t, RejectDuplicateJSONKeys([]byte(`{"model-a":1,"model-b":2}`)))
+}

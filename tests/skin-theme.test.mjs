@@ -16,12 +16,20 @@ const operationsSource = await readFile(
   "utf8",
 );
 const mainSource = await readFile(new URL("../src/main.jsx", import.meta.url), "utf8");
-const communitySource = await readFile(
-  new URL("../src/community.css", import.meta.url),
+const tokensSource = await readFile(
+  new URL("../src/design-system/tokens.css", import.meta.url),
   "utf8",
 );
-const lightThemeSource = await readFile(
-  new URL("../src/light-theme.css", import.meta.url),
+const studioRoutesSource = await readFile(
+  new URL("../src/design-system/studio-routes.css", import.meta.url),
+  "utf8",
+);
+const controlsSource = await readFile(
+  new URL("../src/design-system/controls.css", import.meta.url),
+  "utf8",
+);
+const designSystemIndex = await readFile(
+  new URL("../src/design-system/index.css", import.meta.url),
   "utf8",
 );
 
@@ -68,6 +76,26 @@ test("the light skin preference has one explicit three-value allowlist and a saf
   assert.match(skinSource, /useState\(readStoredSkin\)/);
 });
 
+test("the skin chooser is a product menu rather than a browser-native select", () => {
+  assert.doesNotMatch(skinSource, /<select\b|<option\b/);
+  assert.match(skinSource, /className="skin-switcher-trigger"/);
+  assert.match(skinSource, /aria-haspopup="menu"/);
+  assert.match(skinSource, /aria-expanded=\{open\}/);
+  assert.match(skinSource, /role="menuitemradio"/);
+  assert.match(skinSource, /aria-checked=\{skin === option\.id\}/);
+  assert.match(skinSource, /data-skin-sample=\{skin\}/);
+  assert.match(skinSource, /<SkinSample skin=\{option\.id\} large \/>/);
+  assert.match(skinSource, /createPortal\(/);
+  assert.match(skinSource, /addEventListener\("pointerdown", handleOutsidePointer, true\)/);
+  for (const key of ["ArrowDown", "ArrowUp", "Home", "End", "Escape", "Enter", "Tab"]) {
+    assert.ok(skinSource.includes(`event.key === "${key}"`), `${key} must remain supported`);
+  }
+  assert.match(skinSource, /focusAdjacentControl\(triggerRef\.current, event\.shiftKey\)/);
+  assert.match(controlsSource, /\.skin-switcher-menu\s*\{[^}]*position:\s*fixed;[^}]*box-shadow:\s*var\(--shadow-menu/s);
+  assert.match(controlsSource, /\.skin-switcher-option\[aria-checked="true"\]/);
+  assert.match(controlsSource, /\.skin-switcher-trigger:focus-visible,[\s\S]*?outline:\s*2px solid/);
+});
+
 test("studio, company management, and platform operations roots receive the shared theme", () => {
   const appRoot = openingTagWith(appSource, "div", "app-shell");
   const managementRoot = openingTagWith(managementSource, "div", "control-shell");
@@ -92,31 +120,42 @@ test("studio, company management, and platform operations roots receive the shar
   );
 });
 
-test("every Studio skin outranks the retired secondary-page palette", () => {
-  const retiredPalette = cssRuleBody(communitySource, ".app-shell.is-secondary-page");
-  const overriddenTokens = [
-    ...retiredPalette.matchAll(/(--[a-z0-9-]+)\s*:/gi),
-  ].map(([, token]) => token);
-
-  assert.ok(
-    overriddenTokens.length > 0,
-    "the contract must observe the legacy secondary-page token block",
-  );
-
+test("every light skin is complete in the token layer and routes do not override it", () => {
+  const requiredTokens = [
+    "--bg",
+    "--canvas",
+    "--surface",
+    "--line",
+    "--line-strong",
+    "--text",
+    "--text-soft",
+    "--text-muted",
+    "--accent",
+    "--accent-strong",
+    "--accent-soft",
+  ];
   for (const skin of EXPECTED_SKINS) {
-    const shellPalette = cssRuleBody(
-      lightThemeSource,
-      `.app-shell[data-theme="${skin}"]`,
+    assert.match(tokensSource, new RegExp(`--skin-${skin}-bg\\s*:`));
+    assert.match(tokensSource, new RegExp(`--skin-${skin}-surface\\s*:`));
+    assert.match(tokensSource, new RegExp(`--skin-${skin}-line\\s*:`));
+  }
+  for (const skin of EXPECTED_SKINS) {
+    const palette = cssRuleBody(
+      tokensSource,
+      `:where([data-theme="${skin}"], [data-skin="${skin}"])`,
     );
-    assert.ok(shellPalette, `${skin} must declare a Studio-shell palette`);
-    for (const token of overriddenTokens) {
+    assert.ok(palette, `${skin} must declare a shared light palette`);
+    for (const token of requiredTokens) {
       assert.match(
-        shellPalette,
+        palette,
         new RegExp(`${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:`),
-        `${skin} must re-assert ${token} after the legacy secondary-page rule`,
+        `${skin} must own ${token}`,
       );
     }
   }
+
+  assert.doesNotMatch(studioRoutesSource, /data-(?:theme|skin)\s*=/i);
+  assert.doesNotMatch(studioRoutesSource, /--(?:bg|canvas|surface|text|accent)\s*:/i);
 });
 
 test("main loads the explicit cascade through one design-system entry point", () => {
@@ -125,10 +164,12 @@ test("main loads the explicit cascade through one design-system entry point", ()
   ].map(([, path]) => path);
 
   assert.deepEqual(stylesheetImports, ["./design-system/index.css"]);
-  assert.match(lightThemeSource, /color-scheme\s*:\s*light\s*;/i);
+  assert.match(tokensSource, /color-scheme\s*:\s*light\s*;/i);
+  assert.match(designSystemIndex, /@import\s+"\.\/tokens\.css"\s+layer\(system\.tokens\)/);
+  assert.match(designSystemIndex, /@import\s+"\.\/studio-routes\.css"\s+layer\(system\.routes\)/);
 
   const declaredThemes = [
-    ...lightThemeSource.matchAll(/data-(?:theme|skin)\s*=\s*["']([^"']+)["']/gi),
+    ...tokensSource.matchAll(/data-(?:theme|skin)\s*=\s*["']([^"']+)["']/gi),
   ].map(([, id]) => id);
   assert.ok(declaredThemes.includes("mist"), "mist must have a light token override");
   assert.ok(declaredThemes.includes("warm"), "warm must have a light token override");
@@ -137,7 +178,7 @@ test("main loads the explicit cascade through one design-system entry point", ()
     `theme CSS contains a value outside the light allowlist: ${declaredThemes.join(", ")}`,
   );
 
-  assert.doesNotMatch(lightThemeSource, /data-(?:theme|skin)\s*=\s*["']dark["']/i);
-  assert.doesNotMatch(lightThemeSource, /prefers-color-scheme\s*:\s*dark/i);
-  assert.doesNotMatch(lightThemeSource, /color-scheme\s*:\s*dark/i);
+  assert.doesNotMatch(tokensSource, /data-(?:theme|skin)\s*=\s*["']dark["']/i);
+  assert.doesNotMatch(tokensSource, /prefers-color-scheme\s*:\s*dark/i);
+  assert.doesNotMatch(tokensSource, /color-scheme\s*:\s*dark/i);
 });

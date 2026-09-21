@@ -3,9 +3,9 @@ package model
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -209,6 +209,92 @@ type PlatformGenerationClaim struct {
 	Token    string
 }
 
+type PlatformGenerationProviderResultBinding struct {
+	Job        PlatformGenerationJob
+	Route      PlatformGenerationProviderRoute
+	Admission  PlatformGenerationRouteAdmission
+	Credential ProviderCredentialVersion
+}
+
+// ResolvePlatformGenerationProviderResultBinding proves that a protected
+// native polling row belongs to exactly one immutable Platform job, route, and
+// encrypted credential-version identity. Provider result semantics are checked
+// by the service layer only after this database binding succeeds.
+func ResolvePlatformGenerationProviderResultBinding(task Task) (PlatformGenerationProviderResultBinding, error) {
+	if strings.TrimSpace(task.TaskID) == "" || !task.IsPlatformExternalBilling() {
+		return PlatformGenerationProviderResultBinding{}, errors.New("generation provider result task binding is invalid")
+	}
+	var binding PlatformGenerationProviderResultBinding
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		now, err := GetDBTimeTx(tx)
+		if err != nil {
+			return errors.New("generation provider result database clock is unavailable")
+		}
+		var jobs []PlatformGenerationJob
+		if err := tx.Where("native_task_id = ?", task.TaskID).Order("id ASC").Limit(2).Find(&jobs).Error; err != nil {
+			return errors.New("generation provider result job binding could not be inspected")
+		}
+		if len(jobs) != 1 {
+			return errors.New("generation provider result job binding is ambiguous")
+		}
+		job := jobs[0]
+		expectedTaskID, err := PlatformGenerationNativeTaskID(job.ID)
+		if err != nil || expectedTaskID != task.TaskID || job.NativeTaskID != task.TaskID || job.ProviderRouteID <= 0 {
+			return errors.New("generation provider result native task identity is inconsistent")
+		}
+		if strings.TrimSpace(job.UpstreamTaskID) == "" || job.UpstreamTaskID != task.PrivateData.UpstreamTaskID ||
+			job.ProviderSubmissionAttempt <= 0 {
+			return errors.New("generation provider result upstream attempt is inconsistent")
+		}
+		var route PlatformGenerationProviderRoute
+		if err := tx.Where("id = ?", job.ProviderRouteID).First(&route).Error; err != nil {
+			return errors.New("generation provider result route binding is unavailable")
+		}
+		if _, _, _, err := ResolvePlatformGenerationProviderResultContract(PlatformGenerationProviderResultBinding{Job: job, Route: route}); err != nil {
+			return errors.New("generation provider result model release binding is incomplete")
+		}
+		var admission PlatformGenerationRouteAdmission
+		if err := tx.Where("job_id = ?", job.ID).First(&admission).Error; err != nil {
+			return errors.New("generation provider result route admission is unavailable")
+		}
+		if !platformGenerationNativeTaskMatchesRouteBinding(job, task, route) {
+			return errors.New("generation provider result route binding is inconsistent")
+		}
+		var credential ProviderCredentialVersion
+		if err := tx.Where(
+			"credential_version = ?",
+			task.PrivateData.ProviderCredentialVersion,
+		).First(&credential).Error; err != nil {
+			return errors.New("generation provider result credential binding is unavailable")
+		}
+		if !platformGenerationProviderCredentialMatchesRouteBinding(job, task, route, credential) {
+			return errors.New("generation provider result credential binding is inconsistent")
+		}
+		if err := ValidatePlatformGenerationRequestSnapshotBinding(job); err != nil {
+			return errors.New("generation provider result request snapshot binding is unavailable")
+		}
+		if err := ValidatePlatformGenerationNativeTaskBindingEvidence(
+			job,
+			&task,
+			route,
+			admission,
+			credential,
+			now,
+			false,
+		); err != nil {
+			return errors.New("generation provider result durable binding is inconsistent")
+		}
+		binding = PlatformGenerationProviderResultBinding{
+			Job:        job,
+			Route:      route,
+			Admission:  admission,
+			Credential: credential,
+		}
+		return nil
+	})
+	return binding, err
+}
+
 type PlatformGenerationReconciliationCandidate struct {
 	Job                 PlatformGenerationJob
 	Admission           PlatformGenerationRouteAdmission
@@ -221,9 +307,10 @@ type PlatformGenerationCallbackBuilder func(
 ) (*PlatformGenerationCallbackDelivery, bool, error)
 
 const (
-	platformGenerationNativeTaskRecoverySchemaVersion = 3
-	platformGenerationNativeTaskBillingOwner          = "platform"
-	platformGenerationNativeTaskBillingPolicyRevision = "platform-external-v1"
+	platformGenerationNativeTaskRecoverySchemaVersion       = 4
+	platformGenerationNativeTaskRecoveryLegacySchemaVersion = 3
+	platformGenerationNativeTaskBillingOwner                = "platform"
+	platformGenerationNativeTaskBillingPolicyRevision       = "platform-external-v1"
 )
 
 // platformGenerationNativeTaskRecovery contains only the evidence required
@@ -248,10 +335,13 @@ type platformGenerationNativeTaskRecovery struct {
 	PinnedKeyFingerprint       string     `json:"pinned_key_fingerprint"`
 	ProviderCredentialTenantID string     `json:"provider_credential_tenant_id"`
 	ProviderCredentialVersion  string     `json:"provider_credential_version"`
+	ProviderTransportRevision  string     `json:"provider_transport_revision,omitempty"`
+	ProviderTransportSHA256    string     `json:"provider_transport_sha256,omitempty"`
+	RequestJSONSHA256          string     `json:"request_json_sha256,omitempty"`
 }
 
 // PlatformGenerationNativeTaskCredentialReference is the secret-free,
-// immutable credential identity carried by v3 native-task recovery evidence.
+// immutable credential identity carried by v3/v4 native-task recovery evidence.
 // Runtime attestation uses it to batch-load the exact vault row without
 // exposing credential bytes or duplicating the recovery JSON contract outside
 // the model package.
@@ -264,7 +354,7 @@ type PlatformGenerationNativeTaskCredentialReference struct {
 }
 
 // PlatformGenerationNativeTaskRecoveryCredentialReference parses only valid
-// v3 Platform-owned recovery evidence. Older recovery schemas deliberately do
+// v3/v4 Platform-owned recovery evidence. Older recovery schemas deliberately do
 // not receive a compatibility interpretation because they may represent the
 // retired native-billing lifecycle.
 func PlatformGenerationNativeTaskRecoveryCredentialReference(job PlatformGenerationJob) (PlatformGenerationNativeTaskCredentialReference, error) {
@@ -272,7 +362,11 @@ func PlatformGenerationNativeTaskRecoveryCredentialReference(job PlatformGenerat
 	if err != nil {
 		return PlatformGenerationNativeTaskCredentialReference{}, err
 	}
-	if recovery.SchemaVersion != platformGenerationNativeTaskRecoverySchemaVersion ||
+	if err := validatePlatformGenerationRequestSnapshotBinding(job, true); err != nil {
+		return PlatformGenerationNativeTaskCredentialReference{}, err
+	}
+	if (recovery.SchemaVersion != platformGenerationNativeTaskRecoverySchemaVersion &&
+		recovery.SchemaVersion != platformGenerationNativeTaskRecoveryLegacySchemaVersion) ||
 		recovery.BillingOwner != platformGenerationNativeTaskBillingOwner ||
 		recovery.BillingPolicyRevision != platformGenerationNativeTaskBillingPolicyRevision {
 		return PlatformGenerationNativeTaskCredentialReference{}, errors.New("generation native task recovery billing policy is unsupported")
@@ -316,6 +410,9 @@ func ValidatePlatformGenerationNativeTaskBindingEvidence(
 	}
 	recovery, err := decodePlatformGenerationNativeTaskRecovery(job.NativeTaskRecoveryJSON)
 	if err != nil {
+		return err
+	}
+	if err := validatePlatformGenerationRequestSnapshotBinding(job, true); err != nil {
 		return err
 	}
 	if err := validatePlatformGenerationNativeTaskRecovery(
@@ -491,11 +588,14 @@ func StagePlatformGenerationNativeTaskRecovery(jobID string, expectedWorkerLease
 			PinnedKeyFingerprint:       task.PrivateData.PinnedKeyFingerprint,
 			ProviderCredentialTenantID: task.PrivateData.ProviderCredentialTenantID,
 			ProviderCredentialVersion:  task.PrivateData.ProviderCredentialVersion,
+			ProviderTransportRevision:  task.PrivateData.ProviderTransportRevision,
+			ProviderTransportSHA256:    task.PrivateData.ProviderTransportSHA256,
+			RequestJSONSHA256:          platformGenerationRequestJSONSHA256(job.RequestJSON),
 		}
 		if err := validatePlatformGenerationNativeTaskRecovery(jobID, job.TenantID, recovery, route, admission.Attempt); err != nil {
 			return err
 		}
-		serialized, err := json.Marshal(recovery)
+		serialized, err := common.Marshal(recovery)
 		if err != nil {
 			return err
 		}
@@ -528,6 +628,95 @@ func StagePlatformGenerationNativeTaskRecovery(jobID string, expectedWorkerLease
 	})
 }
 
+// BindPlatformGenerationRequestToRouteProfile persists the route-specific
+// adapter profile after durable admission and before any provider byte is
+// sent. The public request hash remains unchanged because Relay-owned metadata
+// is outside the client idempotency contract. A later proven-non-creation
+// attempt may replace this snapshot only while holding a new route token.
+func BindPlatformGenerationRequestToRouteProfile(
+	jobID string,
+	expectedWorkerLeaseToken string,
+	admissionID int64,
+	submissionToken string,
+	requestJSON string,
+) error {
+	if parsed, err := uuid.Parse(jobID); err != nil || parsed.String() != jobID ||
+		admissionID <= 0 || strings.TrimSpace(requestJSON) == "" || len(requestJSON) > 1<<20 {
+		return errors.New("generation route profile binding is invalid")
+	}
+	if parsed, err := uuid.Parse(expectedWorkerLeaseToken); err != nil || parsed.String() != expectedWorkerLeaseToken {
+		return errors.New("generation submission worker lease token must be a canonical UUID")
+	}
+	if parsed, err := uuid.Parse(submissionToken); err != nil || parsed.String() != submissionToken {
+		return errors.New("generation route submission token must be a canonical UUID")
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		now, err := GetDBTimeTx(tx)
+		if err != nil {
+			return err
+		}
+		var job PlatformGenerationJob
+		if err := lockForUpdate(tx.Where(
+			"id = ? AND status = ? AND submission_lease_token = ? AND submission_lease_expires_at > ?",
+			jobID, PlatformGenerationStatusSubmitting, expectedWorkerLeaseToken, now,
+		)).First(&job).Error; err != nil {
+			return errors.New("generation submission worker lease is stale")
+		}
+		var admission PlatformGenerationRouteAdmission
+		if err := lockForUpdate(tx.Where("id = ? AND job_id = ?", admissionID, jobID)).First(&admission).Error; err != nil {
+			return err
+		}
+		if admission.State != PlatformGenerationRouteAdmissionHeld || !admission.SlotHeld || admission.Attempt <= 0 ||
+			subtle.ConstantTimeCompare(
+				[]byte(admission.SubmissionTokenHash),
+				[]byte(platformGenerationSubmissionTokenHash(submissionToken)),
+			) != 1 {
+			return errors.New("generation route profile binding lost its admission fence")
+		}
+		var route PlatformGenerationProviderRoute
+		if err := tx.Where("id = ?", admission.RouteID).First(&route).Error; err != nil {
+			return err
+		}
+		if route.CapabilityProfileID == "" || route.CapabilityProfileRevision == "" || route.CapabilityProfileSnapshot == "" {
+			return errors.New("generation provider route capability profile is unavailable")
+		}
+		var boundRequest struct {
+			Metadata map[string]any `json:"metadata"`
+		}
+		if err := common.RejectDuplicateJSONKeys([]byte(requestJSON)); err != nil {
+			return errors.New("generation route profile binding request is invalid")
+		}
+		if err := common.Unmarshal([]byte(requestJSON), &boundRequest); err != nil {
+			return errors.New("generation route profile binding request is invalid")
+		}
+		profileID, _ := boundRequest.Metadata["relay_capability_profile"].(string)
+		profileRevision, _ := boundRequest.Metadata["relay_capability_profile_revision"].(string)
+		profileSnapshot, _ := boundRequest.Metadata["relay_capability_profile_snapshot"].(string)
+		if profileID != route.CapabilityProfileID || profileRevision != route.CapabilityProfileRevision ||
+			profileSnapshot != route.CapabilityProfileSnapshot {
+			return errors.New("generation route profile binding does not match the admitted route")
+		}
+		result := tx.Model(&PlatformGenerationJob{}).Where(
+			"id = ? AND status = ? AND submission_lease_token = ? AND submission_lease_expires_at > ?",
+			jobID, PlatformGenerationStatusSubmitting, expectedWorkerLeaseToken, now,
+		).Updates(map[string]any{
+			"request_json":                requestJSON,
+			"provider_route_id":           route.ID,
+			"provider_channel_id":         route.ChannelID,
+			"provider_key_index":          route.KeyIndex,
+			"provider_submission_attempt": admission.Attempt,
+			"updated_at":                  now,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("generation route profile binding lost its submission lease fence")
+		}
+		return nil
+	})
+}
+
 func decodePlatformGenerationNativeTaskRecovery(raw string) (platformGenerationNativeTaskRecovery, error) {
 	var recovery platformGenerationNativeTaskRecovery
 	if strings.TrimSpace(raw) == "" {
@@ -537,6 +726,42 @@ func decodePlatformGenerationNativeTaskRecovery(raw string) (platformGenerationN
 		return recovery, fmt.Errorf("generation native task recovery evidence is invalid: %w", err)
 	}
 	return recovery, nil
+}
+
+func platformGenerationRequestJSONSHA256(requestJSON string) string {
+	digest := sha256.Sum256([]byte(requestJSON))
+	return fmt.Sprintf("sha256:%x", digest)
+}
+
+// ValidatePlatformGenerationRequestSnapshotBinding anchors the executable
+// request (including its route-specific adapter profile snapshot) to the
+// durable, submission-fenced recovery evidence. Schema v3 is accepted only as
+// a compatibility path for work accepted before this binding was introduced;
+// every newly staged task uses v4 and fails closed on any request mutation.
+func ValidatePlatformGenerationRequestSnapshotBinding(job PlatformGenerationJob) error {
+	return validatePlatformGenerationRequestSnapshotBinding(job, false)
+}
+
+func validatePlatformGenerationRequestSnapshotBinding(job PlatformGenerationJob, allowLegacy bool) error {
+	recovery, err := decodePlatformGenerationNativeTaskRecovery(job.NativeTaskRecoveryJSON)
+	if err != nil {
+		return err
+	}
+	switch recovery.SchemaVersion {
+	case platformGenerationNativeTaskRecoveryLegacySchemaVersion:
+		if allowLegacy {
+			return nil
+		}
+		return errors.New("generation request snapshot predates route-assignment binding")
+	case platformGenerationNativeTaskRecoverySchemaVersion:
+		if strings.TrimSpace(job.RequestJSON) == "" ||
+			recovery.RequestJSONSHA256 != platformGenerationRequestJSONSHA256(job.RequestJSON) {
+			return errors.New("generation request snapshot does not match its fenced route assignment")
+		}
+		return nil
+	default:
+		return errors.New("generation native task recovery schema is unsupported")
+	}
 }
 
 func validatePlatformGenerationNativeTaskRecovery(
@@ -550,7 +775,8 @@ func validatePlatformGenerationNativeTaskRecovery(
 	if err != nil {
 		return err
 	}
-	if recovery.SchemaVersion != platformGenerationNativeTaskRecoverySchemaVersion ||
+	if (recovery.SchemaVersion != platformGenerationNativeTaskRecoverySchemaVersion &&
+		recovery.SchemaVersion != platformGenerationNativeTaskRecoveryLegacySchemaVersion) ||
 		recovery.BillingOwner != platformGenerationNativeTaskBillingOwner ||
 		recovery.BillingPolicyRevision != platformGenerationNativeTaskBillingPolicyRevision ||
 		recovery.RouteID != route.ID || recovery.Attempt != attempt ||
@@ -563,6 +789,21 @@ func validatePlatformGenerationNativeTaskRecovery(
 		len(recovery.Group) > 50 || len(recovery.Action) > 40 || recovery.SubmitTime <= 0 || recovery.UserID < 0 {
 		return errors.New("generation native task recovery metadata is invalid")
 	}
+	if recovery.SchemaVersion == platformGenerationNativeTaskRecoverySchemaVersion &&
+		(!strings.HasPrefix(recovery.RequestJSONSHA256, "sha256:") || len(recovery.RequestJSONSHA256) != len("sha256:")+64) {
+		return errors.New("generation native task recovery request binding is invalid")
+	}
+	googleTransportRequired := (route.AcceptedChannelType == constant.ChannelTypeGemini ||
+		route.AcceptedChannelType == constant.ChannelTypeVertexAi) &&
+		strings.HasPrefix(route.CapabilityProfileID, "google.")
+	transportValid := platformGenerationSHA256Revision(recovery.ProviderTransportRevision) &&
+		platformGenerationSHA256Revision(recovery.ProviderTransportSHA256)
+	if googleTransportRequired && !transportValid {
+		return errors.New("generation native task recovery Google transport binding is invalid")
+	}
+	if !googleTransportRequired && (recovery.ProviderTransportRevision != "" || recovery.ProviderTransportSHA256 != "") {
+		return errors.New("generation native task recovery has an unexpected transport binding")
+	}
 	return nil
 }
 
@@ -570,9 +811,10 @@ func platformGenerationRecoveredNativeTask(
 	recovery platformGenerationNativeTaskRecovery,
 	upstreamTaskID string,
 	now time.Time,
+	synchronousResult *PlatformGenerationSynchronousResultEvidence,
 ) Task {
 	keyIndex := recovery.PinnedKeyIndex
-	return Task{
+	task := Task{
 		CreatedAt:  now.Unix(),
 		UpdatedAt:  now.Unix(),
 		TaskID:     recovery.TaskID,
@@ -591,10 +833,46 @@ func platformGenerationRecoveredNativeTask(
 			PinnedKeyFingerprint:       recovery.PinnedKeyFingerprint,
 			ProviderCredentialTenantID: recovery.ProviderCredentialTenantID,
 			ProviderCredentialVersion:  recovery.ProviderCredentialVersion,
+			ProviderTransportRevision:  recovery.ProviderTransportRevision,
+			ProviderTransportSHA256:    recovery.ProviderTransportSHA256,
 			UpstreamTaskID:             upstreamTaskID,
 			BillingSource:              TaskBillingSourcePlatformExternal,
 		},
 	}
+	if synchronousResult != nil {
+		task.Status = TaskStatusSuccess
+		task.Progress = "100%"
+		task.FinishTime = synchronousResult.ProviderCreatedAt.UTC().Unix()
+		task.PrivateData.ResultURL = synchronousResult.ResultURL
+		task.SetData(struct {
+			ID      string `json:"id"`
+			Model   string `json:"model"`
+			Status  string `json:"status"`
+			Size    string `json:"size"`
+			Created int64  `json:"created"`
+			Usage   struct {
+				GeneratedImages int `json:"generated_images"`
+				OutputTokens    int `json:"output_tokens"`
+				TotalTokens     int `json:"total_tokens"`
+			} `json:"usage"`
+		}{
+			ID:      upstreamTaskID,
+			Model:   synchronousResult.ProviderModelID,
+			Status:  "succeeded",
+			Size:    synchronousResult.Size,
+			Created: synchronousResult.ProviderCreatedAt.UTC().Unix(),
+			Usage: struct {
+				GeneratedImages int `json:"generated_images"`
+				OutputTokens    int `json:"output_tokens"`
+				TotalTokens     int `json:"total_tokens"`
+			}{
+				GeneratedImages: synchronousResult.GeneratedImages,
+				OutputTokens:    synchronousResult.OutputTokens,
+				TotalTokens:     synchronousResult.TotalTokens,
+			},
+		})
+	}
+	return task
 }
 
 func validatePlatformGenerationNativeTaskIdentity(task Task, recovery platformGenerationNativeTaskRecovery) error {
@@ -606,6 +884,8 @@ func validatePlatformGenerationNativeTaskIdentity(task Task, recovery platformGe
 		task.PrivateData.PinnedKeyFingerprint != recovery.PinnedKeyFingerprint ||
 		task.PrivateData.ProviderCredentialTenantID != recovery.ProviderCredentialTenantID ||
 		task.PrivateData.ProviderCredentialVersion != recovery.ProviderCredentialVersion ||
+		task.PrivateData.ProviderTransportRevision != recovery.ProviderTransportRevision ||
+		task.PrivateData.ProviderTransportSHA256 != recovery.ProviderTransportSHA256 ||
 		task.PrivateData.BillingSource != TaskBillingSourcePlatformExternal || task.Quota != 0 ||
 		task.PrivateData.SubscriptionId != 0 || task.PrivateData.TokenId != 0 ||
 		task.PrivateData.BillingContext != nil {
@@ -993,10 +1273,6 @@ func ClaimPlatformGenerationPoll(lease time.Duration) (*PlatformGenerationJob, s
 }
 
 func ClaimPlatformGenerationReconciliation(lease time.Duration) (*PlatformGenerationJob, string, error) {
-	return claimPlatformGenerationByStatus(PlatformGenerationStatusReconciliationRequired, lease)
-}
-
-func claimPlatformGenerationByStatus(status string, lease time.Duration) (*PlatformGenerationJob, string, error) {
 	var claimed PlatformGenerationJob
 	token := ""
 	err := DB.Transaction(func(tx *gorm.DB) error {
@@ -1004,9 +1280,15 @@ func claimPlatformGenerationByStatus(status string, lease time.Duration) (*Platf
 		if err != nil {
 			return err
 		}
+		// Only a missing native row is automatically rechecked. Submission
+		// unknowns and provider proof/material conflicts are read-only operator
+		// queues: claiming them here would either repeat callbacks/stage writes or
+		// accidentally turn retained evidence back into an ordinary polling task.
 		query := tx.Where(
-			"status = ? AND next_poll_at <= ? AND (poll_lease_token = ? OR poll_lease_expires_at <= ?)",
-			status,
+			"status = ? AND error_code = ? AND error_details_json = ? AND next_poll_at <= ? AND (poll_lease_token = ? OR poll_lease_expires_at <= ?)",
+			PlatformGenerationStatusReconciliationRequired,
+			PlatformGenerationErrorProviderPollReconciliationRequired,
+			PlatformGenerationProviderReconciliationDetailsJSON(PlatformGenerationProviderReconciliationKindMissingNativeTask),
 			now,
 			"",
 			now,
@@ -1098,6 +1380,7 @@ func CompletePlatformGenerationMissingNativeTask(
 			"error_code":                PlatformGenerationErrorProviderPollReconciliationRequired,
 			"error_message":             "The native task row is temporarily unavailable",
 			"error_retryable":           true,
+			"error_details_json":        PlatformGenerationProviderReconciliationDetailsJSON(PlatformGenerationProviderReconciliationKindMissingNativeTask),
 			"poll_lease_token":          "",
 			"poll_lease_expires_at":     nil,
 			"callback_backfill_pending": true,
@@ -1318,6 +1601,82 @@ func ReleasePlatformGenerationTransfer(
 	return won, err
 }
 
+// CompletePlatformGenerationTransferProviderMaterialConflict moves a fenced
+// transfer into a read-only manual-reconciliation state when the final scrub
+// cannot prove the native task binding. It deliberately preserves the job and
+// native-task provider evidence and refuses to split an already-published
+// artifact intent from a terminal generation.
+func CompletePlatformGenerationTransferProviderMaterialConflict(
+	jobID string,
+	token string,
+	callbackBuilders ...PlatformGenerationCallbackBuilder,
+) (bool, error) {
+	won := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		now, err := GetDBTimeTx(tx)
+		if err != nil {
+			return err
+		}
+		var job PlatformGenerationJob
+		if err := lockForUpdate(tx.Where("id = ?", jobID)).First(&job).Error; err != nil {
+			return err
+		}
+		if job.Status != PlatformGenerationStatusTransferring ||
+			job.TransferLeaseToken != token || !job.TransferLeaseExpiresAt.After(now) {
+			return nil
+		}
+		var publishedIntents int64
+		if err := tx.Model(&PlatformArtifactUploadIntent{}).Where(
+			"job_id = ? AND state = ?",
+			job.ID,
+			PlatformArtifactUploadIntentPublished,
+		).Count(&publishedIntents).Error; err != nil {
+			return err
+		}
+		if publishedIntents != 0 {
+			return ErrPlatformGenerationReconciliationConflict
+		}
+		result := tx.Model(&job).Where(
+			"id = ? AND status = ? AND transfer_lease_token = ? AND transfer_lease_expires_at > ?",
+			job.ID,
+			PlatformGenerationStatusTransferring,
+			token,
+			now,
+		).Updates(map[string]any{
+			"status":                    PlatformGenerationStatusReconciliationRequired,
+			"error_code":                PlatformGenerationErrorProviderPollReconciliationRequired,
+			"error_message":             "Provider result evidence requires manual reconciliation",
+			"error_retryable":           false,
+			"error_details_json":        PlatformGenerationProviderReconciliationDetailsJSON(PlatformGenerationProviderReconciliationKindProviderMaterial),
+			"next_poll_at":              now.Add(24 * time.Hour),
+			"transfer_lease_token":      "",
+			"transfer_lease_expires_at": nil,
+			"callback_backfill_pending": true,
+			"updated_at":                now,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return nil
+		}
+		if err := RecordPlatformTaskStageTransitionTx(
+			tx,
+			job.ID,
+			PlatformGenerationStatusReconciliationRequired,
+			now,
+		); err != nil {
+			return err
+		}
+		if err := buildPlatformGenerationCallbackTx(tx, job.ID, callbackBuilders); err != nil {
+			return err
+		}
+		won = true
+		return nil
+	})
+	return won, err
+}
+
 func CompletePlatformGenerationTransfer(
 	jobID string,
 	token string,
@@ -1329,6 +1688,7 @@ func CompletePlatformGenerationTransfer(
 		return false, fmt.Errorf("generation outputs are required")
 	}
 	won := false
+	publishedMaterialConflict := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var job PlatformGenerationJob
 		if err := lockForUpdate(tx.Where("id = ?", jobID)).First(&job).Error; err != nil {
@@ -1352,6 +1712,46 @@ func CompletePlatformGenerationTransfer(
 		}
 		if intent.State == PlatformArtifactUploadIntentPublished {
 			if job.Status == PlatformGenerationStatusSucceeded && job.OutputsJSON == outputsJSON {
+				// A caller may retry after the publication transaction committed but
+				// before its acknowledgement arrived. Older v4 candidates did not
+				// scrub the native result URL on this replay path, so repeat the same
+				// strict binding check before acknowledging the durable result.
+				if err := clearPlatformGenerationTemporaryProviderResultsTx(tx, job, now); err != nil {
+					if !errors.Is(err, ErrPlatformGenerationProviderMaterialReconciliationRequired) {
+						return err
+					}
+					marker := PlatformGenerationProviderReconciliationDetailsJSON(
+						PlatformGenerationProviderReconciliationKindProviderMaterial,
+					)
+					result := tx.Model(&PlatformGenerationJob{}).Where(
+						"id = ? AND status = ? AND outputs_json = ?",
+						job.ID,
+						PlatformGenerationStatusSucceeded,
+						outputsJSON,
+					).Updates(map[string]any{
+						"error_details_json": marker,
+						"updated_at":         now,
+					})
+					if result.Error != nil {
+						return result.Error
+					}
+					if result.RowsAffected != 1 {
+						return ErrPlatformGenerationReconciliationConflict
+					}
+					publishedMaterialConflict = true
+					return nil
+				}
+				if PlatformGenerationProviderReconciliationKind(job) ==
+					PlatformGenerationProviderReconciliationKindProviderMaterial {
+					if err := tx.Model(&PlatformGenerationJob{}).Where(
+						"id = ? AND status = ? AND outputs_json = ?",
+						job.ID,
+						PlatformGenerationStatusSucceeded,
+						outputsJSON,
+					).Update("error_details_json", "{}").Error; err != nil {
+						return err
+					}
+				}
 				won = true
 			}
 			return nil
@@ -1407,6 +1807,13 @@ func CompletePlatformGenerationTransfer(
 		if intentResult.RowsAffected != 1 {
 			return ErrPlatformArtifactUploadIntentFenced
 		}
+		// Provider result URLs are short-lived transfer credentials, not durable
+		// product artifacts. Keep them only while a Platform-owned transfer may
+		// retry, then erase the native-task copy in the same fenced transaction
+		// that publishes the platform-controlled artifact.
+		if err := clearPlatformGenerationTemporaryProviderResultsTx(tx, job, now); err != nil {
+			return err
+		}
 		if err := RecordPlatformTaskStageTransitionTx(tx, jobID, PlatformGenerationStatusSucceeded, now); err != nil {
 			return err
 		}
@@ -1416,6 +1823,9 @@ func CompletePlatformGenerationTransfer(
 		won = true
 		return nil
 	})
+	if err == nil && publishedMaterialConflict {
+		return false, ErrPlatformGenerationProviderMaterialReconciliationRequired
+	}
 	return won, err
 }
 
@@ -1427,11 +1837,15 @@ func FailPlatformGenerationTransfer(
 ) (bool, error) {
 	won := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		var job PlatformGenerationJob
+		if err := lockForUpdate(tx.Where("id = ?", jobID)).First(&job).Error; err != nil {
+			return err
+		}
 		now, err := GetDBTimeTx(tx)
 		if err != nil {
 			return err
 		}
-		result := tx.Model(&PlatformGenerationJob{}).Where(
+		result := tx.Model(&job).Where(
 			"id = ? AND status = ? AND transfer_lease_token = ? AND transfer_lease_expires_at > ?",
 			jobID,
 			PlatformGenerationStatusTransferring,
@@ -1458,6 +1872,12 @@ func FailPlatformGenerationTransfer(
 		if result.RowsAffected != 1 {
 			return nil
 		}
+		// A terminal non-retryable transfer failure no longer needs the provider
+		// URL either. Retry releases intentionally retain it until another fenced
+		// owner completes or terminally fails the transfer.
+		if err := clearPlatformGenerationTemporaryProviderResultsTx(tx, job, now); err != nil {
+			return err
+		}
 		if err := RecordPlatformTaskStageTransitionTx(tx, jobID, PlatformGenerationStatusFailed, now); err != nil {
 			return err
 		}
@@ -1468,6 +1888,241 @@ func FailPlatformGenerationTransfer(
 		return nil
 	})
 	return won, err
+}
+
+func clearPlatformGenerationTemporaryProviderResultsTx(
+	tx *gorm.DB,
+	job PlatformGenerationJob,
+	now time.Time,
+) error {
+	if strings.TrimSpace(job.ID) == "" {
+		return ErrPlatformGenerationReconciliationConflict
+	}
+	var currentJob PlatformGenerationJob
+	if err := lockForUpdate(tx.Where("id = ?", job.ID)).First(&currentJob).Error; err != nil {
+		return err
+	}
+	job = currentJob
+	switch job.Status {
+	case PlatformGenerationStatusSucceeded, PlatformGenerationStatusFailed, PlatformGenerationStatusCancelled:
+	default:
+		return ErrPlatformGenerationReconciliationConflict
+	}
+	if job.ProviderRouteID <= 0 || job.ProviderChannelID <= 0 {
+		return ErrPlatformGenerationReconciliationConflict
+	}
+	// Keep the same job -> route -> native task lock order used by unknown-
+	// submission reconciliation. The job lock serializes transfer completion
+	// for one generation, while the shared route lock prevents a cross-job
+	// task/route inversion during channel rotation or reconciliation.
+	var route PlatformGenerationProviderRoute
+	if err := lockForUpdate(tx.Where("id = ?", job.ProviderRouteID)).First(&route).Error; err != nil {
+		return ErrPlatformGenerationReconciliationConflict
+	}
+	if route.ChannelID != job.ProviderChannelID || route.Model != job.Model || route.Mode != job.Mode {
+		return ErrPlatformGenerationReconciliationConflict
+	}
+	// A missing legacy native row does not own the job-level temporary fields,
+	// so a terminal job may still erase those after its job/route binding is
+	// proven. Once a native row exists, however, it is part of the evidence: an
+	// active, duplicate, or contradictory row must preserve both the job and
+	// task material for manual reconciliation. Never erase one half first.
+	nativeTaskID := strings.TrimSpace(job.NativeTaskID)
+	if nativeTaskID == "" {
+		return clearPlatformGenerationJobProviderMaterialTx(tx, job, now)
+	}
+	expectedTaskID, err := PlatformGenerationNativeTaskID(job.ID)
+	if err != nil || expectedTaskID != nativeTaskID || nativeTaskID != job.NativeTaskID {
+		return ErrPlatformGenerationProviderMaterialReconciliationRequired
+	}
+	var tasks []Task
+	if err := lockForUpdate(tx.Where(
+		"task_id = ?",
+		nativeTaskID,
+	).Order("id ASC").Limit(2)).Find(&tasks).Error; err != nil {
+		return err
+	}
+	if len(tasks) == 0 {
+		return clearPlatformGenerationJobProviderMaterialTx(tx, job, now)
+	}
+	if len(tasks) != 1 {
+		return ErrPlatformGenerationProviderMaterialReconciliationRequired
+	}
+	task := tasks[0]
+	if !platformGenerationNativeTaskIsTerminalPair(task) ||
+		!platformGenerationNativeTaskMatchesRouteBinding(job, task, route) {
+		return ErrPlatformGenerationProviderMaterialReconciliationRequired
+	}
+	var credential ProviderCredentialVersion
+	// Credential versions are append-only and guarded against UPDATE/DELETE.
+	// A consistent transactional read is sufficient; taking a row lock would
+	// unnecessarily invert the immutable-vault provisioning/migration lock graph.
+	if err := tx.Where(
+		"credential_version = ?",
+		task.PrivateData.ProviderCredentialVersion,
+	).First(&credential).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrPlatformGenerationProviderMaterialReconciliationRequired
+		}
+		return err
+	}
+	if !platformGenerationProviderCredentialMatchesRouteBinding(job, task, route, credential) {
+		return ErrPlatformGenerationProviderMaterialReconciliationRequired
+	}
+	if err := clearPlatformGenerationJobProviderMaterialTx(tx, job, now); err != nil {
+		return err
+	}
+	clearPrivateResultURL := task.PrivateData.ResultURL != ""
+	clearLegacyResultURL := platformGenerationShouldClearLegacyResultURL(
+		task.PrivateData.ResultURL,
+		task.FailReason,
+		task.PrivateData.ProviderResultURLScrubbed,
+	)
+	retainProviderReceipt, err := retainPlatformGenerationProviderResultReceiptTx(
+		tx,
+		job,
+		task,
+		route,
+		credential,
+	)
+	if err != nil {
+		return err
+	}
+	clearProviderData := len(task.Data) > 0 && !retainProviderReceipt
+	if !clearPrivateResultURL && !clearLegacyResultURL && !clearProviderData {
+		return nil
+	}
+	if clearPrivateResultURL || clearLegacyResultURL || clearProviderData {
+		updates := map[string]any{
+			"updated_at": now.Unix(),
+		}
+		if clearPrivateResultURL || clearLegacyResultURL {
+			task.PrivateData.ResultURL = ""
+			task.PrivateData.ProviderResultURLScrubbed = true
+			updates["private_data"] = task.PrivateData
+		}
+		if clearLegacyResultURL {
+			updates["fail_reason"] = ""
+		}
+		if clearProviderData {
+			updates["data"] = nil
+		}
+		result := tx.Model(&Task{}).Where(
+			"id = ? AND task_id = ? AND channel_id = ?",
+			task.ID,
+			job.NativeTaskID,
+			job.ProviderChannelID,
+		).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrPlatformGenerationReconciliationConflict
+		}
+	}
+	return nil
+}
+
+func clearPlatformGenerationJobProviderMaterialTx(
+	tx *gorm.DB,
+	job PlatformGenerationJob,
+	now time.Time,
+) error {
+	if job.UpstreamResultURL == "" && job.TemporaryResultJSON == "" {
+		return nil
+	}
+	result := tx.Model(&PlatformGenerationJob{}).Where(
+		"id = ? AND status = ? AND native_task_id = ? AND provider_route_id = ? AND provider_channel_id = ? AND tenant_id = ? AND model = ? AND mode = ?",
+		job.ID,
+		job.Status,
+		job.NativeTaskID,
+		job.ProviderRouteID,
+		job.ProviderChannelID,
+		job.TenantID,
+		job.Model,
+		job.Mode,
+	).Updates(map[string]any{
+		"temporary_result_json": "",
+		"upstream_result_url":   "",
+		"updated_at":            now,
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrPlatformGenerationReconciliationConflict
+	}
+	return nil
+}
+
+func platformGenerationNativeTaskIsTerminalPair(task Task) bool {
+	return (task.Status == TaskStatusSuccess || task.Status == TaskStatusFailure) &&
+		task.Progress == "100%"
+}
+
+func platformGenerationLegacyResultURL(value string) bool {
+	candidate := strings.TrimSpace(value)
+	if candidate == "" || strings.ContainsAny(candidate, "\x00\r\n") {
+		return false
+	}
+	parsed, err := url.ParseRequestURI(candidate)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return parsed.Scheme == "https" || parsed.Scheme == "http"
+}
+
+func platformGenerationShouldClearLegacyResultURL(
+	privateResultURL string,
+	failReason string,
+	providerResultURLScrubbed bool,
+) bool {
+	failureCandidate := strings.TrimSpace(failReason)
+	if failureCandidate == "" {
+		return false
+	}
+	privateCandidate := strings.TrimSpace(privateResultURL)
+	if privateCandidate == "" {
+		// Once a private provider result was scrubbed, a different URL retained in
+		// FailReason is evidence rather than the legacy ResultURL fallback. The
+		// durable marker keeps retries and schema restarts from reclassifying it.
+		if providerResultURLScrubbed {
+			return false
+		}
+		return platformGenerationLegacyResultURL(failureCandidate)
+	}
+	return platformGenerationLegacyResultURL(privateCandidate) && failureCandidate == privateCandidate
+}
+
+func platformGenerationNativeTaskMatchesRouteBinding(
+	job PlatformGenerationJob,
+	task Task,
+	route PlatformGenerationProviderRoute,
+) bool {
+	return route.ChannelID == job.ProviderChannelID && route.Model == job.Model && route.Mode == job.Mode &&
+		task.ChannelId == route.ChannelID && task.Quota == 0 &&
+		task.PrivateData.BillingSource == TaskBillingSourcePlatformExternal &&
+		task.PrivateData.SubscriptionId == 0 && task.PrivateData.TokenId == 0 &&
+		task.PrivateData.BillingContext == nil && task.PrivateData.PinnedKeyIndex != nil &&
+		*task.PrivateData.PinnedKeyIndex == route.KeyIndex &&
+		task.PrivateData.PinnedKeyFingerprint == route.KeyFingerprint &&
+		task.PrivateData.ProviderCredentialTenantID == job.TenantID &&
+		task.PrivateData.ProviderCredentialVersion != "" &&
+		(job.UpstreamTaskID == "" || task.PrivateData.UpstreamTaskID == job.UpstreamTaskID)
+}
+
+func platformGenerationProviderCredentialMatchesRouteBinding(
+	job PlatformGenerationJob,
+	task Task,
+	route PlatformGenerationProviderRoute,
+	credential ProviderCredentialVersion,
+) bool {
+	return credential.CredentialVersion != "" &&
+		credential.CredentialVersion == task.PrivateData.ProviderCredentialVersion &&
+		credential.TenantID == job.TenantID &&
+		credential.ChannelID == route.ChannelID &&
+		credential.KeyIndex == route.KeyIndex &&
+		credential.KeyFingerprint == route.KeyFingerprint
 }
 
 func ListPlatformGenerationCallbackBackfillJobs(limit int) ([]PlatformGenerationJob, error) {
@@ -1521,6 +2176,13 @@ func buildPlatformGenerationCallbackTx(
 }
 
 var ErrPlatformGenerationReconciliationConflict = errors.New("generation reconciliation outcome conflicts with durable state")
+
+// ErrPlatformGenerationProviderMaterialReconciliationRequired means a
+// terminal Platform job still has a native row whose lifecycle or immutable
+// route/account binding is contradictory. The caller must not acknowledge the
+// terminal commit: provider evidence is preserved for an explicit operator
+// reconciliation instead of being guessed away.
+var ErrPlatformGenerationProviderMaterialReconciliationRequired = errors.New("generation provider material requires manual reconciliation")
 
 func platformGenerationReconciliationToken(
 	job PlatformGenerationJob,
@@ -1627,6 +2289,68 @@ func ListPlatformGenerationSubmissionUnknown(
 		candidates = append(candidates, *candidate)
 	}
 	return candidates, total, nil
+}
+
+func platformGenerationProviderResultReconciliationScope(db *gorm.DB, tenantID string) *gorm.DB {
+	query := db.Model(&PlatformGenerationJob{}).Where(
+		"(status = ? AND error_code = ?) OR (status IN ? AND error_details_json = ?)",
+		PlatformGenerationStatusReconciliationRequired,
+		PlatformGenerationErrorProviderPollReconciliationRequired,
+		[]string{
+			PlatformGenerationStatusSucceeded,
+			PlatformGenerationStatusFailed,
+			PlatformGenerationStatusCancelled,
+		},
+		PlatformGenerationProviderReconciliationDetailsJSON(PlatformGenerationProviderReconciliationKindProviderMaterial),
+	)
+	if tenantID != "" {
+		query = query.Where("tenant_id = ?", tenantID)
+	}
+	return query
+}
+
+func CountPlatformGenerationProviderResultReconciliationBacklog() (int64, error) {
+	return CountPlatformGenerationProviderResultReconciliationBacklogWithDB(DB)
+}
+
+func CountPlatformGenerationProviderResultReconciliationBacklogWithDB(db *gorm.DB) (int64, error) {
+	var total int64
+	if db == nil {
+		return 0, errors.New("generation provider reconciliation database is unavailable")
+	}
+	err := platformGenerationProviderResultReconciliationScope(db, "").Count(&total).Error
+	return total, err
+}
+
+func GetPlatformGenerationProviderResultReconciliation(
+	jobID string,
+	tenantID string,
+) (*PlatformGenerationJob, error) {
+	var job PlatformGenerationJob
+	err := platformGenerationProviderResultReconciliationScope(DB, tenantID).
+		Where("id = ?", jobID).
+		First(&job).Error
+	return &job, err
+}
+
+func ListPlatformGenerationProviderResultReconciliations(
+	tenantID string,
+	page int,
+	pageSize int,
+) ([]PlatformGenerationJob, int64, error) {
+	var total int64
+	if err := platformGenerationProviderResultReconciliationScope(DB, tenantID).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var jobs []PlatformGenerationJob
+	if err := platformGenerationProviderResultReconciliationScope(DB, tenantID).
+		Order("updated_at ASC, id ASC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&jobs).Error; err != nil {
+		return nil, 0, err
+	}
+	return jobs, total, nil
 }
 
 func ResolvePlatformGenerationSubmissionUnknown(
@@ -1743,7 +2467,7 @@ func ResolvePlatformGenerationSubmissionUnknown(
 			var nativeTask Task
 			nativeBillingReconciliationNeeded := false
 			if len(nativeTasks) == 0 {
-				nativeTask = platformGenerationRecoveredNativeTask(recovery, resolution.UpstreamTaskID, now)
+				nativeTask = platformGenerationRecoveredNativeTask(recovery, resolution.UpstreamTaskID, now, resolution.SynchronousResult)
 				if err := tx.Create(&nativeTask).Error; err != nil {
 					return err
 				}
@@ -1757,14 +2481,59 @@ func ResolvePlatformGenerationSubmissionUnknown(
 				}
 			}
 			nativeTask.PrivateData.UpstreamTaskID = resolution.UpstreamTaskID
+			if resolution.SynchronousResult != nil {
+				if nativeTask.Status == TaskStatusFailure ||
+					(nativeTask.Status == TaskStatusSuccess && nativeTask.PrivateData.ResultURL != "" &&
+						nativeTask.PrivateData.ResultURL != resolution.SynchronousResult.ResultURL) {
+					return ErrPlatformGenerationReconciliationConflict
+				}
+				nativeTask.Status = TaskStatusSuccess
+				nativeTask.Progress = "100%"
+				nativeTask.FinishTime = resolution.SynchronousResult.ProviderCreatedAt.UTC().Unix()
+				nativeTask.PrivateData.ResultURL = resolution.SynchronousResult.ResultURL
+				nativeTask.SetData(struct {
+					ID      string `json:"id"`
+					Model   string `json:"model"`
+					Status  string `json:"status"`
+					Size    string `json:"size"`
+					Created int64  `json:"created"`
+					Usage   struct {
+						GeneratedImages int `json:"generated_images"`
+						OutputTokens    int `json:"output_tokens"`
+						TotalTokens     int `json:"total_tokens"`
+					} `json:"usage"`
+				}{
+					ID:      resolution.UpstreamTaskID,
+					Model:   resolution.SynchronousResult.ProviderModelID,
+					Status:  "succeeded",
+					Size:    resolution.SynchronousResult.Size,
+					Created: resolution.SynchronousResult.ProviderCreatedAt.UTC().Unix(),
+					Usage: struct {
+						GeneratedImages int `json:"generated_images"`
+						OutputTokens    int `json:"output_tokens"`
+						TotalTokens     int `json:"total_tokens"`
+					}{
+						GeneratedImages: resolution.SynchronousResult.GeneratedImages,
+						OutputTokens:    resolution.SynchronousResult.OutputTokens,
+						TotalTokens:     resolution.SynchronousResult.TotalTokens,
+					},
+				})
+			}
 			nativeUpdates := map[string]any{
 				"private_data": nativeTask.PrivateData,
 				"quota":        0,
 				"updated_at":   now.Unix(),
 			}
+			if resolution.SynchronousResult != nil {
+				nativeUpdates["status"] = TaskStatusSuccess
+				nativeUpdates["progress"] = "100%"
+				nativeUpdates["finish_time"] = nativeTask.FinishTime
+				nativeUpdates["fail_reason"] = ""
+				nativeUpdates["data"] = nativeTask.Data
+			}
 			// A reconciliation may race with a successful native poll. Preserve
 			// terminal evidence instead of regressing it back to SUBMITTED.
-			if nativeTask.Status != TaskStatusSuccess && nativeTask.Status != TaskStatusFailure {
+			if resolution.SynchronousResult == nil && nativeTask.Status != TaskStatusSuccess && nativeTask.Status != TaskStatusFailure {
 				nativeUpdates["status"] = TaskStatusSubmitted
 				nativeUpdates["progress"] = "0%"
 				nativeUpdates["fail_reason"] = ""

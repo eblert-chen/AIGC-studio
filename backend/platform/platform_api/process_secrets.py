@@ -47,6 +47,7 @@ PLATFORM_PROCESS_ROLES = frozenset(
         "platform-api",
         "dispatcher",
         "relay-sync",
+        "relay-catalog-sync",
         "timeout-worker",
         "publishing-worker",
         "download-gateway-registration-worker",
@@ -59,6 +60,7 @@ PLATFORM_DATABASE_ROLE_BY_PROCESS = MappingProxyType(
         "platform-api": "platform_api",
         "dispatcher": "platform_dispatcher",
         "relay-sync": "platform_relay_sync",
+        "relay-catalog-sync": "platform_relay_catalog_sync",
         "timeout-worker": "platform_timeout_worker",
         "publishing-worker": "platform_publishing_worker",
         "download-gateway-registration-worker": "platform_download_gateway_worker",
@@ -109,6 +111,7 @@ _PROCESS_SECRET_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     "relay-sync": frozenset({"database_url", *_RELAY_FIELDS}),
+    "relay-catalog-sync": frozenset({"database_url", *_RELAY_FIELDS}),
     "timeout-worker": frozenset({"database_url", *_RELAY_FIELDS}),
     "publishing-worker": frozenset({"database_url", "publishing_plugin_credentials"}),
     "download-gateway-registration-worker": frozenset(
@@ -134,6 +137,7 @@ RAW_PLATFORM_SECRET_ENVIRONMENTS = frozenset(
         "PLATFORM_API_DATABASE_PASSWORD",
         "PLATFORM_DISPATCHER_DATABASE_PASSWORD",
         "PLATFORM_RELAY_SYNC_DATABASE_PASSWORD",
+        "PLATFORM_RELAY_CATALOG_SYNC_DATABASE_PASSWORD",
         "PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD",
         "PLATFORM_PUBLISHING_WORKER_DATABASE_PASSWORD",
         "PLATFORM_DOWNLOAD_GATEWAY_WORKER_DATABASE_PASSWORD",
@@ -586,6 +590,7 @@ PLATFORM_SECRET_ISOLATION_CONSUMER_BY_PROCESS = MappingProxyType(
         "platform-api": "platform-api",
         "dispatcher": "platform-dispatcher",
         "relay-sync": "platform-relay-sync",
+        "relay-catalog-sync": "platform-relay-catalog-sync",
         "timeout-worker": "platform-timeout-worker",
         "publishing-worker": "platform-publishing-worker",
         "download-gateway-registration-worker": (
@@ -600,6 +605,7 @@ PLATFORM_SECRET_ISOLATION_FILE_ID_BY_PROCESS = MappingProxyType(
         "platform-api": "platform_api_runtime",
         "dispatcher": "platform_dispatcher_runtime",
         "relay-sync": "platform_relay_sync_runtime",
+        "relay-catalog-sync": "platform_relay_catalog_sync_runtime",
         "timeout-worker": "platform_timeout_worker_runtime",
         "publishing-worker": "platform_publishing_worker_runtime",
         "download-gateway-registration-worker": (
@@ -614,6 +620,7 @@ PLATFORM_SECRET_ISOLATION_PREFIX_BY_PROCESS = MappingProxyType(
         "platform-api": "platform.api",
         "dispatcher": "platform.dispatcher",
         "relay-sync": "platform.relay_sync",
+        "relay-catalog-sync": "platform.relay_catalog_sync",
         "timeout-worker": "platform.timeout_worker",
         "publishing-worker": "platform.publishing_worker",
         "download-gateway-registration-worker": (

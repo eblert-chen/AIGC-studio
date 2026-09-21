@@ -79,6 +79,16 @@ type TaskAdaptor interface {
 	ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error)
 }
 
+// ImmediateTerminalTaskAdaptor is implemented only by task adapters whose
+// provider returns the final artifact in the submission response. The
+// explicit result lets the controller persist a terminal native task in the
+// same success path without smuggling provider state through request context
+// or response headers. Adapters that submit an asynchronous provider task do
+// not implement this interface and retain their existing lifecycle.
+type ImmediateTerminalTaskAdaptor interface {
+	ImmediateTerminalTaskResult() *relaycommon.TaskInfo
+}
+
 type OpenAIVideoConverter interface {
 	ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error)
 }

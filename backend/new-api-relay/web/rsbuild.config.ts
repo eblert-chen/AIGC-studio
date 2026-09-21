@@ -14,6 +14,9 @@ export default defineConfig(({ envMode }) => {
     process.env.VITE_REACT_APP_SERVER_URL ||
     env.rawPublicVars.VITE_REACT_APP_SERVER_URL ||
     'http://localhost:3000'
+  const platformConsoleUrl =
+    process.env.VITE_PLATFORM_CONSOLE_URL ||
+    env.rawPublicVars.VITE_PLATFORM_CONSOLE_URL
 
   const isProd = envMode === 'production'
   const devProxy = Object.fromEntries(
@@ -53,6 +56,12 @@ export default defineConfig(({ envMode }) => {
       },
     },
     source: {
+      define: platformConsoleUrl
+        ? {
+            'import.meta.env.VITE_PLATFORM_CONSOLE_URL':
+              JSON.stringify(platformConsoleUrl),
+          }
+        : {},
       entry: {
         index: './src/main.tsx',
       },

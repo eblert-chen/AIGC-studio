@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -47,6 +48,10 @@ const (
 	PlatformDownloadEdgeRuntimeSecretsSchemaVersion         = 1
 	platformDownloadEdgeRuntimeSecretsFileEnvironment       = "RELAY_DOWNLOAD_EDGE_RUNTIME_SECRETS_FILE"
 	platformDownloadEdgeRuntimeSecretsFileMaxBytes    int64 = 64 * 1024
+	platformDownloadEdgeCatalogRefreshAfter                 = 5 * time.Minute
+	platformDownloadEdgeCatalogMaximumAge                   = 10 * time.Minute
+	platformDownloadEdgeCatalogRefreshTimeout               = 2 * time.Minute
+	platformDownloadEdgeCatalogRefreshRetry                 = 5 * time.Second
 
 	// These values exist only so the opt-in local Compose profile can boot. A
 	// production process must reject them even though their lengths are valid.
@@ -60,6 +65,14 @@ var (
 	platformDownloadEdgeDigestPattern                = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	readPlatformDownloadEdgeRuntimeSecretFile        = common.ReadProtectedSecretFile
 	verifyPlatformDownloadEdgeSecretIsolationReceipt = VerifyPlatformRelaySecretIsolationReceipt
+	attestPlatformDownloadEdgeDatabaseRole           = model.AttestRelayDownloadEdgeDatabaseRoleWithContext
+	verifyPlatformDownloadEdgeDatabaseRoleProof      = model.VerifyRelayDownloadEdgeDatabaseRoleProof
+	validatePlatformDownloadEdgeDatabaseRoleProof    = model.ValidateRelayDownloadEdgeDatabaseRoleProofBinding
+	samePlatformDownloadEdgeDatabaseRoleRelease      = func(left, right model.RelayDownloadEdgeDatabaseRoleProof) bool { return left.SameRelease(right) }
+	platformDownloadEdgeDatabaseRoleProofVerifiedAt  = func(proof model.RelayDownloadEdgeDatabaseRoleProof) time.Time { return proof.VerifiedAt() }
+	attestPlatformDownloadEdgeDatabaseRelease        = attestPlatformRelayDatabaseReleaseProofBoundToSchema
+	samePlatformDownloadEdgeDatabaseRelease          = samePlatformRelayDatabaseReleaseProofBinding
+	platformDownloadEdgeClock                        = time.Now
 	platformDownloadEdgeForbiddenSecretEnvironments  = []string{
 		"SQL_DSN",
 		"SQL_DSN_FILE",
@@ -266,7 +279,7 @@ func (config PlatformDownloadEdgeConfig) Validate() error {
 	}
 	completionURL, err := url.Parse(config.PlatformCompletionURL)
 	if err != nil || completionURL.User != nil || completionURL.RawQuery != "" || completionURL.Fragment != "" || completionURL.Host == "" ||
-		completionURL.Path != "/internal/artifact-download-completions/edge-gateway" || !platformDownloadEdgeSchemeAllowed(completionURL, protected) {
+		completionURL.Path != "/internal/artifact-download-completions/edge-gateway" || !platformDownloadEdgeCompletionSchemeAllowed(completionURL, protected) {
 		return fmt.Errorf("download edge Platform completion URL is invalid")
 	}
 	if len(config.AllowedOBSHosts) == 0 {
@@ -349,17 +362,131 @@ type PlatformDownloadEdgeGateway struct {
 	upstreamClient *http.Client
 	platformClient *http.Client
 	clock          func() time.Time
+
+	readinessDatabase        *gorm.DB
+	readinessMu              sync.Mutex
+	readinessProof           model.RelayDownloadEdgeDatabaseRoleProof
+	readinessReleaseBinding  platformRelayDatabaseReleaseProofBinding
+	readinessVerifiedAt      time.Time
+	readinessProofValid      bool
+	readinessRefreshInFlight bool
+	readinessNextRefresh     time.Time
+	readinessRefreshAfter    time.Duration
+	readinessMaximumAge      time.Duration
+	readinessRefreshTimeout  time.Duration
+	readinessRefreshRetry    time.Duration
+	readinessGeneration      uint64
+	readinessLastObserved    time.Time
+	readinessClockFailed     bool
+	readinessStopped         bool
+	readinessContext         context.Context
+	readinessCancel          context.CancelFunc
+	readinessWorkers         sync.WaitGroup
+	readinessStopWaitOnce    sync.Once
+	readinessStopDone        chan struct{}
 }
 
 func NewPlatformDownloadEdgeGateway(config PlatformDownloadEdgeConfig) (*PlatformDownloadEdgeGateway, error) {
+	if config.ProtectedSecurityRequired() {
+		return nil, errors.New("protected download edge requires a bound database role proof")
+	}
+	return newPlatformDownloadEdgeGateway(context.Background(), config, nil, nil, nil)
+}
+
+// NewProtectedPlatformDownloadEdgeGateway binds the serving gateway to the
+// exact database pool and immutable release proven before the listener opens.
+func NewProtectedPlatformDownloadEdgeGateway(
+	ctx context.Context,
+	config PlatformDownloadEdgeConfig,
+	database *gorm.DB,
+	proof model.RelayDownloadEdgeDatabaseRoleProof,
+) (*PlatformDownloadEdgeGateway, error) {
+	if ctx == nil || ctx.Err() != nil {
+		return nil, errors.New("protected download edge readiness lifecycle is unavailable")
+	}
+	if !config.ProtectedSecurityRequired() {
+		return nil, errors.New("download edge database role proof is only valid for a protected gateway")
+	}
+	if err := validatePlatformDownloadEdgeDatabaseRoleProof(database, proof); err != nil {
+		return nil, err
+	}
+	releaseBinding, err := attestPlatformDownloadEdgeDatabaseRelease(
+		ctx,
+		database,
+		PlatformRelaySecretIsolationConsumerEdge,
+		proof.SchemaStatus(),
+	)
+	if err != nil || !releaseBinding.valid() {
+		return nil, errors.Join(errors.New("download edge database release proof is unavailable"), err)
+	}
+	if releaseBinding.schemaStatus != proof.SchemaStatus() {
+		return nil, errors.New("download edge database proofs do not describe the same release")
+	}
+	return newPlatformDownloadEdgeGateway(ctx, config, database, &proof, &releaseBinding)
+}
+
+func newPlatformDownloadEdgeGateway(
+	parent context.Context,
+	config PlatformDownloadEdgeConfig,
+	database *gorm.DB,
+	proof *model.RelayDownloadEdgeDatabaseRoleProof,
+	releaseBinding *platformRelayDatabaseReleaseProofBinding,
+) (*PlatformDownloadEdgeGateway, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
+	}
+	proofValue := model.RelayDownloadEdgeDatabaseRoleProof{}
+	releaseBindingValue := platformRelayDatabaseReleaseProofBinding{}
+	if proof != nil {
+		proofValue = *proof
+		if releaseBinding == nil || !releaseBinding.valid() {
+			return nil, errors.New("download edge database release binding is unavailable")
+		}
+		releaseBindingValue = *releaseBinding
+	}
+	clock := platformDownloadEdgeClock
+	if clock == nil {
+		return nil, errors.New("download edge clock is unavailable")
+	}
+	now := clock()
+	if now.IsZero() {
+		return nil, errors.New("download edge readiness clock is unavailable")
+	}
+	verifiedAt := time.Time{}
+	proofValid := false
+	if proof != nil {
+		verifiedAt = platformDownloadEdgeDatabaseRoleProofVerifiedAt(*proof)
+		age := now.Sub(verifiedAt)
+		if verifiedAt.IsZero() || age < 0 || age >= platformDownloadEdgeCatalogMaximumAge {
+			return nil, errors.New("download edge database role proof is outside the freshness window")
+		}
+		proofValid = true
+	}
+	readinessContext := context.Background()
+	readinessCancel := func() {}
+	if proof != nil {
+		readinessContext, readinessCancel = context.WithCancel(parent)
 	}
 	gateway := &PlatformDownloadEdgeGateway{
 		config:         config,
 		upstreamClient: newPlatformDownloadEdgeHTTPClient(config.TransferTimeout),
 		platformClient: newPlatformDownloadEdgeHTTPClient(15 * time.Second),
-		clock:          func() time.Time { return time.Now().UTC() },
+		clock:          clock,
+
+		readinessDatabase:       database,
+		readinessProof:          proofValue,
+		readinessReleaseBinding: releaseBindingValue,
+		readinessVerifiedAt:     verifiedAt,
+		readinessProofValid:     proofValid,
+		readinessRefreshAfter:   platformDownloadEdgeCatalogRefreshAfter,
+		readinessMaximumAge:     platformDownloadEdgeCatalogMaximumAge,
+		readinessRefreshTimeout: platformDownloadEdgeCatalogRefreshTimeout,
+		readinessRefreshRetry:   platformDownloadEdgeCatalogRefreshRetry,
+		readinessGeneration:     1,
+		readinessLastObserved:   now,
+		readinessContext:        readinessContext,
+		readinessCancel:         readinessCancel,
+		readinessStopDone:       make(chan struct{}),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(PlatformDownloadEdgeRegistrationPath, gateway.handleRegistration)
@@ -368,6 +495,17 @@ func NewPlatformDownloadEdgeGateway(config PlatformDownloadEdgeConfig) (*Platfor
 	mux.HandleFunc("/health/live", gateway.handleLive)
 	mux.HandleFunc("/health/ready", gateway.handleReady)
 	gateway.handler = securityHeaders(mux)
+	if proof != nil {
+		gateway.readinessWorkers.Add(1)
+		go func() {
+			defer gateway.readinessWorkers.Done()
+			<-gateway.readinessContext.Done()
+			gateway.readinessMu.Lock()
+			gateway.readinessProofValid = false
+			gateway.readinessGeneration++
+			gateway.readinessMu.Unlock()
+		}()
+	}
 	return gateway, nil
 }
 
@@ -641,39 +779,276 @@ func (gateway *PlatformDownloadEdgeGateway) handleLive(writer http.ResponseWrite
 	writePlatformDownloadEdgeJSON(writer, http.StatusOK, map[string]any{"status": "ok"})
 }
 
+func (gateway *PlatformDownloadEdgeGateway) protectedReadinessProof() (model.RelayDownloadEdgeDatabaseRoleProof, bool) {
+	gateway.readinessMu.Lock()
+	now := gateway.clock()
+	proof := gateway.readinessProof
+	clockHealthy := gateway.observeProtectedReadinessClockLocked(now)
+	valid := clockHealthy && gateway.readinessProofValid
+	age := now.Sub(gateway.readinessVerifiedAt)
+	if !clockHealthy || gateway.readinessStopped || gateway.readinessContext == nil || gateway.readinessContext.Err() != nil ||
+		gateway.readinessVerifiedAt.IsZero() || age < 0 || age >= gateway.readinessMaximumAge {
+		if gateway.readinessProofValid {
+			gateway.readinessGeneration++
+		}
+		valid = false
+		gateway.readinessProofValid = false
+	}
+	startRefresh := false
+	releaseBinding := gateway.readinessReleaseBinding
+	if clockHealthy && !gateway.readinessClockFailed && !gateway.readinessStopped &&
+		gateway.readinessContext != nil && gateway.readinessContext.Err() == nil &&
+		!gateway.readinessRefreshInFlight && !now.Before(gateway.readinessNextRefresh) &&
+		(!valid || age >= gateway.readinessRefreshAfter) {
+		gateway.readinessRefreshInFlight = true
+		gateway.readinessWorkers.Add(1)
+		startRefresh = true
+	}
+	generation := gateway.readinessGeneration
+	gateway.readinessMu.Unlock()
+	if startRefresh {
+		gateway.launchProtectedReadinessRefresh(proof, releaseBinding, generation)
+	}
+	return proof, valid
+}
+
+// observeProtectedReadinessClockLocked preserves the monotonic component from
+// the gateway clock and permanently closes readiness if an injected/wall-only
+// clock moves backwards. A process restart is required after this latch trips;
+// a later refresh must never reinterpret a rollback as a fresh proof.
+func (gateway *PlatformDownloadEdgeGateway) observeProtectedReadinessClockLocked(now time.Time) bool {
+	if gateway.readinessClockFailed {
+		return false
+	}
+	if now.IsZero() ||
+		(!gateway.readinessLastObserved.IsZero() && now.Before(gateway.readinessLastObserved)) ||
+		(!gateway.readinessVerifiedAt.IsZero() && now.Before(gateway.readinessVerifiedAt)) {
+		gateway.readinessClockFailed = true
+		gateway.readinessProofValid = false
+		gateway.readinessGeneration++
+		if gateway.readinessCancel != nil {
+			gateway.readinessCancel()
+		}
+		return false
+	}
+	gateway.readinessLastObserved = now
+	return true
+}
+
+func (gateway *PlatformDownloadEdgeGateway) launchProtectedReadinessRefresh(
+	expected model.RelayDownloadEdgeDatabaseRoleProof,
+	expectedRelease platformRelayDatabaseReleaseProofBinding,
+	generation uint64,
+) {
+	go func() {
+		defer gateway.readinessWorkers.Done()
+		gateway.refreshProtectedReadinessProof(expected, expectedRelease, generation)
+	}()
+}
+
+func (gateway *PlatformDownloadEdgeGateway) refreshProtectedReadinessProof(
+	expected model.RelayDownloadEdgeDatabaseRoleProof,
+	expectedRelease platformRelayDatabaseReleaseProofBinding,
+	generation uint64,
+) {
+	timeout := gateway.readinessRefreshTimeout
+	if timeout <= 0 {
+		timeout = platformDownloadEdgeCatalogRefreshTimeout
+	}
+	ctx, cancel := context.WithTimeout(gateway.readinessContext, timeout)
+	refreshed, err := attestPlatformDownloadEdgeDatabaseRole(ctx, gateway.readinessDatabase)
+	if err == nil && !samePlatformDownloadEdgeDatabaseRoleRelease(expected, refreshed) {
+		err = errors.New("download edge catalog refresh changed the bound release")
+	}
+	if err == nil {
+		err = validatePlatformDownloadEdgeDatabaseRoleProof(gateway.readinessDatabase, refreshed)
+	}
+	refreshedRelease := platformRelayDatabaseReleaseProofBinding{}
+	if err == nil {
+		refreshedRelease, err = attestPlatformDownloadEdgeDatabaseRelease(
+			ctx,
+			gateway.readinessDatabase,
+			PlatformRelaySecretIsolationConsumerEdge,
+			refreshed.SchemaStatus(),
+		)
+		if err == nil && !samePlatformDownloadEdgeDatabaseRelease(expectedRelease, refreshedRelease) {
+			err = errors.New("download edge database release binding changed")
+		}
+	}
+	cancel()
+	refreshedVerifiedAt := platformDownloadEdgeDatabaseRoleProofVerifiedAt(refreshed)
+	gateway.readinessMu.Lock()
+	gateway.readinessRefreshInFlight = false
+	now := gateway.clock()
+	clockHealthy := gateway.observeProtectedReadinessClockLocked(now)
+	if generation != gateway.readinessGeneration {
+		gateway.readinessProofValid = false
+		if clockHealthy && !gateway.readinessStopped && gateway.readinessContext.Err() == nil {
+			gateway.readinessNextRefresh = now
+		}
+		gateway.readinessMu.Unlock()
+		return
+	}
+	refreshedAge := now.Sub(refreshedVerifiedAt)
+	if !clockHealthy || err != nil || refreshedVerifiedAt.IsZero() || refreshedAge < 0 ||
+		refreshedAge >= gateway.readinessMaximumAge || gateway.readinessStopped || gateway.readinessContext.Err() != nil {
+		gateway.readinessProofValid = false
+		gateway.readinessGeneration++
+		if clockHealthy && !gateway.readinessStopped && gateway.readinessContext.Err() == nil {
+			gateway.readinessNextRefresh = now.Add(gateway.readinessRefreshRetry)
+		}
+		gateway.readinessMu.Unlock()
+		return
+	}
+	gateway.readinessProof = refreshed
+	gateway.readinessReleaseBinding = refreshedRelease
+	gateway.readinessVerifiedAt = refreshedVerifiedAt
+	gateway.readinessProofValid = true
+	gateway.readinessGeneration++
+	gateway.readinessNextRefresh = time.Time{}
+	gateway.readinessMu.Unlock()
+}
+
+func (gateway *PlatformDownloadEdgeGateway) invalidateProtectedReadinessProof(
+	expected model.RelayDownloadEdgeDatabaseRoleProof,
+) {
+	gateway.readinessMu.Lock()
+	now := gateway.clock()
+	clockHealthy := gateway.observeProtectedReadinessClockLocked(now)
+	if samePlatformDownloadEdgeDatabaseRoleRelease(gateway.readinessProof, expected) {
+		gateway.readinessProofValid = false
+		gateway.readinessGeneration++
+	}
+	startRefresh := false
+	releaseBinding := gateway.readinessReleaseBinding
+	if clockHealthy && !gateway.readinessClockFailed && !gateway.readinessStopped &&
+		gateway.readinessContext != nil && gateway.readinessContext.Err() == nil &&
+		!gateway.readinessRefreshInFlight && !now.Before(gateway.readinessNextRefresh) {
+		gateway.readinessRefreshInFlight = true
+		gateway.readinessWorkers.Add(1)
+		startRefresh = true
+	}
+	generation := gateway.readinessGeneration
+	gateway.readinessMu.Unlock()
+	if startRefresh {
+		gateway.launchProtectedReadinessRefresh(expected, releaseBinding, generation)
+	}
+}
+
+func (gateway *PlatformDownloadEdgeGateway) protectedReadinessProofStillValid(
+	expected model.RelayDownloadEdgeDatabaseRoleProof,
+) bool {
+	gateway.readinessMu.Lock()
+	defer gateway.readinessMu.Unlock()
+	now := gateway.clock()
+	if !gateway.observeProtectedReadinessClockLocked(now) || gateway.readinessStopped ||
+		gateway.readinessContext == nil || gateway.readinessContext.Err() != nil || !gateway.readinessProofValid ||
+		!samePlatformDownloadEdgeDatabaseRoleRelease(gateway.readinessProof, expected) || gateway.readinessVerifiedAt.IsZero() {
+		return false
+	}
+	age := now.Sub(gateway.readinessVerifiedAt)
+	if age < 0 || age >= gateway.readinessMaximumAge {
+		gateway.readinessProofValid = false
+		gateway.readinessGeneration++
+		return false
+	}
+	return true
+}
+
+// StopProtectedReadinessRefresh cancels and joins the single guarded catalog
+// refresh worker before the caller closes the bound database pool.
+func (gateway *PlatformDownloadEdgeGateway) StopProtectedReadinessRefresh(ctx context.Context) error {
+	if gateway == nil || ctx == nil {
+		return errors.New("download edge readiness shutdown is invalid")
+	}
+	gateway.readinessMu.Lock()
+	if !gateway.readinessStopped {
+		gateway.readinessStopped = true
+		gateway.readinessProofValid = false
+		gateway.readinessGeneration++
+		if gateway.readinessCancel != nil {
+			gateway.readinessCancel()
+		}
+	}
+	gateway.readinessMu.Unlock()
+	gateway.readinessStopWaitOnce.Do(func() {
+		go func() {
+			gateway.readinessWorkers.Wait()
+			close(gateway.readinessStopDone)
+		}()
+	})
+	select {
+	case <-gateway.readinessStopDone:
+		return nil
+	case <-ctx.Done():
+		return errors.Join(errors.New("download edge readiness refresh did not stop before the deadline"), ctx.Err())
+	}
+}
+
 func (gateway *PlatformDownloadEdgeGateway) handleReady(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		writePlatformDownloadEdgeError(writer, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	if request.Context().Err() != nil {
+		writePlatformDownloadEdgeError(writer, http.StatusServiceUnavailable, "request_cancelled")
 		return
 	}
 	if model.DB == nil {
 		writePlatformDownloadEdgeError(writer, http.StatusServiceUnavailable, "database_unavailable")
 		return
 	}
-	sqlDB, err := model.DB.DB()
+	var protectedProof model.RelayDownloadEdgeDatabaseRoleProof
+	if gateway.config.ProtectedSecurityRequired() {
+		var proofAvailable bool
+		protectedProof, proofAvailable = gateway.protectedReadinessProof()
+		if !proofAvailable {
+			writePlatformDownloadEdgeError(writer, http.StatusServiceUnavailable, "schema_unavailable")
+			return
+		}
+	}
+	requestDB := model.DB.WithContext(request.Context())
+	sqlDB, err := requestDB.DB()
 	if err != nil || sqlDB.PingContext(request.Context()) != nil {
+		if gateway.config.ProtectedSecurityRequired() && request.Context().Err() == nil {
+			gateway.invalidateProtectedReadinessProof(protectedProof)
+		}
 		writePlatformDownloadEdgeError(writer, http.StatusServiceUnavailable, "database_unavailable")
 		return
 	}
-	var schemaStatus model.RelaySchemaStatus
-	if gateway.config.ProtectedSecurityRequired() {
-		schemaStatus, err = model.RequireRelaySchemaCurrent(model.DB)
-	} else {
-		schemaStatus, err = model.RequireRelaySchemaCompatible(model.DB)
-	}
-	if err != nil {
-		writePlatformDownloadEdgeError(writer, http.StatusServiceUnavailable, "schema_unavailable")
-		return
+	if !gateway.config.ProtectedSecurityRequired() {
+		_, err = model.RequireRelaySchemaCompatible(requestDB)
+		if err != nil {
+			writePlatformDownloadEdgeError(writer, http.StatusServiceUnavailable, "schema_unavailable")
+			return
+		}
 	}
 	if gateway.config.ProtectedSecurityRequired() {
-		if err := model.VerifyRelayDownloadEdgeDatabaseRole(model.DB, schemaStatus.CurrentVersion); err != nil {
+		if err := verifyPlatformDownloadEdgeDatabaseRoleProof(requestDB, protectedProof); err != nil {
+			if request.Context().Err() == nil {
+				gateway.invalidateProtectedReadinessProof(protectedProof)
+			}
 			writePlatformDownloadEdgeError(writer, http.StatusServiceUnavailable, "database_role_unavailable")
 			return
 		}
 	}
-	counts, err := model.GetPlatformRelayDeliveryCounts(model.PlatformRelayDeliveryKindDownloadCompletion)
+	counts, err := model.GetPlatformRelayDeliveryCountsWithDB(
+		requestDB,
+		model.PlatformRelayDeliveryKindDownloadCompletion,
+	)
 	if err != nil {
+		if gateway.config.ProtectedSecurityRequired() && request.Context().Err() == nil {
+			gateway.invalidateProtectedReadinessProof(protectedProof)
+		}
 		writePlatformDownloadEdgeError(writer, http.StatusServiceUnavailable, "outbox_unavailable")
+		return
+	}
+	if request.Context().Err() != nil {
+		writePlatformDownloadEdgeError(writer, http.StatusServiceUnavailable, "request_cancelled")
+		return
+	}
+	if gateway.config.ProtectedSecurityRequired() && !gateway.protectedReadinessProofStillValid(protectedProof) {
+		writePlatformDownloadEdgeError(writer, http.StatusServiceUnavailable, "schema_unavailable")
 		return
 	}
 	writePlatformDownloadEdgeJSON(writer, http.StatusOK, map[string]any{
@@ -1191,6 +1566,14 @@ func platformDownloadEdgeSchemeAllowed(parsed *url.URL, production bool) bool {
 		return true
 	}
 	return !production && parsed.Scheme == "http" && platformDownloadEdgeLoopback(parsed.Hostname())
+}
+
+func platformDownloadEdgeCompletionSchemeAllowed(parsed *url.URL, protected bool) bool {
+	if platformDownloadEdgeSchemeAllowed(parsed, protected) {
+		return true
+	}
+	return !protected && parsed != nil && parsed.Scheme == "http" &&
+		strings.EqualFold(parsed.Hostname(), "platform-api") && parsed.Port() == "8000"
 }
 
 func platformDownloadEdgeLoopback(host string) bool {

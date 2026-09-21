@@ -14,14 +14,15 @@ from platform_api.models import (
     WalletAccount,
 )
 
-from .conftest import TEST_RELAY_CAPABILITY_REVISION
 from .test_model_capability_v1_contract import (
     _admin_headers,
     _create_model,
     _mode,
     _publish,
+    _request_with_fixture_distribution_evidence,
     canonical_capability,
 )
+from .media_fixtures import valid_mp4_bytes, valid_png_bytes
 
 
 def _provision_model(
@@ -47,26 +48,24 @@ def _provision_model(
     model_id = created.json()["id"]
     published = _publish(client, admin_headers, model_id)
     assert published.status_code == 200, published.text
-    # Generation fixtures represent a catalog model whose physical Relay
-    # capability revision was explicitly approved before task admission.
-    with client.app.state.session_factory.begin() as session:
-        model = session.get(ModelDefinition, model_id)
-        assert model is not None
-        model.relay_capability_revision = TEST_RELAY_CAPABILITY_REVISION
     price_field = (
         "price_per_second_cents"
         if billing_mode == "per_second"
         else "price_per_item_cents"
     )
-    granted = client.put(
-        f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
-        headers=admin_headers,
-        json={
-            "model_id": model_id,
-            "enabled": True,
-            price_field: unit_price_cents,
-            "config_override": config_override or {},
-        },
+    granted = _request_with_fixture_distribution_evidence(
+        client,
+        model_id,
+        lambda: client.put(
+            f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
+            headers=admin_headers,
+            json={
+                "model_id": model_id,
+                "enabled": True,
+                price_field: unit_price_cents,
+                "config_override": config_override or {},
+            },
+        ),
     )
     assert granted.status_code == 200, granted.text
     return model_id, admin_headers
@@ -96,12 +95,12 @@ def _upload_assets(
     audio: int,
 ) -> list[dict[str, str]]:
     media = {
-        "image": (images, "image/png", ".png", b"\x89PNG\r\n\x1a\n"),
-        "video": (videos, "video/mp4", ".mp4", b"\x00\x00\x00\x18ftypmp42"),
-        "audio": (audio, "audio/mpeg", ".mp3", b"ID3"),
+        "image": (images, "image/png", ".png", valid_png_bytes()),
+        "video": (videos, "video/mp4", ".mp4", valid_mp4_bytes()),
+        "audio": (audio, "audio/mpeg", ".mp3", b"ID3-test-audio"),
     }
     references: list[dict[str, str]] = []
-    for media_type, (count, content_type, extension, prefix) in media.items():
+    for media_type, (count, content_type, extension, content) in media.items():
         for index in range(count):
             uploaded = client.post(
                 f"/api/v1/companies/{tenant['company_id']}/assets",
@@ -114,7 +113,7 @@ def _upload_assets(
                 files={
                     "file": (
                         f"{media_type}-{index}{extension}",
-                        prefix + f"-{suffix}-{index}".encode(),
+                        content,
                         content_type,
                     )
                 },
@@ -849,6 +848,13 @@ def test_model_and_grant_changes_do_not_mutate_an_existing_task_or_outbox(
             )
         }
     )
+    # This test is about immutable task snapshots, not widening an unreviewed
+    # Relay ceiling. Explicitly record the fixture's reviewed replacement
+    # ceiling before changing the local catalog row.
+    with app.state.session_factory.begin() as session:
+        model = session.get(ModelDefinition, model_id)
+        assert model is not None
+        model.relay_capability_approved_ceiling = deepcopy(revised_capability)
     updated = client.put(
         f"/api/v1/platform-admin/models/{model_id}",
         headers=admin_headers,
@@ -865,15 +871,28 @@ def test_model_and_grant_changes_do_not_mutate_an_existing_task_or_outbox(
     assert updated.status_code == 200, updated.text
     assert updated.json()["capability_version"] == 2
     assert _publish(client, admin_headers, model_id).status_code == 200
-    revised_grant = client.put(
-        f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
-        headers=admin_headers,
-        json={
-            "model_id": model_id,
-            "enabled": True,
-            "price_per_item_cents": 250,
-            "config_override": {},
-        },
+    grant_version = next(
+        item["updated_at"]
+        for item in client.get(
+            f"/api/v1/companies/{tenant['company_id']}/model-grants",
+            headers=tenant_headers,
+        ).json()
+        if item["model_id"] == model_id
+    )
+    revised_grant = _request_with_fixture_distribution_evidence(
+        client,
+        model_id,
+        lambda: client.put(
+            f"/api/v1/platform-admin/companies/{tenant['company_id']}/model-grants",
+            headers=admin_headers,
+            json={
+                "model_id": model_id,
+                "expected_updated_at": grant_version,
+                "enabled": True,
+                "price_per_item_cents": 250,
+                "config_override": {},
+            },
+        ),
     )
     assert revised_grant.status_code == 200, revised_grant.text
 

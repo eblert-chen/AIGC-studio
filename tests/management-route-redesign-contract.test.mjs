@@ -3,10 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { managementSource } from "./management-source.mjs";
 
-const source = await readFile(
-  new URL("../src/ManagementConsole.jsx", import.meta.url),
-  "utf8",
-);
+const source = managementSource;
 const css = await readFile(
   new URL("../src/design-system/management-routes.css", import.meta.url),
   "utf8",
@@ -37,7 +34,7 @@ test("management sections restore from the URL and expose non-sensitive page tit
     /setSection\(sectionFromLocation\(\s*mode,\s*mode === "platform" \? initialPlatformSection : "overview",\s*\)\)/,
   );
   assert.match(source, /globalThis\.history\?\.replaceState\?\.\(\{\}, "", `\$\{url\.pathname\}\$\{url\.search\}\$\{url\.hash\}`\)/);
-  assert.match(source, /document\.title = `\$\{activeSectionLabel\} · \$\{mode === "platform" \? "平台基础配置" : "公司管理"\} · 旭天 AI VIDEO`/);
+  assert.match(source, /document\.title = `\$\{activeSectionLabel\} · \$\{mode === "platform" \? "平台基础配置" : "公司管理"\} · \$\{BRAND_NAME\}`/);
   assert.doesNotMatch(source, /document\.title[\s\S]{0,120}(?:company_id|user_id|membership_id)/);
 });
 
@@ -71,18 +68,18 @@ test("compact model capability records disclose every server-derived row on dema
   assert.match(managementSource, /<details className="model-capability-summary is-compact">/);
   assert.match(managementSource, /<summary>[\s\S]*?\{rows\.length\} 个模式[\s\S]*?查看能力[\s\S]*?<\/summary>/);
   assert.match(managementSource, /className="model-capability-details"[\s\S]*?rows\.map\(\(row\) =>/);
-  assert.equal(
-    [...managementSource.matchAll(/<ModelCapabilitySummary model=\{model\} compact \/>/g)].length,
-    2,
-  );
+  assert.match(managementSource, /<ModelCapabilitySummary model=\{model\} compact \/>/);
+  assert.match(managementSource, /<ModelCapabilitySummary model=\{row\.model\} compact \/>/);
 });
 
-test("management route styling uses one light precision geometry and continuous data surfaces", () => {
-  assert.match(css, /--management-chrome:\s*56px/);
-  assert.match(css, /--management-canvas:\s*var\(--bg, #fff\)/);
-  assert.match(css, /\.control-shell \.control-button\s*\{[\s\S]*?border-radius:\s*6px/);
-  assert.match(css, /\.control-shell \.control-section\s*\{[\s\S]*?border-radius:\s*10px/);
-  assert.match(css, /\.control-shell \.control-drawer\s*\{[\s\S]*?border-radius:\s*14px 0 0 14px/);
+test("management route styling uses purposeful control geometry and continuous data surfaces", () => {
+  assert.match(css, /--management-chrome:\s*68px/);
+  assert.match(css, /--management-canvas:\s*var\(--bg, #f7f6f1\)/);
+  assert.match(css, /--management-cobalt:\s*var\(--selection-violet\)/);
+  assert.match(css, /--management-orange:\s*var\(--workflow-orange\)/);
+  assert.match(css, /\.control-shell \.control-button\s*\{[\s\S]*?border-radius:\s*var\(--control-corner, var\(--radius-control, 10px\)\)/);
+  assert.match(css, /\.control-shell \.control-section\s*\{[\s\S]*?border-radius:\s*0/);
+  assert.match(css, /\.control-shell \.control-drawer\s*\{[\s\S]*?border-radius:\s*0/);
   assert.match(
     css,
     /\.control-shell \.control-summary-strip\s*\{[\s\S]*?border-block:[\s\S]*?background:\s*transparent/,
@@ -90,6 +87,38 @@ test("management route styling uses one light precision geometry and continuous 
   assert.match(css, /\.control-shell \.control-table td\s*\{[\s\S]*?font-size:\s*13px/);
   assert.doesNotMatch(css, /(?:linear|radial|conic)-gradient\(/);
   assert.doesNotMatch(css, /backdrop-filter|:has\(/);
+});
+
+test("management navigation uses one accessible selected affordance", () => {
+  assert.match(
+    css,
+    /\.control-shell \.control-sidebar nav button\.is-active\s*\{[^}]*color:\s*var\(--management-cobalt-strong\);[^}]*background:\s*var\(--management-cobalt-soft\);/s,
+  );
+  assert.doesNotMatch(css, /\.control-shell \.control-sidebar nav button\.is-active\s*\{[^}]*border(?:-[^:]*)?-color:/s);
+  assert.doesNotMatch(css, /\.control-shell \.control-sidebar nav button\.is-active::before/);
+  assert.match(
+    css,
+    /\.control-shell \.control-company-panel-tabs button\[aria-selected="true"\]\s*\{[^}]*color:\s*var\(--management-cobalt-strong\);[^}]*background:\s*var\(--management-cobalt-soft\);/s,
+  );
+  assert.doesNotMatch(css, /\.control-shell \.control-company-panel-tabs button\[aria-selected="true"\]::(?:before|after)/);
+  assert.match(source, /aria-current=\{section === id \? "page" : undefined\}/);
+});
+
+test("management command bar exposes real scope while only company accounts can return to creation", () => {
+  assert.match(source, /className="control-command-context"[\s\S]*?\{managementScopeName\}[\s\S]*?\{activeSectionLabel\}/);
+  assert.match(source, /preferredCreationSurfaceForManagement\([\s\S]*?allowedSurfaces,[\s\S]*?mode/);
+  assert.match(source, /const canReturnToCreation = Boolean\(preferredCreationSurface\)/);
+  assert.match(
+    source,
+    /\{mode === "company" && canReturnToCreation && \([\s\S]*?className="surface-switch"[\s\S]*?onSurfaceChange\(preferredCreationSurface\)[\s\S]*?>创作<\/button>/,
+  );
+  assert.match(source, />企业管理<\/button>/);
+  assert.match(source, /<div className="control-brand is-static"[\s\S]*?<strong>平台控制台<\/strong>/);
+  assert.doesNotMatch(source, />平台运营<\/button>/);
+  assert.doesNotMatch(source, /\{canAccessPlatform && <button/);
+  assert.doesNotMatch(source, />个人创作<\/button>|>企业创作<\/button>/);
+  assert.doesNotMatch(source, /const canReturnToStudio = allowedSurfaces\.includes\("studio"\)/);
+  assert.doesNotMatch(source, /control-sidebar[\s\S]{0,900}>0[1-9]\s/);
 });
 
 test("the no-access state is explicit and does not masquerade as an empty dashboard", () => {

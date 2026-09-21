@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -12,6 +13,121 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestClaimPlatformGenerationReconciliationOnlyClaimsMissingNativeTask(t *testing.T) {
+	preparePlatformGenerationRouteTest(t)
+	require.NoError(t, DB.AutoMigrate(&PlatformGenerationCallbackDelivery{}, &PlatformTaskStageEvent{}))
+	var callbackCountBefore int64
+	require.NoError(t, DB.Model(&PlatformGenerationCallbackDelivery{}).Count(&callbackCountBefore).Error)
+	var stageCountBefore int64
+	require.NoError(t, DB.Model(&PlatformTaskStageEvent{}).Count(&stageCountBefore).Error)
+	route := createPlatformGenerationRouteFixture(t, "reconciliation-claim-filter-model", 10, 5)
+	now := time.Now().UTC()
+	type queueCase struct {
+		name        string
+		errorCode   string
+		detailsJSON string
+		slotHeld    bool
+		state       string
+	}
+	cases := []queueCase{
+		{
+			name:        "missing-native-task",
+			errorCode:   PlatformGenerationErrorProviderPollReconciliationRequired,
+			detailsJSON: PlatformGenerationProviderReconciliationDetailsJSON(PlatformGenerationProviderReconciliationKindMissingNativeTask),
+			slotHeld:    true,
+			state:       PlatformGenerationRouteAdmissionUnknown,
+		},
+		{
+			name:        "provider-result-proof",
+			errorCode:   PlatformGenerationErrorProviderPollReconciliationRequired,
+			detailsJSON: PlatformGenerationProviderReconciliationDetailsJSON(PlatformGenerationProviderReconciliationKindProviderResultProof),
+			slotHeld:    true,
+			state:       PlatformGenerationRouteAdmissionUnknown,
+		},
+		{
+			name:        "provider-material",
+			errorCode:   PlatformGenerationErrorProviderPollReconciliationRequired,
+			detailsJSON: PlatformGenerationProviderReconciliationDetailsJSON(PlatformGenerationProviderReconciliationKindProviderMaterial),
+			slotHeld:    false,
+			state:       PlatformGenerationRouteAdmissionFinished,
+		},
+		{
+			name:        "unknown-provider-marker",
+			errorCode:   PlatformGenerationErrorProviderPollReconciliationRequired,
+			detailsJSON: PlatformGenerationProviderReconciliationDetailsJSON(PlatformGenerationProviderReconciliationKindUnknown),
+			slotHeld:    true,
+			state:       PlatformGenerationRouteAdmissionUnknown,
+		},
+		{
+			name:        "submission-unknown",
+			errorCode:   PlatformGenerationErrorSubmissionReconciliationRequired,
+			detailsJSON: `{}`,
+			slotHeld:    true,
+			state:       PlatformGenerationRouteAdmissionUnknown,
+		},
+	}
+	jobs := make(map[string]PlatformGenerationJob, len(cases))
+	for index, testCase := range cases {
+		job := PlatformGenerationJob{
+			ID:                         uuid.NewString(),
+			TenantID:                   uuid.NewString(),
+			SourceClientID:             "platform",
+			RequestID:                  "reconciliation-claim-" + testCase.name,
+			IdempotencyKey:             uuid.NewString(),
+			RequestHash:                strings.Repeat(string(rune('a'+index)), 64),
+			RequestJSON:                `{}`,
+			Model:                      route.Model,
+			Mode:                       route.Mode,
+			ExpectedCapabilityRevision: "sha256:" + strings.Repeat("a", 64),
+			CapabilityRevision:         "sha256:" + strings.Repeat("a", 64),
+			Status:                     PlatformGenerationStatusReconciliationRequired,
+			ErrorCode:                  testCase.errorCode,
+			ErrorDetailsJSON:           testCase.detailsJSON,
+			OutputsJSON:                `[]`,
+			NextPollAt:                 now.Add(-time.Duration(len(cases)-index) * time.Minute),
+		}
+		require.NoError(t, DB.Create(&job).Error)
+		admission := PlatformGenerationRouteAdmission{
+			JobID:               job.ID,
+			RouteID:             route.ID,
+			SubmissionTokenHash: strings.Repeat(string(rune('f'+index)), 64),
+			State:               testCase.state,
+			SlotHeld:            testCase.slotHeld,
+			Attempt:             1,
+		}
+		require.NoError(t, DB.Create(&admission).Error)
+		jobs[testCase.name] = job
+	}
+
+	claimed, token, err := ClaimPlatformGenerationReconciliation(time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, jobs["missing-native-task"].ID, claimed.ID)
+	require.NotEmpty(t, token)
+	require.NoError(t, ReleasePlatformGenerationReconciliation(claimed.ID, token, time.Hour))
+
+	second, secondToken, err := ClaimPlatformGenerationReconciliation(time.Minute)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	require.Empty(t, secondToken)
+	require.NotNil(t, second)
+
+	for _, testCase := range cases[1:] {
+		var persisted PlatformGenerationJob
+		require.NoError(t, DB.First(&persisted, "id = ?", jobs[testCase.name].ID).Error)
+		assert.Equal(t, PlatformGenerationStatusReconciliationRequired, persisted.Status, testCase.name)
+		assert.Empty(t, persisted.PollLeaseToken, testCase.name)
+		var admission PlatformGenerationRouteAdmission
+		require.NoError(t, DB.Where("job_id = ?", persisted.ID).First(&admission).Error)
+		assert.Equal(t, testCase.state, admission.State, testCase.name)
+		assert.Equal(t, testCase.slotHeld, admission.SlotHeld, testCase.name)
+	}
+	var callbackCount int64
+	require.NoError(t, DB.Model(&PlatformGenerationCallbackDelivery{}).Count(&callbackCount).Error)
+	assert.Equal(t, callbackCountBefore, callbackCount)
+	var stageCount int64
+	require.NoError(t, DB.Model(&PlatformTaskStageEvent{}).Count(&stageCount).Error)
+	assert.Equal(t, stageCountBefore, stageCount)
+}
 
 func TestClaimPlatformGenerationSubmissionRepairsTerminalJobOutboxWithoutNilSuccess(t *testing.T) {
 	preparePlatformGenerationRouteTest(t)
@@ -124,6 +240,7 @@ func TestRenewPlatformGenerationSubmissionFencesExpiredAndReplacementOwners(t *t
 
 func TestPlatformGenerationTransferLeaseRejectsExpiredAndStaleOwners(t *testing.T) {
 	preparePlatformGenerationRouteTest(t)
+	route := createPlatformGenerationRouteFixture(t, "transfer-fence-"+uuid.NewString(), 10, 2)
 	job := PlatformGenerationJob{
 		ID:                         uuid.NewString(),
 		TenantID:                   uuid.NewString(),
@@ -132,12 +249,16 @@ func TestPlatformGenerationTransferLeaseRejectsExpiredAndStaleOwners(t *testing.
 		IdempotencyKey:             "transfer-fence-key",
 		RequestHash:                strings.Repeat("a", 64),
 		RequestJSON:                `{}`,
-		Model:                      "transfer-model",
-		Mode:                       "text_to_video",
+		Model:                      route.Model,
+		Mode:                       route.Mode,
 		ExpectedCapabilityRevision: "sha256:" + strings.Repeat("b", 64),
 		CapabilityRevision:         "sha256:" + strings.Repeat("b", 64),
 		Status:                     PlatformGenerationStatusTransferring,
 		Progress:                   95,
+		ProviderRouteID:            route.ID,
+		ProviderChannelID:          route.ChannelID,
+		ProviderKeyIndex:           route.KeyIndex,
+		ProviderSubmissionAttempt:  1,
 		OutputsJSON:                `[]`,
 		ErrorDetailsJSON:           `{}`,
 		NextTransferAt:             time.Now().UTC().Add(-time.Minute),
@@ -270,6 +391,13 @@ func TestStagePlatformGenerationNativeTaskRecoveryRejectsExpiredWorkerAfterTakeo
 	require.NoError(t, DB.First(&afterCurrent, "id = ?", jobID).Error)
 	require.NotEmpty(t, afterCurrent.NativeTaskRecoveryJSON)
 	require.Equal(t, nativeTaskID, afterCurrent.NativeTaskID)
+	require.NoError(t, ValidatePlatformGenerationRequestSnapshotBinding(afterCurrent))
+	var recovery map[string]any
+	require.NoError(t, json.Unmarshal([]byte(afterCurrent.NativeTaskRecoveryJSON), &recovery))
+	require.EqualValues(t, 4, recovery["schema_version"])
+	require.Equal(t, platformGenerationRequestJSONSHA256(afterCurrent.RequestJSON), recovery["request_json_sha256"])
+	afterCurrent.RequestJSON = `{"tampered":true}`
+	require.ErrorContains(t, ValidatePlatformGenerationRequestSnapshotBinding(afterCurrent), "does not match")
 }
 
 func TestManualUnknownResolutionNeverChangesTheStickyRoute(t *testing.T) {
@@ -332,10 +460,9 @@ func TestManualUnknownResolutionNeverChangesTheStickyRoute(t *testing.T) {
 			job.TenantID,
 			rotatedKey,
 		)
-		require.NoError(t, err)
-		assert.True(t, replayed)
-		assert.Equal(t, event.ApprovalKeyID, rotatedReceipt.ApprovalKeyID)
-		assert.Equal(t, event.ApprovalSignature, rotatedReceipt.ApprovalSignature)
+		assert.ErrorIs(t, err, ErrPlatformGenerationReconciliationConflict)
+		assert.Nil(t, rotatedReceipt)
+		assert.False(t, replayed)
 		mutated := resolution
 		mutated.ApprovalReason = "A conflicting proof must not overwrite the receipt"
 		_, _, _, err = ResolvePlatformGenerationSubmissionUnknown(job.ID, job.TenantID, mutated)

@@ -153,10 +153,7 @@ func TestPostgresSubmissionTakeoverRejectsOldNativeRecoveryStage(t *testing.T) {
 func TestPostgresTransferLeaseTakeoverFencesStalePublisher(t *testing.T) {
 	resetIntegrationState(t)
 	job, _ := createQueuedGeneration(t, "integration.transfer.fence", "text_to_video")
-	requireNoError(t, integrationDB.Model(&model.PlatformGenerationJob{}).Where("id = ?", job.ID).Updates(map[string]any{
-		"status":           model.PlatformGenerationStatusTransferring,
-		"next_transfer_at": gorm.Expr("CURRENT_TIMESTAMP - INTERVAL '1 second'"),
-	}).Error)
+	prepareTerminalPlatformTransferBinding(t, job)
 
 	_, firstToken, err := model.ClaimPlatformGenerationTransfer(30 * time.Second)
 	requireNoError(t, err)
@@ -270,10 +267,7 @@ func TestPostgresArtifactIntentCreateAndCompleteUseDeadlockSafeLockOrder(t *test
 	for iteration := 0; iteration < 8; iteration++ {
 		resetIntegrationState(t)
 		job, _ := createQueuedGeneration(t, "integration.artifact.lock.order."+uuid.NewString(), "text_to_video")
-		requireNoError(t, integrationDB.Model(&model.PlatformGenerationJob{}).Where("id = ?", job.ID).Updates(map[string]any{
-			"status":           model.PlatformGenerationStatusTransferring,
-			"next_transfer_at": gorm.Expr("CURRENT_TIMESTAMP - INTERVAL '1 second'"),
-		}).Error)
+		prepareTerminalPlatformTransferBinding(t, job)
 		_, transferToken, err := model.ClaimPlatformGenerationTransfer(30 * time.Second)
 		requireNoError(t, err)
 		objectKey := "outputs/" + job.TenantID + "/" + job.ID + "/" + uuid.NewString()

@@ -45,6 +45,7 @@ services:
         /run/relay-secret-isolation/platform-api
         /run/relay-secret-isolation/platform-dispatcher
         /run/relay-secret-isolation/platform-relay-sync
+        /run/relay-secret-isolation/platform-relay-catalog-sync
         /run/relay-secret-isolation/platform-timeout-worker
         /run/relay-secret-isolation/platform-publishing-worker
         /run/relay-secret-isolation/platform-download-gateway-registration-worker
@@ -66,6 +67,7 @@ services:
         /run/relay-secret-isolation/platform-api
         /run/relay-secret-isolation/platform-dispatcher
         /run/relay-secret-isolation/platform-relay-sync
+        /run/relay-secret-isolation/platform-relay-catalog-sync
         /run/relay-secret-isolation/platform-timeout-worker
         /run/relay-secret-isolation/platform-publishing-worker
         /run/relay-secret-isolation/platform-download-gateway-registration-worker
@@ -89,6 +91,7 @@ services:
       - relay-new-api-secret-isolation-platform-api:/run/relay-secret-isolation/platform-api
       - relay-new-api-secret-isolation-platform-dispatcher:/run/relay-secret-isolation/platform-dispatcher
       - relay-new-api-secret-isolation-platform-relay-sync:/run/relay-secret-isolation/platform-relay-sync
+      - relay-new-api-secret-isolation-platform-relay-catalog-sync:/run/relay-secret-isolation/platform-relay-catalog-sync
       - relay-new-api-secret-isolation-platform-timeout-worker:/run/relay-secret-isolation/platform-timeout-worker
       - relay-new-api-secret-isolation-platform-publishing-worker:/run/relay-secret-isolation/platform-publishing-worker
       - relay-new-api-secret-isolation-platform-download-gateway-registration-worker:/run/relay-secret-isolation/platform-download-gateway-registration-worker
@@ -101,7 +104,7 @@ services:
 
   # This networkless one-shot sees every new-api secret source exactly once,
   # rejects cross-domain reuse, and writes a release/source/file-bound
-  # commitment into fourteen isolated receipt volumes, then atomically commits
+  # commitment into fifteen isolated receipt volumes, then atomically commits
   # one shared value-free run marker. Each downstream consumer
   # mounts only its own receipt; no long-lived process receives the global
   # secret set or another consumer's commitments.
@@ -157,6 +160,7 @@ services:
       PLATFORM_API_RUNTIME_SECRETS_FILE: /run/secrets/platform-api-runtime-secrets.json
       PLATFORM_DISPATCHER_RUNTIME_SECRETS_FILE: /run/secrets/platform-dispatcher-runtime-secrets.json
       PLATFORM_RELAY_SYNC_RUNTIME_SECRETS_FILE: /run/secrets/platform-relay-sync-runtime-secrets.json
+      PLATFORM_RELAY_CATALOG_SYNC_RUNTIME_SECRETS_FILE: /run/secrets/platform-relay-catalog-sync-runtime-secrets.json
       PLATFORM_TIMEOUT_WORKER_RUNTIME_SECRETS_FILE: /run/secrets/platform-timeout-worker-runtime-secrets.json
       PLATFORM_PUBLISHING_WORKER_RUNTIME_SECRETS_FILE: /run/secrets/platform-publishing-worker-runtime-secrets.json
       PLATFORM_DOWNLOAD_GATEWAY_WORKER_RUNTIME_SECRETS_FILE: /run/secrets/platform-download-gateway-registration-worker-runtime-secrets.json
@@ -165,6 +169,7 @@ services:
       PLATFORM_API_DATABASE_PASSWORD_FILE: /run/secrets/platform-api-database-password
       PLATFORM_DISPATCHER_DATABASE_PASSWORD_FILE: /run/secrets/platform-dispatcher-database-password
       PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE: /run/secrets/platform-relay-sync-database-password
+      PLATFORM_RELAY_CATALOG_SYNC_DATABASE_PASSWORD_FILE: /run/secrets/platform-relay-catalog-sync-database-password
       PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-timeout-worker-database-password
       PLATFORM_PUBLISHING_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-publishing-worker-database-password
       PLATFORM_DOWNLOAD_GATEWAY_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-download-gateway-worker-database-password
@@ -179,6 +184,7 @@ services:
       RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_API_DIRECTORY: /run/relay-secret-isolation/platform-api
       RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_DISPATCHER_DIRECTORY: /run/relay-secret-isolation/platform-dispatcher
       RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_RELAY_SYNC_DIRECTORY: /run/relay-secret-isolation/platform-relay-sync
+      RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_RELAY_CATALOG_SYNC_DIRECTORY: /run/relay-secret-isolation/platform-relay-catalog-sync
       RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_TIMEOUT_WORKER_DIRECTORY: /run/relay-secret-isolation/platform-timeout-worker
       RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_PUBLISHING_WORKER_DIRECTORY: /run/relay-secret-isolation/platform-publishing-worker
       RELAY_SECRET_ISOLATION_RECEIPT_PLATFORM_DOWNLOAD_GATEWAY_REGISTRATION_WORKER_DIRECTORY: /run/relay-secret-isolation/platform-download-gateway-registration-worker
@@ -293,6 +299,12 @@ services:
         bind:
           create_host_path: false
       - type: bind
+        source: ${PLATFORM_RELAY_CATALOG_SYNC_RUNTIME_SECRETS_FILE:?set owner-only Platform relay-catalog-sync runtime secret file}
+        target: /run/secrets/platform-relay-catalog-sync-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: ${PLATFORM_TIMEOUT_WORKER_RUNTIME_SECRETS_FILE:?set owner-only Platform timeout-worker runtime secret file}
         target: /run/secrets/platform-timeout-worker-runtime-secrets.json
         read_only: true
@@ -341,6 +353,12 @@ services:
         bind:
           create_host_path: false
       - type: bind
+        source: ${PLATFORM_RELAY_CATALOG_SYNC_DATABASE_PASSWORD_FILE:?set owner-only Platform relay-catalog-sync password file}
+        target: /run/secrets/platform-relay-catalog-sync-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: ${PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD_FILE:?set owner-only Platform timeout-worker password file}
         target: /run/secrets/platform-timeout-worker-database-password
         read_only: true
@@ -368,6 +386,7 @@ services:
       - relay-new-api-secret-isolation-platform-api:/run/relay-secret-isolation/platform-api
       - relay-new-api-secret-isolation-platform-dispatcher:/run/relay-secret-isolation/platform-dispatcher
       - relay-new-api-secret-isolation-platform-relay-sync:/run/relay-secret-isolation/platform-relay-sync
+      - relay-new-api-secret-isolation-platform-relay-catalog-sync:/run/relay-secret-isolation/platform-relay-catalog-sync
       - relay-new-api-secret-isolation-platform-timeout-worker:/run/relay-secret-isolation/platform-timeout-worker
       - relay-new-api-secret-isolation-platform-publishing-worker:/run/relay-secret-isolation/platform-publishing-worker
       - relay-new-api-secret-isolation-platform-download-gateway-registration-worker:/run/relay-secret-isolation/platform-download-gateway-registration-worker
@@ -1006,7 +1025,7 @@ services:
       start_period: 30s
 
   # The role-admin predecessor is the only Platform process that can provision
-  # cluster roles or transfer legacy ownership. It receives seven bare database
+  # cluster roles or transfer legacy ownership. It receives eight bare database
   # passwords, never the API/worker bundles that contain unrelated credentials.
   platform-db-role-pre:
     profiles: !reset []
@@ -1027,6 +1046,7 @@ services:
       PLATFORM_API_DATABASE_PASSWORD_FILE: /run/secrets/platform-api-database-password
       PLATFORM_DISPATCHER_DATABASE_PASSWORD_FILE: /run/secrets/platform-dispatcher-database-password
       PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE: /run/secrets/platform-relay-sync-database-password
+      PLATFORM_RELAY_CATALOG_SYNC_DATABASE_PASSWORD_FILE: /run/secrets/platform-relay-catalog-sync-database-password
       PLATFORM_TIMEOUT_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-timeout-worker-database-password
       PLATFORM_PUBLISHING_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-publishing-worker-database-password
       PLATFORM_DOWNLOAD_GATEWAY_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/platform-download-gateway-worker-database-password
@@ -1077,6 +1097,12 @@ services:
       - type: bind
         source: ${PLATFORM_RELAY_SYNC_DATABASE_PASSWORD_FILE:?set owner-only Platform relay-sync database password file}
         target: /run/secrets/platform-relay-sync-database-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_RELAY_CATALOG_SYNC_DATABASE_PASSWORD_FILE:?set owner-only Platform relay-catalog-sync database password file}
+        target: /run/secrets/platform-relay-catalog-sync-database-password
         read_only: true
         bind:
           create_host_path: false
@@ -1285,6 +1311,7 @@ services:
       - /run/platform-database-ca-snapshot:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
 
   api-gateway:
+    image: ${PLATFORM_API_GATEWAY_IMAGE_REPOSITORY:?set immutable Platform API gateway image repository}@${PLATFORM_API_GATEWAY_IMAGE_DIGEST:?set Platform API gateway sha256 manifest digest}
     environment:
       PLATFORM_TRUSTED_EDGE_CIDR: ${PLATFORM_TRUSTED_EDGE_CIDR:?set the exact host TLS ingress address or CIDR}
     volumes: !override
@@ -1405,6 +1432,73 @@ services:
         bind:
           create_host_path: false
       - relay-new-api-secret-isolation-platform-relay-sync:/run/relay-secret-isolation:ro
+      - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
+      - platform-database-release-proof:/run/platform-database-release-proof:ro
+    depends_on: !override
+      relay-new-api-secret-isolation:
+        condition: service_completed_successfully
+      platform-migrate:
+        condition: service_completed_successfully
+      relay-new-api:
+        condition: service_healthy
+      platform-api:
+        condition: service_healthy
+    networks: !override
+      - relay-new-api-edge
+      - relay-new-api-managed-state
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+      - /run/platform-database-ca-snapshot:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+
+  platform-relay-catalog-sync:
+    build: !reset null
+    image: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+    user: "10001:10001"
+    environment: !override
+      <<: *relay-secret-isolation-audience
+      ENVIRONMENT: ${RELAY_DEPLOYMENT_ENV:?set staging or production}
+      PLATFORM_PROTECTED_RUNTIME: "true"
+      PLATFORM_PROCESS_ROLE: relay-catalog-sync
+      PLATFORM_PROCESS_RUNTIME_SECRETS_FILE: /run/secrets/platform-relay-catalog-sync-runtime-secrets.json
+      PLATFORM_DATABASE_CA_FILE: /run/secrets/platform-database-ca.pem
+      PLATFORM_DATABASE_RELEASE_PROOF_FILE: /run/platform-database-release-proof/attestation.json
+      RELAY_SECRET_ISOLATION_RECEIPT_FILE: /run/relay-secret-isolation/receipt.json
+      RELAY_SECRET_ISOLATION_COMMIT_FILE: /run/relay-secret-isolation-commit/receipt.json
+      RELAY_COMPAT_IMAGE_DIGEST: ${NEW_API_RELAY_IMAGE_DIGEST:?set deployed manifest digest}
+      RELAY_COMPAT_SOURCE_REVISION: ${NEW_API_RELAY_SOURCE_REVISION:?set committed extension-fork revision}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_SHA256: ${NEW_API_RELAY_SOURCE_SNAPSHOT_SHA256:?set frozen source snapshot digest}
+      RELAY_COMPAT_SOURCE_SNAPSHOT_FILE_COUNT: ${NEW_API_RELAY_SOURCE_SNAPSHOT_FILE_COUNT:?set frozen source snapshot file count}
+      RELAY_COMPAT_UPSTREAM_REVISION: 0ab02020603d22e5613bc4cf46bfab06f8567769
+      RELAY_COMPAT_ROUTE_ACCEPTANCE_TRUST_KEYS_SHA256: ${NEW_API_RELAY_ROUTE_ACCEPTANCE_KEYS_SHA256:?set frozen route-acceptance trust digest}
+      PLATFORM_IMAGE: ${PLATFORM_IMAGE:?set immutable Platform image reference with sha256 digest}
+      PLATFORM_SOURCE_REVISION: ${PLATFORM_SOURCE_REVISION:?set committed Platform source revision}
+      PLATFORM_SOURCE_SNAPSHOT_SHA256: ${PLATFORM_SOURCE_SNAPSHOT_SHA256:?set frozen Platform source snapshot digest}
+      AUTO_CREATE_TABLES: "false"
+      DEVELOPMENT_HEADER_AUTH_ENABLED: "false"
+      ENABLE_BOOTSTRAP: "false"
+      RELAY_DEFAULT_BACKEND_ID: ${PLATFORM_NEW_API_RELAY_BACKEND_ID:?set stable new-api backend id}
+      RELAY_DEFAULT_CONTRACT_REVISION: generations.v1
+      RELAY_CATALOG_SYNC_ENABLED: "true"
+      RELAY_CATALOG_SYNC_INTERVAL_SECONDS: ${RELAY_CATALOG_SYNC_INTERVAL_SECONDS:-60}
+      RELAY_CATALOG_SYNC_RETRY_BASE_SECONDS: ${RELAY_CATALOG_SYNC_RETRY_BASE_SECONDS:-5}
+      RELAY_CATALOG_SYNC_RETRY_CAP_SECONDS: ${RELAY_CATALOG_SYNC_RETRY_CAP_SECONDS:-300}
+    volumes: !override
+      - type: bind
+        source: ${PLATFORM_DATABASE_CA_FILE:?set owner-only Platform PostgreSQL CA bundle}
+        target: /run/secrets/platform-database-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PLATFORM_RELAY_CATALOG_SYNC_RUNTIME_SECRETS_FILE:?set owner-only Platform relay-catalog-sync runtime secret file}
+        target: /run/secrets/platform-relay-catalog-sync-runtime-secrets.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - relay-new-api-secret-isolation-platform-relay-catalog-sync:/run/relay-secret-isolation:ro
       - relay-new-api-secret-isolation-commit:/run/relay-secret-isolation-commit:ro
       - platform-database-release-proof:/run/platform-database-release-proof:ro
     depends_on: !override
@@ -1634,6 +1728,7 @@ volumes:
   relay-new-api-secret-isolation-platform-api:
   relay-new-api-secret-isolation-platform-dispatcher:
   relay-new-api-secret-isolation-platform-relay-sync:
+  relay-new-api-secret-isolation-platform-relay-catalog-sync:
   relay-new-api-secret-isolation-platform-timeout-worker:
   relay-new-api-secret-isolation-platform-publishing-worker:
   relay-new-api-secret-isolation-platform-download-gateway-registration-worker:
