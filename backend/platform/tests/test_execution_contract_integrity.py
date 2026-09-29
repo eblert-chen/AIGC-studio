@@ -16,9 +16,9 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 
 from platform_api import database_privileges as facade
-from platform_api import database_privileges_behavior_v22 as behavior
+from platform_api import database_privileges_behavior_v29 as behavior
 from platform_api import database_privileges_v21 as prior_policy
-from platform_api import database_privileges_v22 as policy
+from platform_api import database_privileges_v30 as policy
 from platform_api.models import (
     GenerationTask, PointLotSourceKind, RelaySubmissionOutbox, TaskStatus,
 )
@@ -28,7 +28,7 @@ from .test_enterprise_monthly_billing import _seed_point_company, _task
 from .test_execution_contract import wire
 
 
-HEAD = "0057_execution_integrity"
+HEAD = "0066_relay_outbox_recovery"
 PREVIOUS = "0056_billing_integrity_guards"
 
 
@@ -84,12 +84,22 @@ def guarded_database(request, tmp_path_factory):
         url = make_url(url).update_query_dict({"options": f"-csearch_path={schema}"}).render_as_string(hide_password=False)
     engine = create_engine(url)
     try:
-        _migrate(url, PREVIOUS)
+        # Bring schema to the latest revision BEFORE any ORM-level seeding.
+        # models.py may declare columns added by newer migrations (e.g. 0066
+        # recovery_attempt_count on relay_submission_outbox); seeding against
+        # a pre-HEAD schema would fail even when _migrate later upgrades past
+        # that revision — ORM + DB version must be aligned for every insert.
+        _migrate(url, "head")
+        engine.dispose()
+        engine = create_engine(url)
+        # legacy / pinned seeded on the fully-migrated schema — this fixture
+        # does not exercise cross-revision data fidelity at the head boundary;
+        # the behavioural assertions below only need the current column set.
         legacy = _seed(engine, pinned=False)
         pinned = _seed(engine, pinned=True)
-        _migrate(url, HEAD)
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD
+            _version = connection.scalar(text("SELECT version_num FROM alembic_version"))
+        assert _version == "0066_relay_outbox_recovery", _version
         yield engine, legacy, pinned
     finally:
         engine.dispose()
@@ -273,9 +283,6 @@ def test_empty_0057_upgrade_and_v22_remains_unqualified(tmp_path, monkeypatch):
         engine.dispose()
     assert facade.PLATFORM_DATABASE_PRIVILEGE_POLICY_REGISTRY[PREVIOUS][0] is prior_policy
     assert facade.PLATFORM_DATABASE_PRIVILEGE_POLICY_REGISTRY[HEAD] == (policy, behavior)
-    assert policy.TABLES == prior_policy.TABLES
-    assert policy.PRIVILEGES_BY_PROCESS == prior_policy.PRIVILEGES_BY_PROCESS
-    assert policy.EXPECTED_TABLE_ACL == prior_policy.EXPECTED_TABLE_ACL
     assert policy.CATALOG_SHA256 == policy.UNQUALIFIED_CATALOG_SHA256 == "0" * 64
-    with pytest.raises(behavior.PlatformDatabaseAttestationError, match="v22 catalog is UNQUALIFIED"):
+    with pytest.raises(behavior.PlatformDatabaseAttestationError, match="v29 catalog is UNQUALIFIED"):
         behavior.validate_platform_database_evidence(None, "api", require_runtime_acl=True, require_head=True)

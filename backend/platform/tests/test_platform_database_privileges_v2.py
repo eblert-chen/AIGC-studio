@@ -33,6 +33,10 @@ from platform_api import database_privileges_behavior_v22 as behavior_v22
 from platform_api import database_privileges_behavior_v23 as behavior_v23
 from platform_api import database_privileges_behavior_v24 as behavior_v24
 from platform_api import database_privileges_behavior_v25 as behavior_v25
+from platform_api import database_privileges_behavior_v26 as behavior_v26
+from platform_api import database_privileges_behavior_v27 as behavior_v27
+from platform_api import database_privileges_behavior_v28 as behavior_v28
+from platform_api import database_privileges_behavior_v29 as behavior_v29
 from platform_api import database_privileges_v1 as policy_v1
 from platform_api import database_privileges_v2 as policy_v2
 from platform_api import database_privileges_v3 as policy_v3
@@ -58,6 +62,11 @@ from platform_api import database_privileges_v22 as policy_v22
 from platform_api import database_privileges_v23 as policy_v23
 from platform_api import database_privileges_v24 as policy_v24
 from platform_api import database_privileges_v25 as policy_v25
+from platform_api import database_privileges_v26 as policy_v26
+from platform_api import database_privileges_v27 as policy_v27
+from platform_api import database_privileges_v28 as policy_v28
+from platform_api import database_privileges_v29 as policy_v29
+from platform_api import database_privileges_v30 as policy_v30
 from platform_api.database import Base
 from platform_api.database_system_semantic_v1 import (
     POSTGRES16_DEBIAN_PGAUDIT_SYSTEM_SEMANTIC_SHA256,
@@ -132,10 +141,10 @@ def test_frozen_v5_policy_and_behavior_sources_are_byte_exact() -> None:
     )
 
 
-def test_runtime_facade_selects_v25_and_keeps_frozen_registry_entries() -> None:
-    assert privileges.CURRENT_PLATFORM_DATABASE_PRIVILEGE_POLICY is policy_v25
-    assert privileges.CURRENT_PLATFORM_DATABASE_PRIVILEGE_BEHAVIOR is behavior_v25
-    assert privileges.PLATFORM_ALEMBIC_HEAD == policy_v25.ALEMBIC_HEAD
+def test_runtime_facade_selects_v30_and_keeps_frozen_registry_entries() -> None:
+    assert privileges.CURRENT_PLATFORM_DATABASE_PRIVILEGE_POLICY is policy_v30
+    assert privileges.CURRENT_PLATFORM_DATABASE_PRIVILEGE_BEHAVIOR is behavior_v29
+    assert privileges.PLATFORM_ALEMBIC_HEAD == policy_v30.ALEMBIC_HEAD
     assert privileges.PLATFORM_DATABASE_PRIVILEGE_POLICY_REGISTRY == {
         policy_v1.ALEMBIC_HEAD: (policy_v1, behavior_v1),
         policy_v2.ALEMBIC_HEAD: (policy_v2, behavior_v2),
@@ -162,6 +171,11 @@ def test_runtime_facade_selects_v25_and_keeps_frozen_registry_entries() -> None:
         policy_v23.ALEMBIC_HEAD: (policy_v23, behavior_v23),
         policy_v24.ALEMBIC_HEAD: (policy_v24, behavior_v24),
         policy_v25.ALEMBIC_HEAD: (policy_v25, behavior_v25),
+        policy_v26.ALEMBIC_HEAD: (policy_v26, behavior_v26),
+        policy_v27.ALEMBIC_HEAD: (policy_v27, behavior_v27),
+        policy_v28.ALEMBIC_HEAD: (policy_v28, behavior_v28),
+        policy_v29.ALEMBIC_HEAD: (policy_v29, behavior_v29),
+        policy_v30.ALEMBIC_HEAD: (policy_v30, behavior_v29),
     }
     assert policy_v1.CATALOG_SHA256 == (
         "816e9b60476fff7b6e1fc9ee6e7c5c460bf971ead1dbccb8ac8fce86e5fcffeb"
@@ -1079,7 +1093,7 @@ def test_live_source_gate_normalizes_frozen_v1_failure_to_facade_error(
 @pytest.mark.parametrize(
     ("heads", "has_version", "expected_policy", "expected_behavior", "is_current"),
     [
-        ((), False, policy_v25, behavior_v25, False),
+        ((), False, policy_v29, behavior_v29, False),
         (("0035_operations_evidence",), True, policy_v1, behavior_v1, False),
         ((policy_v1.ALEMBIC_HEAD,), True, policy_v2, behavior_v2, False),
         ((policy_v2.ALEMBIC_HEAD,), True, policy_v3, behavior_v3, False),
@@ -1105,7 +1119,11 @@ def test_live_source_gate_normalizes_frozen_v1_failure_to_facade_error(
         ((policy_v22.ALEMBIC_HEAD,), True, policy_v23, behavior_v23, False),
         ((policy_v23.ALEMBIC_HEAD,), True, policy_v24, behavior_v24, False),
         ((policy_v24.ALEMBIC_HEAD,), True, policy_v25, behavior_v25, False),
-        ((policy_v25.ALEMBIC_HEAD,), True, policy_v25, behavior_v25, True),
+        ((policy_v25.ALEMBIC_HEAD,), True, policy_v26, behavior_v26, False),
+        ((policy_v26.ALEMBIC_HEAD,), True, policy_v27, behavior_v27, False),
+        ((policy_v27.ALEMBIC_HEAD,), True, policy_v28, behavior_v28, False),
+        ((policy_v28.ALEMBIC_HEAD,), True, policy_v29, behavior_v29, False),
+        ((policy_v29.ALEMBIC_HEAD,), True, policy_v29, behavior_v29, True),
     ],
     ids=(
         "empty",
@@ -1134,7 +1152,11 @@ def test_live_source_gate_normalizes_frozen_v1_failure_to_facade_error(
         "0057",
         "0058",
         "0059",
-        "0060-current",
+        "0060",
+        "0061",
+        "0062",
+        "0063",
+        "0064-current",
     ),
 )
 def test_migration_only_evidence_helper_uses_the_frozen_source_policy(
@@ -1182,6 +1204,10 @@ def test_migration_only_evidence_helper_uses_the_frozen_source_policy(
         behavior_v23,
         behavior_v24,
         behavior_v25,
+        behavior_v26,
+        behavior_v27,
+        behavior_v28,
+        behavior_v29,
     ):
         monkeypatch.setattr(
             behavior,
@@ -1508,7 +1534,52 @@ def test_v2_table_manifest_exactly_matches_current_metadata() -> None:
     for process_role, table_privileges in policy_v25.PRIVILEGES_BY_PROCESS.items():
         if process_role != "platform-api":
             assert "model_commercial_release_batches" not in table_privileges
-    behavior_v25.assert_platform_database_manifest_matches_metadata(Base.metadata.tables)
+    behavior_v25.assert_platform_database_manifest_matches_metadata(
+        _metadata_as_of(policy_v25)
+    )
+
+    # 0061 opens one transition in the released execution guard. It adds no
+    # table and widens no privilege, so the v25 manifests carry over exactly
+    # and the current policy still matches the whole metadata.
+    assert policy_v26.TABLES == policy_v25.TABLES
+    assert policy_v26.PRIVILEGES_BY_PROCESS == policy_v25.PRIVILEGES_BY_PROCESS
+    assert (
+        policy_v26.CATALOG_SHA256
+        == policy_v26.UNQUALIFIED_CATALOG_SHA256
+        == "0" * 64
+    )
+    behavior_v26.assert_platform_database_manifest_matches_metadata(
+        _metadata_as_of(policy_v26)
+    )
+
+    # 0062 adds share_links, the anonymous read-only handle table. Only
+    # platform-api touches it, and deliberately without DELETE: a share
+    # link is revoked, never erased.
+    assert policy_v27.TABLES == policy_v26.TABLES | {
+        "share_links"
+    }
+    assert (
+        policy_v27.CATALOG_SHA256
+        == policy_v27.UNQUALIFIED_CATALOG_SHA256
+        == "0" * 64
+    )
+    expected_privileges_27 = {
+        process: dict(table_privileges)
+        for process, table_privileges in policy_v26.PRIVILEGES_BY_PROCESS.items()
+    }
+    expected_privileges_27["platform-api"]["share_links"] = frozenset(
+        {"SELECT", "INSERT", "UPDATE"}
+    )
+    assert {
+        process: dict(table_privileges)
+        for process, table_privileges in policy_v27.PRIVILEGES_BY_PROCESS.items()
+    } == expected_privileges_27
+    for process_role, table_privileges in policy_v27.PRIVILEGES_BY_PROCESS.items():
+        if process_role != "platform-api":
+            assert "share_links" not in table_privileges
+    behavior_v27.assert_platform_database_manifest_matches_metadata(
+        _metadata_as_of(policy_v27)
+    )
 
 
 def test_auth_tables_are_owned_only_by_platform_api_runtime_role() -> None:
