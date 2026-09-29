@@ -140,6 +140,7 @@ class LedgerKind(str, enum.Enum):
     RESERVE = "reserve"
     SETTLE = "settle"
     RELEASE = "release"
+    EXPIRY = "expiry"
     REFUND_RESERVE = "refund_reserve"
     REFUND_SETTLE = "refund_settle"
     REFUND_RELEASE = "refund_release"
@@ -161,6 +162,7 @@ class PointLedgerKind(str, enum.Enum):
     RESERVE = "reserve"
     SETTLE = "settle"
     RELEASE = "release"
+    EXPIRY = "expiry"
     REFUND_RESERVE = "refund_reserve"
     REFUND_SETTLE = "refund_settle"
     REFUND_RELEASE = "refund_release"
@@ -1834,6 +1836,7 @@ class CompanyPointLot(TimestampMixin, Base):
             "created_at",
             "id",
         ),
+        Index("ix_company_point_lot_expiry", "expires_at"),
         CheckConstraint("original_points > 0", name="ck_company_point_lot_original"),
         CheckConstraint(
             "source_kind IN ('PURCHASED', 'CONTRACT', 'PROMOTIONAL', "
@@ -1848,6 +1851,7 @@ class CompanyPointLot(TimestampMixin, Base):
         ),
         CheckConstraint("settled_points >= 0", name="ck_company_point_lot_settled"),
         CheckConstraint("reversed_points >= 0", name="ck_company_point_lot_reversed"),
+        CheckConstraint("expired_points >= 0", name="ck_company_point_lot_expired"),
         CheckConstraint("cash_basis_cents >= 0", name="ck_company_point_lot_cash_basis"),
         CheckConstraint(
             "receivable_basis_cents >= 0",
@@ -1861,7 +1865,7 @@ class CompanyPointLot(TimestampMixin, Base):
         ),
         CheckConstraint(
             "original_points = available_points + reserved_points + "
-            "reversal_reserved_points + settled_points + reversed_points",
+            "reversal_reserved_points + settled_points + expired_points + reversed_points",
             name="ck_company_point_lot_conservation",
         ),
     )
@@ -1881,6 +1885,9 @@ class CompanyPointLot(TimestampMixin, Base):
     )
     settled_points: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     reversed_points: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+    expired_points: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default="0", nullable=False
     )
     cash_basis_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
@@ -1924,7 +1931,7 @@ class CompanyPointLedgerEntry(Base):
         ),
         CheckConstraint("amount_points >= 0", name="ck_company_point_ledger_amount"),
         CheckConstraint(
-            "kind IN ('MIGRATION', 'CREDIT', 'RESERVE', 'SETTLE', 'RELEASE', "
+            "kind IN ('MIGRATION', 'CREDIT', 'RESERVE', 'SETTLE', 'RELEASE', 'EXPIRY', "
             "'REFUND_RESERVE', 'REFUND_SETTLE', 'REFUND_RELEASE', "
             "'CHARGEBACK', 'DISPUTE_REVERSAL', 'DEBT_RECOVERY')",
             name="ck_company_point_ledger_kind",
@@ -1949,6 +1956,10 @@ class CompanyPointLedgerEntry(Base):
             "(kind = 'RELEASE' AND amount_points > 0 "
             "AND available_delta_points = amount_points "
             "AND reserved_delta_points = -amount_points "
+            "AND reversal_reserved_delta_points = 0 AND debt_delta_points = 0) OR "
+            "(kind = 'EXPIRY' AND amount_points > 0 "
+            "AND available_delta_points = -amount_points "
+            "AND reserved_delta_points = 0 "
             "AND reversal_reserved_delta_points = 0 AND debt_delta_points = 0) OR "
             "(kind = 'REFUND_RESERVE' AND amount_points > 0 "
             "AND available_delta_points = -amount_points AND reserved_delta_points = 0 "
@@ -2098,6 +2109,7 @@ class PersonalPointLot(TimestampMixin, Base):
             "created_at",
             "id",
         ),
+        Index("ix_personal_point_lot_expiry", "expires_at"),
         CheckConstraint("original_points > 0", name="ck_personal_point_lot_original"),
         CheckConstraint("available_points >= 0", name="ck_personal_point_lot_available"),
         CheckConstraint("reserved_points >= 0", name="ck_personal_point_lot_reserved"),
@@ -2107,6 +2119,7 @@ class PersonalPointLot(TimestampMixin, Base):
         ),
         CheckConstraint("settled_points >= 0", name="ck_personal_point_lot_settled"),
         CheckConstraint("reversed_points >= 0", name="ck_personal_point_lot_reversed"),
+        CheckConstraint("expired_points >= 0", name="ck_personal_point_lot_expired"),
         CheckConstraint("cash_basis_cents >= 0", name="ck_personal_point_lot_cash_basis"),
         CheckConstraint(
             "receivable_basis_cents >= 0",
@@ -2120,7 +2133,7 @@ class PersonalPointLot(TimestampMixin, Base):
         ),
         CheckConstraint(
             "original_points = available_points + reserved_points + "
-            "reversal_reserved_points + settled_points + reversed_points",
+            "reversal_reserved_points + settled_points + expired_points + reversed_points",
             name="ck_personal_point_lot_conservation",
         ),
     )
@@ -2142,6 +2155,9 @@ class PersonalPointLot(TimestampMixin, Base):
     )
     settled_points: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     reversed_points: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+    expired_points: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default="0", nullable=False
     )
     cash_basis_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
@@ -3621,7 +3637,7 @@ class PersonalLedgerEntry(Base):
             "amount_points >= 0", name="ck_personal_ledger_amount_nonnegative"
         ),
         CheckConstraint(
-            "kind IN ('RECHARGE', 'RESERVE', 'SETTLE', 'RELEASE', "
+            "kind IN ('RECHARGE', 'RESERVE', 'SETTLE', 'RELEASE', 'EXPIRY', "
             "'REFUND_RESERVE', 'REFUND_SETTLE', 'REFUND_RELEASE', "
             "'CHARGEBACK', 'DISPUTE_REVERSAL', 'DEBT_RECOVERY')",
             name="ck_personal_ledger_kind",
@@ -3640,6 +3656,10 @@ class PersonalLedgerEntry(Base):
             "(kind = 'RELEASE' AND amount_points > 0 "
             "AND available_delta_points = amount_points "
             "AND reserved_delta_points = -amount_points "
+            "AND reversal_reserved_delta_points = 0 AND debt_delta_points = 0) OR "
+            "(kind = 'EXPIRY' AND amount_points > 0 "
+            "AND available_delta_points = -amount_points "
+            "AND reserved_delta_points = 0 "
             "AND reversal_reserved_delta_points = 0 AND debt_delta_points = 0) OR "
             "(kind = 'REFUND_RESERVE' AND amount_points > 0 "
             "AND available_delta_points = -amount_points AND reserved_delta_points = 0 "
@@ -6427,6 +6447,299 @@ class DownloadCompletion(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+
+
+class SubjectKind(str, enum.Enum):
+    """What a reusable subject stands for.
+
+    Character is the one that matters most: it is the unit whose identity has
+    to survive across shots, which is exactly what multi-view references buy.
+    """
+
+    CHARACTER = "character"
+    STYLE = "style"
+    LOCATION = "location"
+    PROP = "prop"
+
+
+class SubjectViewAngle(str, enum.Enum):
+    FRONT = "front"
+    SIDE = "side"
+    BACK = "back"
+    THREE_QUARTER = "three_quarter"
+    CUSTOM = "custom"
+
+
+def new_subject_id() -> str:
+    """Return an opaque, type-distinguishable identifier for a subject."""
+
+    return f"sub_{uuid.uuid4().hex}"
+
+
+class Subject(TimestampMixin, Base):
+    """A named, reusable identity a generation can be anchored to.
+
+    A subject is the missing layer between "a folder of images" and "the same
+    person in every shot". It binds a name to a set of reference images so a
+    generator can be pointed at it instead of at whatever the operator happened
+    to upload most recently.
+
+    Scope follows every other customer-owned row: company or personal
+    workspace, never both.
+    """
+
+    __tablename__ = "subjects"
+    __table_args__ = (
+        CheckConstraint(
+            "(company_id IS NOT NULL AND personal_workspace_id IS NULL) OR "
+            "(company_id IS NULL AND personal_workspace_id IS NOT NULL)",
+            name="ck_subject_scope",
+        ),
+        UniqueConstraint("company_id", "name", name="uq_subject_company_name"),
+        UniqueConstraint(
+            "personal_workspace_id", "name", name="uq_subject_personal_name"
+        ),
+        Index("ix_subject_company_kind", "company_id", "kind", "archived_at"),
+        Index(
+            "ix_subject_personal_kind",
+            "personal_workspace_id",
+            "kind",
+            "archived_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(38), primary_key=True, default=new_subject_id)
+    company_id: Mapped[str | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    personal_workspace_id: Mapped[str | None] = mapped_column(
+        ForeignKey("personal_workspaces.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    kind: Mapped[SubjectKind] = mapped_column(
+        Enum(SubjectKind, **enum_kwargs), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    cover_asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("input_assets.id", ondelete="SET NULL"), nullable=True
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+
+    @property
+    def is_active(self) -> bool:
+        return self.archived_at is None
+
+
+class SubjectReference(Base):
+    """One reference image of a subject, from one viewpoint.
+
+    Ordering is deliberate: when a model can accept fewer images than the
+    subject owns, the caller takes a prefix of this ordering rather than an
+    arbitrary subset, so the same views are always preferred.
+    """
+
+    __tablename__ = "subject_references"
+    __table_args__ = (
+        UniqueConstraint("subject_id", "asset_id", name="uq_subject_reference_asset"),
+        UniqueConstraint("subject_id", "sort_order", name="uq_subject_reference_order"),
+        CheckConstraint(
+            "sort_order >= 0", name="ck_subject_reference_order_nonnegative"
+        ),
+        Index("ix_subject_reference_subject_order", "subject_id", "sort_order"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    subject_id: Mapped[str] = mapped_column(
+        ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("input_assets.id", ondelete="CASCADE"), nullable=False
+    )
+    view_angle: Mapped[SubjectViewAngle] = mapped_column(
+        Enum(SubjectViewAngle, **enum_kwargs),
+        default=SubjectViewAngle.CUSTOM,
+        server_default=SubjectViewAngle.CUSTOM.value,
+        nullable=False,
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class SpendLimitPeriod(str, enum.Enum):
+    """The window over which one member's point budget is measured."""
+
+    DAY = "day"
+    WEEK = "week"
+    MONTH = "month"
+    LIFETIME = "lifetime"
+
+
+class CompanyMemberSpendLimit(TimestampMixin, Base):
+    """A per-member ceiling on company point reservations.
+
+    The company wallet is shared, so "who is allowed to spend how much" is a
+    policy the owner imposes on top of it. This table is that policy and
+    nothing else: it holds no counter. Usage is always derived from the
+    immutable point ledger, which cannot be rewritten to hide spending.
+
+    ``limit_points`` NULL means explicitly unlimited -- the row is kept so the
+    decision remains auditable instead of being deleted into forgetfulness.
+    A member with no row at all is also unlimited, which keeps the feature
+    inert until an owner opts a member in.
+    """
+
+    __tablename__ = "company_member_spend_limits"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "user_id", name="uq_company_member_spend_limit"
+        ),
+        CheckConstraint(
+            "limit_points IS NULL OR limit_points >= 0",
+            name="ck_member_spend_limit_nonnegative",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    company_id: Mapped[str] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    period_kind: Mapped[SpendLimitPeriod] = mapped_column(
+        Enum(SpendLimitPeriod, **enum_kwargs),
+        default=SpendLimitPeriod.MONTH,
+        server_default=SpendLimitPeriod.MONTH.value,
+        nullable=False,
+    )
+    limit_points: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class ShareResourceType(str, enum.Enum):
+    """Resource kinds an anonymous share link may expose.
+
+    Only a generation task result is shareable today. This repository has no
+    project or artwork entity, so the unit a reviewer actually needs is the
+    task that produced the result. Adding a member here is a schema decision,
+    not a UI toggle: the public resolver must learn how to load and redact it.
+    """
+
+    TASK = "task"
+
+
+class SharePermission(str, enum.Enum):
+    """What an anonymous holder may do.
+
+    ``READ`` is a redacted preview only. Deliberate absence of a download
+    grade: the authenticated download path writes immutable, user-attributed
+    download records, so an anonymous download would either fabricate an actor
+    or silently skip the audit. Until an anonymous delivery path exists,
+    declaring a download permission here would promise something the resolver
+    cannot deliver.
+    """
+
+    READ = "read"
+
+
+def new_share_link_id() -> str:
+    """Return an opaque, type-distinguishable identifier for a share link."""
+
+    return f"shr_{uuid.uuid4().hex}"
+
+
+class ShareLink(TimestampMixin, Base):
+    """One revocable, optionally expiring anonymous read handle.
+
+    The raw token is returned exactly once at creation and never stored; only
+    its peppered digest is persisted, so a database leak cannot be replayed as
+    a working link. Scope mirrors every other customer-owned row: a link
+    belongs to a company or to a personal workspace, never both.
+    """
+
+    __tablename__ = "share_links"
+    __table_args__ = (
+        *_sha256_check_constraints(
+            "token_digest", constraint_name="ck_share_link_token_digest_sha256"
+        ),
+        CheckConstraint(
+            "(company_id IS NOT NULL AND personal_workspace_id IS NULL) OR "
+            "(company_id IS NULL AND personal_workspace_id IS NOT NULL)",
+            name="ck_share_link_scope",
+        ),
+        CheckConstraint(
+            "access_count >= 0", name="ck_share_link_access_count_nonnegative"
+        ),
+        UniqueConstraint(
+            "company_id", "idempotency_key", name="uq_share_link_company_idempotency"
+        ),
+        UniqueConstraint(
+            "personal_workspace_id",
+            "idempotency_key",
+            name="uq_share_link_personal_idempotency",
+        ),
+        Index("ix_share_link_company_created", "company_id", "created_at"),
+        Index("ix_share_link_personal_created", "personal_workspace_id", "created_at"),
+        Index("ix_share_link_resource", "resource_type", "resource_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=new_share_link_id
+    )
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    company_id: Mapped[str | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    personal_workspace_id: Mapped[str | None] = mapped_column(
+        ForeignKey("personal_workspaces.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    resource_type: Mapped[ShareResourceType] = mapped_column(
+        Enum(ShareResourceType, **enum_kwargs), nullable=False
+    )
+    resource_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    permission: Mapped[SharePermission] = mapped_column(
+        Enum(SharePermission, **enum_kwargs),
+        default=SharePermission.READ,
+        server_default=SharePermission.READ.value,
+        nullable=False,
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    access_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    last_accessed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    @property
+    def is_active(self) -> bool:
+        if self.revoked_at is not None:
+            return False
+        if self.expires_at is not None and self.expires_at <= utcnow():
+            return False
+        return True
 
 
 @event.listens_for(DownloadRecord, "before_update")
