@@ -534,6 +534,14 @@ class RelayOutboxDispatcher:
                 submission_outcome_unknown=False,
             )
         try:
+            # Snapshot whether a prior (possibly crashed) worker had already
+            # emitted a POST. Must read BEFORE _mark_submit_attempt_started
+            # refreshes the timestamp to NOW, so we can tell a crash residual
+            # apart from this dispatch's fresh POST.
+            with self.session_factory() as _snap_session:
+                _pre_dispatch_attempted_at = _snap_session.get(
+                    RelaySubmissionOutbox, claimed.id
+                ).relay_submit_attempted_at
             if not self._mark_submit_attempt_started(claimed.id, claimed.attempt_count):
                 return self._current_result(claimed.id)
             accepted = client.submit(
@@ -558,6 +566,19 @@ class RelayOutboxDispatcher:
                 error_snapshot=_submit_error_snapshot(exc),
             )
         except RelayPermanentError as exc:
+            # If a prior worker already POSTed (crash residual) we cannot
+            # prove that Relay did not create the job — pin to reconciliation
+            # instead of releasing. When the Relay error is a definitive
+            # rejection of *this* dispatch's fresh POST, _pre_dispatch_attempted_at
+            # will be None (we just refreshed it above) and permanent_failure
+            # is correct.
+            if _pre_dispatch_attempted_at is not None:
+                return self._mark_reconciliation_required(
+                    claimed.id,
+                    claimed.attempt_count,
+                    f"{exc} (prior POST may have created a Relay job)",
+                    error_snapshot=_submit_error_snapshot(exc),
+                )
             return self._mark_permanent_failure(
                 claimed.id,
                 claimed.attempt_count,
@@ -710,14 +731,14 @@ class RelayOutboxDispatcher:
             )
             if not self._owns_claim(outbox, expected_attempt):
                 return self._result_for_outbox(outbox)
+            # The previous worker may have crashed after POST but before
+            # recording its outcome. A local validation failure is not
+            # provider evidence of non-creation; keep its exact request
+            # and reservation for reconciliation, without another POST.
             if (
                 pre_submit_validation_failure
                 and outbox.relay_submit_attempted_at is not None
             ):
-                # The previous worker may have crashed after POST but before
-                # recording its outcome. A local validation failure is not
-                # provider evidence of non-creation; keep its exact request
-                # and reservation for reconciliation, without another POST.
                 outbox.submission_outcome_uncertain_at = (
                     outbox.submission_outcome_uncertain_at or utcnow()
                 )

@@ -37,6 +37,10 @@ from . import database_privileges_behavior_v22 as _behavior_v22
 from . import database_privileges_behavior_v23 as _behavior_v23
 from . import database_privileges_behavior_v24 as _behavior_v24
 from . import database_privileges_behavior_v25 as _behavior_v25
+from . import database_privileges_behavior_v26 as _behavior_v26
+from . import database_privileges_behavior_v27 as _behavior_v27
+from . import database_privileges_behavior_v28 as _behavior_v28
+from . import database_privileges_behavior_v29 as _behavior_v29
 from . import database_privileges_v1 as _policy_v1
 from . import database_privileges_v2 as _policy_v2
 from . import database_privileges_v3 as _policy_v3
@@ -62,7 +66,12 @@ from . import database_privileges_v22 as _policy_v22
 from . import database_privileges_v23 as _policy_v23
 from . import database_privileges_v24 as _policy_v24
 from . import database_privileges_v25 as _policy_v25
-from .database_privileges_behavior_v25 import (  # noqa: F401
+from . import database_privileges_v26 as _policy_v26
+from . import database_privileges_v27 as _policy_v27
+from . import database_privileges_v28 as _policy_v28
+from . import database_privileges_v29 as _policy_v29
+from . import database_privileges_v30 as _policy_v30
+from .database_privileges_behavior_v29 import (  # noqa: F401
     DatabasePrincipalEvidence,
     PlatformDatabaseAttestationError,
     PlatformDatabaseEvidence,
@@ -107,21 +116,26 @@ PLATFORM_DATABASE_PRIVILEGE_POLICY_REGISTRY = MappingProxyType(
         _policy_v23.ALEMBIC_HEAD: (_policy_v23, _behavior_v23),
         _policy_v24.ALEMBIC_HEAD: (_policy_v24, _behavior_v24),
         _policy_v25.ALEMBIC_HEAD: (_policy_v25, _behavior_v25),
+        _policy_v26.ALEMBIC_HEAD: (_policy_v26, _behavior_v26),
+        _policy_v27.ALEMBIC_HEAD: (_policy_v27, _behavior_v27),
+        _policy_v28.ALEMBIC_HEAD: (_policy_v28, _behavior_v28),
+        _policy_v29.ALEMBIC_HEAD: (_policy_v29, _behavior_v29),
+        _policy_v30.ALEMBIC_HEAD: (_policy_v30, _behavior_v29),
     }
 )
-CURRENT_PLATFORM_DATABASE_PRIVILEGE_POLICY = _policy_v25
-CURRENT_PLATFORM_DATABASE_PRIVILEGE_BEHAVIOR = _behavior_v25
-PLATFORM_ALEMBIC_HEAD = _policy_v25.ALEMBIC_HEAD
-PLATFORM_MIGRATION_DATABASE_ROLE = _policy_v25.MIGRATION_DATABASE_ROLE
-PLATFORM_DATABASE_ROLE_BY_PROCESS = _policy_v25.DATABASE_ROLE_BY_PROCESS
+CURRENT_PLATFORM_DATABASE_PRIVILEGE_POLICY = _policy_v30
+CURRENT_PLATFORM_DATABASE_PRIVILEGE_BEHAVIOR = _behavior_v29
+PLATFORM_ALEMBIC_HEAD = _policy_v30.ALEMBIC_HEAD
+PLATFORM_MIGRATION_DATABASE_ROLE = _policy_v30.MIGRATION_DATABASE_ROLE
+PLATFORM_DATABASE_ROLE_BY_PROCESS = _policy_v30.DATABASE_ROLE_BY_PROCESS
 PLATFORM_DATABASE_ROLE_COMMENT_BY_PROCESS = (
-    _policy_v25.DATABASE_ROLE_COMMENT_BY_PROCESS
+    _policy_v29.DATABASE_ROLE_COMMENT_BY_PROCESS
 )
-PLATFORM_TABLES = _policy_v25.TABLES
-PLATFORM_DATABASE_PRIVILEGES_BY_PROCESS = _policy_v25.PRIVILEGES_BY_PROCESS
-EXPECTED_PLATFORM_TABLE_ACL = _policy_v25.EXPECTED_TABLE_ACL
-EXPECTED_PLATFORM_DATABASE_ACL = _policy_v25.EXPECTED_DATABASE_ACL
-EXPECTED_PLATFORM_SCHEMA_ACL = _policy_v25.EXPECTED_SCHEMA_ACL
+PLATFORM_TABLES = _policy_v29.TABLES
+PLATFORM_DATABASE_PRIVILEGES_BY_PROCESS = _policy_v29.PRIVILEGES_BY_PROCESS
+EXPECTED_PLATFORM_TABLE_ACL = _policy_v29.EXPECTED_TABLE_ACL
+EXPECTED_PLATFORM_DATABASE_ACL = _policy_v29.EXPECTED_DATABASE_ACL
+EXPECTED_PLATFORM_SCHEMA_ACL = _policy_v29.EXPECTED_SCHEMA_ACL
 
 
 def _migration_source_policy(
@@ -154,7 +168,7 @@ def _migration_source_policy(
         )
     )
     if "alembic_version" not in table_names:
-        return _policy_v25, _behavior_v25
+        return _policy_v29, _behavior_v29
     heads = tuple(
         str(head)
         for head in connection.scalars(
@@ -188,13 +202,17 @@ def _migration_source_policy(
             (_policy_v23, _behavior_v23),
             (_policy_v24, _behavior_v24),
             (_policy_v25, _behavior_v25),
+            (_policy_v26, _behavior_v26),
+            (_policy_v27, _behavior_v27),
+            (_policy_v28, _behavior_v28),
+            (_policy_v29, _behavior_v29),
         ):
             source_heads = set(policy.MIGRATION_SOURCE_CATALOG_SHA256_BY_HEAD) - {
                 policy.ALEMBIC_HEAD
             }
             if heads[0] in source_heads:
                 return policy, behavior
-    return _policy_v25, _behavior_v25
+    return _policy_v29, _behavior_v29
 
 
 def validate_platform_migration_source_state(connection: Connection) -> None:
