@@ -476,13 +476,6 @@ class RelayOutboxDispatcher:
         claimed = self._claim()
         if claimed is None:
             return DispatchResult(processed=False)
-        if (
-            claimed.relay_submit_attempted_at is not None
-            or claimed.submission_outcome_uncertain_at is not None
-        ):
-            recovery = self._prepare_crashed_submit_replay(claimed)
-            if recovery is not None:
-                return recovery
         if claimed.attempt_count > self.max_attempts:
             return self._mark_attempt_limit(
                 claimed.id,
@@ -507,6 +500,27 @@ class RelayOutboxDispatcher:
                 "Relay outbox payload is invalid",
                 pre_submit_validation_failure=True,
             )
+        # Lightweight pre-POST safety gate: a terminal task or a task that
+        # already points at a different relay_job_id means this outbox row
+        # is stale — do not resubmit, let the reconciliation worker handle it.
+        with self.session_factory() as session:
+            task = session.get(GenerationTask, claimed.task_id)
+            if task is None:
+                return self._mark_permanent_failure(
+                    claimed.id, claimed.attempt_count, "Task gone",
+                )
+            if task.status in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.SUCCEEDED):
+                return self._mark_reconciliation_required(
+                    claimed.id, claimed.attempt_count,
+                    f"Task is already {task.status.value}",
+                )
+            if task.relay_job_id is not None and (
+                claimed.relay_job_id is None or task.relay_job_id != claimed.relay_job_id
+            ):
+                return self._mark_reconciliation_required(
+                    claimed.id, claimed.attempt_count,
+                    f"Task already bound to relay_job_id={task.relay_job_id}",
+                )
         try:
             client = self.relay_backends.resolve(
                 backend_id=claimed.relay_backend_id,
@@ -572,78 +586,6 @@ class RelayOutboxDispatcher:
             )
         return self._mark_sent(claimed.id, claimed.attempt_count, accepted)
 
-    def _prepare_crashed_submit_replay(
-        self, claimed: RelaySubmissionOutbox,
-    ) -> DispatchResult | None:
-        """Commit uncertainty before replaying any historical native submission.
-
-        The code-owned New API contract persists a unique (tenant, key) job and
-        creates its submit outbox only on INSERT, never on replay. This is not
-        permission to repeat a provider POST or to use an arbitrary compatible
-        gateway. Operators must preserve the backend's tenant/database identity.
-        """
-        with self.session_factory.begin() as session:
-            task, outbox = self._lock_task_and_outbox(
-                session, outbox_id=claimed.id, include_wallet=False,
-            )
-            if not self._owns_claim(outbox, claimed.attempt_count):
-                return self._result_for_outbox(outbox)
-            # This must survive even if recovery validation or a later HTTP
-            # 401/404/422 fails. That reply cannot disprove the earlier POST.
-            outbox.submission_outcome_uncertain_at = (
-                outbox.submission_outcome_uncertain_at or utcnow()
-            )
-            reason = "Historical Relay submission lacks exact durable replay evidence"
-            try:
-                if (
-                    task.status not in {TaskStatus.QUEUED, TaskStatus.PROCESSING}
-                    or task.relay_job_id != outbox.relay_job_id
-                    or (outbox.relay_backend_id, outbox.relay_contract_revision)
-                    != (NEW_API_RELAY_BACKEND_ID, NEW_API_RELAY_CONTRACT_REVISION)
-                    or (task.relay_backend_id, task.relay_contract_revision)
-                    != (outbox.relay_backend_id, outbox.relay_contract_revision)
-                    or (claimed.relay_backend_id, claimed.relay_contract_revision)
-                    != (outbox.relay_backend_id, outbox.relay_contract_revision)
-                    or outbox.idempotency_key != f"platform-task-{task.id}"
-                    or outbox.idempotency_key != claimed.idempotency_key
-                    or outbox.materialized_relay_payload is None
-                    or outbox.materialized_relay_payload != claimed.materialized_relay_payload
-                    or outbox.relay_payload != claimed.relay_payload
-                    or not isinstance(outbox.relay_payload.get("metadata"), dict)
-                    or outbox.relay_payload["metadata"].get(_MATERIALIZED_DIGEST_KEY)
-                    != _materialized_payload_sha256(outbox.materialized_relay_payload)
-                ):
-                    raise ValueError(reason)
-                payload = RelayGenerationRequest.model_validate(outbox.materialized_relay_payload)
-                if (
-                    payload.model_dump(mode="json") != outbox.materialized_relay_payload
-                    or payload.client_reference_id != task.id
-                    or payload.metadata.get("platform_task_id") != task.id
-                    or payload.metadata.get("platform_user_id") != task.user_id
-                    or payload.metadata.get("platform_billing_scope")
-                    != ("company" if task.company_id is not None else "personal")
-                    or payload.metadata.get("platform_billing_scope_id")
-                    != (task.company_id or task.personal_workspace_id)
-                    or payload.expected_capability_revision
-                    != (task.capability_snapshot or {}).get("relay_capability_revision")
-                ):
-                    raise ValueError(reason)
-                self.relay_backends.resolve(
-                    backend_id=outbox.relay_backend_id,
-                    contract_revision=outbox.relay_contract_revision,
-                )
-            except (ValidationError, ValueError, TypeError, RelayBackendResolutionError):
-                return self._apply_reconciliation_required(session, task, outbox, reason)
-            if outbox.attempt_count > self.max_attempts:
-                return self._apply_reconciliation_required(
-                    session, task, outbox,
-                    f"Relay dispatch attempt limit ({self.max_attempts}) exhausted",
-                )
-            # No new quote, URL materialization, route selection or key is
-            # produced here. Leaving this transaction commits the unknown fact
-            # before dispatch_once may send the original persisted request.
-            return None
-
     def _mark_sent(
         self,
         outbox_id: str,
@@ -707,6 +649,11 @@ class RelayOutboxDispatcher:
                     raise NotFoundError("派发记录不存在")
             if not self._owns_claim(outbox, expected_attempt):
                 return self._result_for_outbox(outbox)
+            # submission_outcome_unknown still pins to reconciliation_required
+            # on exhaustion: the Relay may have created a job before the link
+            # died, and we must not release the reservation if a later retry
+            # would fail with a permanent error (401/404/422) unrelated to
+            # that earlier creation.
             if submission_outcome_unknown:
                 outbox.submission_outcome_uncertain_at = (
                     outbox.submission_outcome_uncertain_at or utcnow()

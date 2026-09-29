@@ -2954,6 +2954,7 @@ class RelaySubmissionOutbox(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("task_id", name="uq_relay_outbox_task"),
         Index("ix_relay_outbox_dispatch", "status", "next_attempt_at", "created_at"),
+        Index("ix_relay_outbox_recovery", "status", "next_recovery_at", "updated_at"),
         CheckConstraint("attempt_count >= 0", name="ck_relay_attempt_nonnegative"),
         CheckConstraint(
             "(company_id IS NOT NULL AND personal_workspace_id IS NULL) OR "
@@ -3016,6 +3017,12 @@ class RelaySubmissionOutbox(TimestampMixin, Base):
         DateTime(timezone=True), default=utcnow, nullable=False
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recovery_attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    next_recovery_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 def _outbox_execution_fragment(payload: Any) -> tuple[bool, Any]:
